@@ -1,0 +1,26 @@
+# BoT-SORT tuned for football from a panning/zooming camera (Veo-style).
+# Differences from the ultralytics botsort.yaml defaults, and why:
+#   gmc_method sparseOptFlow  — compensates camera pan/zoom before association;
+#                               without it every pan reads as all players moving.
+#   track_buffer 90           — keep lost tracks alive ~3 s @ 30 fps so brief
+#                               occlusions (players crossing) don't mint new IDs.
+#   track_high_thresh 0.5     — first-stage matches only on confident boxes.
+#   new_track_thresh 0.5      — don't start tracks from weak detections; weak
+#                               boxes may still *extend* existing tracks via the
+#                               low-threshold second stage (track_low_thresh).
+#   with_reid True (auto)     — appearance features from the detector help
+#                               re-attach a player after occlusion or a fast pan.
+tracker_type: botsort
+track_high_thresh: 0.5
+track_low_thresh: 0.1
+new_track_thresh: 0.5
+track_buffer: 90
+match_thresh: 0.8
+fuse_score: True
+
+gmc_method: sparseOptFlow
+
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: True
+model: auto

@@ -1,0 +1,26 @@
+metric,scope,entity,value,unit,confidence
+duration,match,match,12.0,s,high
+fps,match,match,25.0,fps,high
+possession_pct,team,team_a,53.0,percent,high
+possession_pct,team,team_b,47.0,percent,high
+possession_switches,match,match,1,count,high
+ball_detection_rate,match,match,100.0,percent,high
+avg_position_x,team,team_a,29.45,m,high
+avg_position_y,team,team_a,34.85,m,high
+avg_position_x,team,team_b,72.11,m,high
+avg_position_y,team,team_b,34.85,m,high
+distance_total,team,team_a,196.7,m,high
+avg_speed,team,team_a,4.1,m/s,high
+max_speed,team,team_a,7.3,m/s,high
+distance_total,team,team_b,195.2,m,high
+avg_speed,team,team_b,4.07,m/s,high
+max_speed,team,team_b,7.3,m/s,high
+distance_total,player,track_9 (unknown),63.1,m,best_effort
+distance_total,player,track_4 (team_a),57.5,m,best_effort
+distance_total,player,track_8 (team_b),57.5,m,best_effort
+distance_total,player,track_3 (team_a),52.0,m,best_effort
+distance_total,player,track_7 (team_b),49.7,m,best_effort
+distance_total,player,track_6 (team_b),46.4,m,best_effort
+distance_total,player,track_2 (team_a),46.2,m,best_effort
+distance_total,player,track_5 (team_b),41.6,m,best_effort
+distance_total,player,track_1 (team_a),41.0,m,best_effort

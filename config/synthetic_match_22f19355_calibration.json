@@ -1,0 +1,29 @@
+{
+  "mode": "static",
+  "pitch_length": 105.0,
+  "pitch_width": 68.0,
+  "homography": [
+    [
+      0.1640625,
+      0,
+      0
+    ],
+    [
+      0,
+      0.18888888888888888,
+      0
+    ],
+    [
+      0,
+      0,
+      1
+    ]
+  ],
+  "points": [],
+  "video": "C:\\Users\\finji\\AppData\\Local\\Temp\\claude\\c--Users-finji-Desktop-Football-tracking\\f3cc5cc4-ddca-42cd-81f8-692f2fc2c17b\\scratchpad\\synthetic_match.mp4",
+  "frame": 0,
+  "reprojection_error_m": {
+    "mean": 0.0,
+    "max": 0.0
+  }
+}

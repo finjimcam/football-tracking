@@ -1,0 +1,360 @@
+{
+  "match_id": "testvideo_b95783a3",
+  "video": "C:\\Users\\finji\\Desktop\\Football tracking\\testvideo.mp4",
+  "team_names": {},
+  "anchors": [
+    {
+      "frame": 0,
+      "labels": [
+        {
+          "key": "a2",
+          "team": "team_a",
+          "number": 2,
+          "image": [
+            244.5,
+            317.4
+          ],
+          "track_id_at_label": 5
+        },
+        {
+          "key": "b2",
+          "team": "team_b",
+          "number": 2,
+          "image": [
+            593.7,
+            238.3
+          ],
+          "track_id_at_label": 4
+        },
+        {
+          "key": "a7",
+          "team": "team_a",
+          "number": 7,
+          "image": [
+            862.6,
+            268.1
+          ],
+          "track_id_at_label": 6
+        },
+        {
+          "key": "a3",
+          "team": "team_a",
+          "number": 3,
+          "image": [
+            492.5,
+            221.6
+          ],
+          "track_id_at_label": 15
+        },
+        {
+          "key": "a8",
+          "team": "team_a",
+          "number": 8,
+          "image": [
+            516.9,
+            242.1
+          ],
+          "track_id_at_label": 7
+        },
+        {
+          "key": "b1",
+          "team": "team_b",
+          "number": 1,
+          "image": [
+            697.9,
+            211.7
+          ],
+          "track_id_at_label": 13
+        },
+        {
+          "key": "b3",
+          "team": "team_b",
+          "number": 3,
+          "image": [
+            618.3,
+            206.3
+          ],
+          "track_id_at_label": 14
+        },
+        {
+          "key": "b4",
+          "team": "team_b",
+          "number": 4,
+          "image": [
+            770.5,
+            231.2
+          ],
+          "track_id_at_label": 12
+        },
+        {
+          "key": "b5",
+          "team": "team_b",
+          "number": 5,
+          "image": [
+            943.3,
+            261.5
+          ],
+          "track_id_at_label": 11
+        },
+        {
+          "key": "b6",
+          "team": "team_b",
+          "number": 6,
+          "image": [
+            914.9,
+            258.1
+          ],
+          "track_id_at_label": 9
+        },
+        {
+          "key": "a1",
+          "team": "team_a",
+          "number": 1,
+          "image": [
+            312.0,
+            233.0
+          ],
+          "track_id_at_label": null,
+          "manual": true
+        }
+      ],
+      "ignores": [
+        {
+          "image": [
+            657.3,
+            662.1
+          ],
+          "track_id_at_label": 1
+        },
+        {
+          "image": [
+            1067.9,
+            626.3
+          ],
+          "track_id_at_label": 3
+        },
+        {
+          "image": [
+            1139.7,
+            663.1
+          ],
+          "track_id_at_label": 2
+        },
+        {
+          "image": [
+            244.0,
+            230.1
+          ],
+          "track_id_at_label": 10
+        },
+        {
+          "image": [
+            106.2,
+            222.6
+          ],
+          "track_id_at_label": 16
+        }
+      ],
+      "rescues": [
+        {
+          "image": [
+            593.7,
+            238.3
+          ],
+          "track_id_at_label": 4
+        }
+      ],
+      "manual_boxes": [
+        {
+          "box": [
+            360.0,
+            208.0,
+            381.0,
+            240.0
+          ],
+          "key": null
+        },
+        {
+          "box": [
+            330.0,
+            211.0,
+            353.0,
+            250.0
+          ],
+          "key": null
+        },
+        {
+          "box": [
+            300.0,
+            198.0,
+            324.0,
+            233.0
+          ],
+          "key": "a1",
+          "team": "team_a",
+          "number": 1
+        }
+      ],
+      "ball_marks": [
+        [
+          659.0,
+          203.0
+        ]
+      ]
+    },
+    {
+      "frame": 205,
+      "labels": [
+        {
+          "key": "a5",
+          "team": "team_a",
+          "number": 5,
+          "image": [
+            404.8,
+            252.5
+          ],
+          "track_id_at_label": 44
+        },
+        {
+          "key": "b10",
+          "team": "team_b",
+          "number": 10,
+          "image": [
+            516.6,
+            250.3
+          ],
+          "track_id_at_label": 36
+        },
+        {
+          "key": "a3",
+          "team": "team_a",
+          "number": 3,
+          "image": [
+            516.4,
+            249.1
+          ],
+          "track_id_at_label": 85
+        },
+        {
+          "key": "b4",
+          "team": "team_b",
+          "number": 4,
+          "image": [
+            833.4,
+            215.6
+          ],
+          "track_id_at_label": 72
+        },
+        {
+          "key": "a7",
+          "team": "team_a",
+          "number": 7,
+          "image": [
+            807.2,
+            212.9
+          ],
+          "track_id_at_label": 55
+        },
+        {
+          "key": "b2",
+          "team": "team_b",
+          "number": 2,
+          "image": [
+            644.5,
+            220.0
+          ],
+          "track_id_at_label": null,
+          "manual": true
+        }
+      ],
+      "ignores": [
+        {
+          "image": [
+            307.5,
+            225.2
+          ],
+          "track_id_at_label": 58
+        },
+        {
+          "image": [
+            335.0,
+            223.6
+          ],
+          "track_id_at_label": 57
+        },
+        {
+          "image": [
+            356.5,
+            222.4
+          ],
+          "track_id_at_label": 51
+        },
+        {
+          "image": [
+            715.8,
+            205.2
+          ],
+          "track_id_at_label": 69
+        }
+      ],
+      "rescues": [],
+      "manual_boxes": [
+        {
+          "box": [
+            380.0,
+            205.0,
+            396.0,
+            238.0
+          ],
+          "key": null,
+          "team": "team_a",
+          "number": 7
+        },
+        {
+          "box": [
+            637.0,
+            203.0,
+            659.0,
+            232.0
+          ],
+          "key": null
+        },
+        {
+          "box": [
+            675.0,
+            204.0,
+            705.0,
+            235.0
+          ],
+          "key": null
+        },
+        {
+          "box": [
+            632.0,
+            194.0,
+            657.0,
+            220.0
+          ],
+          "key": "b2",
+          "team": "team_b",
+          "number": 2
+        },
+        {
+          "box": [
+            1159.0,
+            226.0,
+            1190.0,
+            266.0
+          ],
+          "key": null
+        }
+      ],
+      "ball_marks": [
+        [
+          633.0,
+          219.0
+        ]
+      ]
+    }
+  ]
+}

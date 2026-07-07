@@ -1,0 +1,71 @@
+metric,scope,entity,value,unit,confidence
+duration,match,match,10.1,s,high
+fps,match,match,30.0,fps,high
+possession_pct,team,team_a,0.0,percent,low
+possession_pct,team,team_b,100.0,percent,low
+possession_switches,match,match,0,count,low
+ball_detection_rate,match,match,34.0,percent,high
+avg_position_x,team,team_a,70.69,m,high
+avg_position_y,team,team_a,25.6,m,high
+avg_position_x,team,team_b,78.58,m,high
+avg_position_y,team,team_b,29.52,m,high
+distance_total,team,team_a,129.8,m,high
+avg_speed,team,team_a,2.02,m/s,high
+max_speed,team,team_a,11.87,m/s,high
+distance_total,team,team_b,147.7,m,high
+avg_speed,team,team_b,1.84,m/s,high
+max_speed,team,team_b,11.93,m/s,high
+distance_total,player,a7 (team_a),50.7,m,identified
+max_speed,player,a7 (team_a),11.83,m/s,identified
+tracking_coverage,player,a7 (team_a),112.5,percent,identified
+distance_total,player,b2 (team_b),31.4,m,identified
+max_speed,player,b2 (team_b),11.79,m/s,identified
+tracking_coverage,player,b2 (team_b),117.5,percent,identified
+distance_total,player,b4 (team_b),30.7,m,identified
+max_speed,player,b4 (team_b),11.53,m/s,identified
+tracking_coverage,player,b4 (team_b),112.9,percent,identified
+distance_total,player,a2 (team_a),18.5,m,identified
+max_speed,player,a2 (team_a),4.88,m/s,identified
+tracking_coverage,player,a2 (team_a),100.0,percent,identified
+distance_total,player,a8 (team_a),17.5,m,identified
+max_speed,player,a8 (team_a),10.74,m/s,identified
+tracking_coverage,player,a8 (team_a),61.7,percent,identified
+distance_total,player,b5 (team_b),17.1,m,identified
+max_speed,player,b5 (team_b),4.04,m/s,identified
+tracking_coverage,player,b5 (team_b),93.7,percent,identified
+distance_total,player,b1 (team_b),14.1,m,identified
+max_speed,player,b1 (team_b),4.23,m/s,identified
+tracking_coverage,player,b1 (team_b),92.4,percent,identified
+distance_total,player,b10 (team_b),10.5,m,identified
+max_speed,player,b10 (team_b),11.53,m/s,identified
+tracking_coverage,player,b10 (team_b),68.3,percent,identified
+distance_total,player,a1 (team_a),8.3,m,identified
+max_speed,player,a1 (team_a),9.51,m/s,identified
+tracking_coverage,player,a1 (team_a),39.6,percent,identified
+distance_total,player,a3 (team_a),8.0,m,identified
+max_speed,player,a3 (team_a),11.87,m/s,identified
+tracking_coverage,player,a3 (team_a),21.1,percent,identified
+distance_total,player,b6 (team_b),6.8,m,identified
+max_speed,player,b6 (team_b),3.75,m/s,identified
+tracking_coverage,player,b6 (team_b),61.7,percent,identified
+distance_total,player,a5 (team_a),6.6,m,identified
+max_speed,player,a5 (team_a),3.25,m/s,identified
+tracking_coverage,player,a5 (team_a),64.7,percent,identified
+distance_total,player,b3 (team_b),2.5,m,identified
+max_speed,player,b3 (team_b),6.09,m/s,identified
+tracking_coverage,player,b3 (team_b),20.5,percent,identified
+distance_total,player,track_18 (team_b),9.8,m,best_effort
+distance_total,player,track_22 (team_b),9.4,m,best_effort
+distance_total,player,track_8 (team_a),9.3,m,best_effort
+distance_total,player,track_50 (team_b),8.2,m,best_effort
+distance_total,player,track_19 (team_a),7.8,m,best_effort
+distance_total,player,track_104 (unknown),7.2,m,best_effort
+distance_total,player,track_21 (unknown),5.4,m,best_effort
+distance_total,player,track_28 (team_a),3.1,m,best_effort
+distance_total,player,track_52 (team_b),3.0,m,best_effort
+distance_total,player,track_79 (team_b),2.2,m,best_effort
+distance_total,player,track_102 (unknown),2.2,m,best_effort
+distance_total,player,track_99 (unknown),1.2,m,best_effort
+distance_total,player,track_38 (team_b),0.9,m,best_effort
+distance_total,player,track_89 (team_b),0.8,m,best_effort
+distance_total,player,track_97 (team_b),0.3,m,best_effort

@@ -1,0 +1,488 @@
+{
+  "mode": "dynamic",
+  "pitch_length": 100.0,
+  "pitch_width": 64.0,
+  "video": "C:\\Users\\finji\\Desktop\\Football tracking\\testvideo.mp4",
+  "keyframes": [
+    {
+      "frame": 0,
+      "homography": [
+        [
+          -0.050315171637053575,
+          -0.29719789939117675,
+          29.01634997745759
+        ],
+        [
+          -0.04456771931280172,
+          -0.5576675867964763,
+          129.30421602716842
+        ],
+        [
+          -0.00027654530667872615,
+          -0.007271383823076052,
+          1.0
+        ]
+      ],
+      "points": [
+        {
+          "landmark": "Corner: top-right",
+          "image": [
+            546,
+            197
+          ],
+          "pitch": [
+            100.0,
+            0
+          ]
+        },
+        {
+          "landmark": "Corner: bottom-right",
+          "image": [
+            1273,
+            232
+          ],
+          "pitch": [
+            100.0,
+            64.0
+          ]
+        },
+        {
+          "landmark": "Center spot",
+          "image": [
+            24,
+            305
+          ],
+          "pitch": [
+            50.0,
+            32.0
+          ]
+        },
+        {
+          "landmark": "Center circle: rightmost point",
+          "image": [
+            194,
+            275
+          ],
+          "pitch": [
+            59.15,
+            32.0
+          ]
+        },
+        {
+          "landmark": "Right penalty area: top-front corner",
+          "image": [
+            422,
+            213
+          ],
+          "pitch": [
+            83.5,
+            11.84
+          ]
+        },
+        {
+          "landmark": "Right penalty area: bottom-front corner",
+          "image": [
+            1032,
+            266
+          ],
+          "pitch": [
+            83.5,
+            52.16
+          ]
+        },
+        {
+          "landmark": "Right penalty area: top corner on goal line",
+          "image": [
+            596,
+            196
+          ],
+          "pitch": [
+            100.0,
+            11.84
+          ]
+        },
+        {
+          "landmark": "Right penalty area: bottom corner on goal line",
+          "image": [
+            1179,
+            227
+          ],
+          "pitch": [
+            100.0,
+            52.16
+          ]
+        },
+        {
+          "landmark": "Right goal area: top-front corner",
+          "image": [
+            656,
+            209
+          ],
+          "pitch": [
+            94.5,
+            22.84
+          ]
+        },
+        {
+          "landmark": "Right goal area: bottom-front corner",
+          "image": [
+            907,
+            224
+          ],
+          "pitch": [
+            94.5,
+            41.16
+          ]
+        },
+        {
+          "landmark": "Right penalty spot",
+          "image": [
+            699,
+            224
+          ],
+          "pitch": [
+            89.0,
+            32.0
+          ]
+        }
+      ],
+      "reprojection_error_m": {
+        "mean": 2.450484377086173,
+        "max": 9.323554896803214
+      }
+    },
+    {
+      "frame": 150,
+      "homography": [
+        [
+          -0.03494676062532654,
+          -0.3065695059891125,
+          53.47976930588804
+        ],
+        [
+          -0.02275565589187168,
+          -0.4349637420702935,
+          102.42763556298296
+        ],
+        [
+          -0.00014943888979722665,
+          -0.006192411852232365,
+          1.0
+        ]
+      ],
+      "points": [
+        {
+          "landmark": "Corner: top-right",
+          "image": [
+            764,
+            196
+          ],
+          "pitch": [
+            100.0,
+            0
+          ]
+        },
+        {
+          "landmark": "Halfway line: top touchline",
+          "image": [
+            146,
+            229
+          ],
+          "pitch": [
+            50.0,
+            0
+          ]
+        },
+        {
+          "landmark": "Center spot",
+          "image": [
+            155,
+            285
+          ],
+          "pitch": [
+            50.0,
+            32.0
+          ]
+        },
+        {
+          "landmark": "Center circle: top intersection with halfway line",
+          "image": [
+            150,
+            258
+          ],
+          "pitch": [
+            50.0,
+            22.85
+          ]
+        },
+        {
+          "landmark": "Center circle: bottom intersection with halfway line",
+          "image": [
+            167,
+            331
+          ],
+          "pitch": [
+            50.0,
+            41.15
+          ]
+        },
+        {
+          "landmark": "Center circle: rightmost point",
+          "image": [
+            431,
+            266
+          ],
+          "pitch": [
+            59.15,
+            32.0
+          ]
+        },
+        {
+          "landmark": "Right penalty area: top-front corner",
+          "image": [
+            632,
+            212
+          ],
+          "pitch": [
+            83.5,
+            11.84
+          ]
+        },
+        {
+          "landmark": "Right penalty area: top corner on goal line",
+          "image": [
+            837,
+            203
+          ],
+          "pitch": [
+            100.0,
+            11.84
+          ]
+        },
+        {
+          "landmark": "Right goal area: top-front corner",
+          "image": [
+            869,
+            213
+          ],
+          "pitch": [
+            94.5,
+            22.84
+          ]
+        },
+        {
+          "landmark": "Right goal area: bottom-front corner",
+          "image": [
+            1164,
+            235
+          ],
+          "pitch": [
+            94.5,
+            41.16
+          ]
+        },
+        {
+          "landmark": "Right penalty spot",
+          "image": [
+            912,
+            226
+          ],
+          "pitch": [
+            89.0,
+            32.0
+          ]
+        }
+      ],
+      "reprojection_error_m": {
+        "mean": 1.1596400757347398,
+        "max": 1.8918589657681941
+      }
+    },
+    {
+      "frame": 300,
+      "homography": [
+        [
+          -0.040762995318365546,
+          -0.4190711975023542,
+          63.866458722358296
+        ],
+        [
+          -0.018618443404536167,
+          -0.6412255752029408,
+          141.34925817701068
+        ],
+        [
+          0.000109779068541966,
+          -0.008583270724337221,
+          1.0
+        ]
+      ],
+      "points": [
+        {
+          "landmark": "Corner: top-right",
+          "image": [
+            941,
+            199
+          ],
+          "pitch": [
+            100.0,
+            0
+          ]
+        },
+        {
+          "landmark": "Halfway line: top touchline",
+          "image": [
+            348,
+            222
+          ],
+          "pitch": [
+            50.0,
+            0
+          ]
+        },
+        {
+          "landmark": "Halfway line: bottom touchline",
+          "image": [
+            419,
+            710
+          ],
+          "pitch": [
+            50.0,
+            64.0
+          ]
+        },
+        {
+          "landmark": "Center spot",
+          "image": [
+            356,
+            272
+          ],
+          "pitch": [
+            50.0,
+            32.0
+          ]
+        },
+        {
+          "landmark": "Center circle: top intersection with halfway line",
+          "image": [
+            352,
+            249
+          ],
+          "pitch": [
+            50.0,
+            22.85
+          ]
+        },
+        {
+          "landmark": "Center circle: bottom intersection with halfway line",
+          "image": [
+            357,
+            317
+          ],
+          "pitch": [
+            50.0,
+            41.15
+          ]
+        },
+        {
+          "landmark": "Center circle: leftmost point",
+          "image": [
+            69,
+            299
+          ],
+          "pitch": [
+            40.85,
+            32.0
+          ]
+        },
+        {
+          "landmark": "Center circle: rightmost point",
+          "image": [
+            604,
+            265
+          ],
+          "pitch": [
+            59.15,
+            32.0
+          ]
+        },
+        {
+          "landmark": "Right penalty area: top-front corner",
+          "image": [
+            802,
+            213
+          ],
+          "pitch": [
+            83.5,
+            11.84
+          ]
+        },
+        {
+          "landmark": "Right penalty area: top corner on goal line",
+          "image": [
+            1009,
+            202
+          ],
+          "pitch": [
+            100.0,
+            11.84
+          ]
+        },
+        {
+          "landmark": "Right goal area: top-front corner",
+          "image": [
+            1060,
+            217
+          ],
+          "pitch": [
+            94.5,
+            22.84
+          ]
+        },
+        {
+          "landmark": "Right goal area: bottom-front corner",
+          "image": [
+            1269,
+            245
+          ],
+          "pitch": [
+            94.5,
+            41.16
+          ]
+        },
+        {
+          "landmark": "Right penalty spot",
+          "image": [
+            1115,
+            232
+          ],
+          "pitch": [
+            89.0,
+            32.0
+          ]
+        }
+      ],
+      "reprojection_error_m": {
+        "mean": 2.3301868357491213,
+        "max": 8.626995404271243
+      }
+    }
+  ],
+  "frame_homographies": ".tmp\\testvideo_b95783a3\\frame_homographies.npz",
+  "motion_summary": {
+    "frames": 303,
+    "failed_pairs": 0,
+    "keyframe_drift_m": [
+      {
+        "from": 0,
+        "to": 150,
+        "drift_m": 3.61
+      },
+      {
+        "from": 150,
+        "to": 300,
+        "drift_m": 1.135
+      }
+    ]
+  }
+}

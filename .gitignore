@@ -1,0 +1,21 @@
+# Secrets
+.env
+credentials.json
+token.json
+
+# Disposable intermediates
+.tmp/
+runs/
+yolo_format/
+*.pt
+
+# External repo cloned alongside this one, not vendored
+yolo_finetune_utils/
+
+# Match footage (real player video, kept out of the repo)
+*.mp4
+outputs/videos/
+
+# Python
+__pycache__/
+*.pyc

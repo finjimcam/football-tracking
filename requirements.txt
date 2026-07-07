@@ -1,0 +1,9 @@
+ultralytics
+opencv-python
+matplotlib
+numpy
+pandas
+pyarrow
+python-dotenv
+ipyfilechooser
+git+https://github.com/Labellerr/SDKPython.git
