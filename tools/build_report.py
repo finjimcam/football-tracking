@@ -24,10 +24,26 @@ import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
-from _common import load_meta, match_dir, read_json
+import pandas as pd
+
+from _common import load_meta, match_config, match_dir, read_json
 
 PAGE = (8.27, 11.69)  # A4 portrait, inches
 TEAM_COLORS = {"team_a": "#d62728", "team_b": "#1f77b4"}
+
+
+def table_page(pdf, title, subtitle, header, rows, col_widths=None, font=8):
+    fig = plt.figure(figsize=PAGE)
+    fig.text(0.08, 0.94, title, fontsize=20, weight="bold")
+    fig.text(0.08, 0.915, subtitle, fontsize=9, color="0.35", va="top", linespacing=1.5)
+    ax = fig.add_axes([0.04, 0.04, 0.92, 0.82])
+    ax.axis("off")
+    tbl = ax.table(cellText=rows, colLabels=header, loc="upper center", cellLoc="left", colWidths=col_widths)
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(font)
+    tbl.scale(1, 1.35)
+    pdf.savefig(fig)
+    plt.close(fig)
 
 
 def optional(path):
@@ -54,7 +70,10 @@ def main():
 
     mdir = match_dir(args.match_id, args.tmp_dir)
     meta = load_meta(args.match_id, args.tmp_dir)
-    config = meta.get("config", {})
+    config = match_config(args.match_id, args.tmp_dir)
+    colors = {**TEAM_COLORS, **config.get("colors", {})}
+    verification = optional(mdir / "verification.json")
+    ref_csv = Path(args.outputs_dir) / "stats" / f"{args.match_id}_vs_reference.csv"
     possession = optional(mdir / "possession.json")
     positions = optional(mdir / "positions.json")
     physical = optional(mdir / "physical.json")
@@ -92,18 +111,24 @@ def main():
             fig = plt.figure(figsize=PAGE)
             fig.text(0.08, 0.92, "Possession", fontsize=20, weight="bold")
             ax = fig.add_axes([0.1, 0.62, 0.8, 0.12])
-            a, b = possession["team_a_pct"], possession["team_b_pct"]
-            ax.barh([0], [a], color=TEAM_COLORS["team_a"])
-            ax.barh([0], [b], left=[a], color=TEAM_COLORS["team_b"])
+            timed = possession.get("team_a_time_pct") is not None
+            a, b = ((possession["team_a_time_pct"], possession["team_b_time_pct"]) if timed
+                    else (possession["team_a_pct"], possession["team_b_pct"]))
+            ax.barh([0], [a], color=colors["team_a"])
+            ax.barh([0], [b], left=[a], color=colors["team_b"])
             ax.text(a / 2, 0, f"{names['team_a']}\n{a}%", ha="center", va="center", color="white", weight="bold")
             ax.text(a + b / 2, 0, f"{names['team_b']}\n{b}%", ha="center", va="center", color="white", weight="bold")
             ax.set_xlim(0, 100)
             ax.axis("off")
             fig.text(0.08, 0.52,
-                     f"Based on {possession['attributed_frames']} attributed of "
-                     f"{possession['ball_frames']} ball-detected frames "
+                     (f"Share of time each team held the ball (possession carried through ball dropouts for up to "
+                      f"{possession.get('max_hold_s', 8):g} s).\n"
+                      f"Ball-next-to-a-player frames only: {names['team_a']} {possession['team_a_pct']}% - "
+                      f"{names['team_b']} {possession['team_b_pct']}%.\n" if timed else "")
+                     + f"Based on {possession['attributed_frames']} attributed of "
+                     f"{possession['ball_frames']} ball-located frames "
                      f"({possession['possession_switches']} possession switches).\n"
-                     f"Ball detection rate: {possession['ball_detection_rate'] * 100:.1f}% of all frames.\n"
+                     f"Ball located in {possession['ball_detection_rate'] * 100:.1f}% of frames.\n"
                      f"Confidence: {possession['confidence'].upper()}",
                      fontsize=11, va="top", linespacing=1.8)
             if possession["confidence"] == "low":
@@ -134,6 +159,21 @@ def main():
         else:
             text_page(pdf, "Positions", ["Not computed — run tools/compute_positions.py."])
 
+        # --- Shape in / out of possession (identity pipeline) ---
+        phase_figs = [p for k, p in (positions or {}).get("figures", {}).items()
+                      if k.endswith("_by_phase") and Path(p).exists()]
+        if phase_figs:
+            fig = plt.figure(figsize=PAGE)
+            fig.text(0.08, 0.94, "Shape in and out of possession", fontsize=20, weight="bold")
+            fig.text(0.08, 0.915, "Average position of each player while his team had / didn't have the ball. "
+                                  "Names are role-inferred from the official lineup.", fontsize=9, color="0.35")
+            for i, p in enumerate(sorted(phase_figs)):
+                ax = fig.add_axes([0.03, 0.47 - i * 0.43, 0.94, 0.42])
+                ax.imshow(mpimg.imread(p))
+                ax.axis("off")
+            pdf.savefig(fig)
+            plt.close(fig)
+
         # --- Physical ---
         if physical:
             unit, sunit = physical["unit"], physical["speed_unit"]
@@ -157,13 +197,16 @@ def main():
             if per_player:
                 fig.text(0.08, 0.60, "Per player (roster identities; distance during untracked "
                          "gaps is missing — see coverage):", fontsize=11)
-                rows = [[f"#{p['number']}", names.get(p["team"], p["team"]),
+                pinfo = (player_map or {}).get("players", {})
+                robust = any(p.get("top_speed_p99") is not None for p in per_player)
+                rows = [[f"#{p['number']} {pinfo.get(p['player'], {}).get('name') or ''}".strip(),
+                         names.get(p["team"], p["team"]),
                          f"{p['distance']:,.0f} {unit}", f"{p['duration_s']:,.0f} s",
-                         f"{p['max_speed']} {sunit}", f"{p['coverage']:.0%}"]
-                        for p in per_player[:18]]
+                         f"{p['top_speed_p99'] if robust else p['max_speed']} {sunit}", f"{p['coverage']:.0%}"]
+                        for p in per_player[:22]]
                 tbl2 = ax2.table(cellText=rows,
                                  colLabels=["Player", "Team", "Distance", "Tracked time",
-                                            "Max speed", "Coverage"],
+                                            "Top speed (p99)" if robust else "Max speed", "Coverage"],
                                  loc="upper center", cellLoc="center")
             else:
                 fig.text(0.08, 0.60, "Top tracks by distance (best-effort: one player may span several track IDs):",
@@ -181,6 +224,54 @@ def main():
         else:
             text_page(pdf, "Physical", ["Not computed — run tools/compute_physical.py."])
 
+        # --- Identity verification (tools/verify_tracking.py) ---
+        if verification:
+            v = verification
+            stab = ", ".join(f"{names.get(t, t)} {s:.0%}" for t, s in (v.get("link_stability") or {}).items()
+                             if s is not None)
+            sep = v.get("role_separability", {})
+            sep_txt = ", ".join(f"{names.get(t, t)} {s['separability']}" for t, s in sep.items())
+            sub = (f"Window: {v['window']['minutes']} min. Identified detections "
+                   f"{v['identified_detection_fraction']:.0%}; mean outfield coverage "
+                   f"{v['mean_outfield_coverage']:.0%}.\n"
+                   f"Links stable under all perturbations: {stab}. "
+                   f"Hand-offs implying >8 m/s: {v['implausible_links']}/{v['total_links']}.\n"
+                   f"Opta events - possession agrees {v['events_possession_agree']}; named player is our player "
+                   f"on the ball {v['events_named_player_nearest_ball']} (team's 2 nearest "
+                   f"{v['events_named_player_near_ball_at_all']}). Role separability: {sep_txt} (<1 = mixing).\n"
+                   "Reading: identities hold over seconds-to-a-minute and stay within their team, but over the\n"
+                   "half they swap among rotating players (attackers, midfield) - treat per-player numbers and\n"
+                   "names as indicative; team-level numbers do not depend on identities.")
+
+            def pct_or_blank(x):
+                return "" if x is None or pd.isna(x) else f"{x:.0%}"
+
+            rows = [[p["player"], p.get("name") or "", f"{p['coverage']:.0%}", p["tracklets"], p["fragile_links"],
+                     p["implausible_links"], p["longest_unseen_s"], pct_or_blank(p.get("kit_consistency"))]
+                    for p in v["per_player"]]
+            table_page(pdf, "Identity verification", sub,
+                       ["Key", "Name (role-inferred)", "Coverage", "Tracklets", "Fragile links",
+                        "Implausible", "Longest unseen (s)", "Kit consistency"], rows)
+            ev = [[e["clock"], e["type"], names.get(e["team"], e["team"]), e.get("player") or "",
+                   "" if e.get("possession_ok") is None else ("yes" if e["possession_ok"] else "NO"),
+                   e.get("nearest_to_ball") or "",
+                   "" if e.get("named_player_hit") is None else ("yes" if e["named_player_hit"] else "no")]
+                  for e in v["events"]]
+            table_page(pdf, "Opta event checks",
+                       "Each published first-half event, mapped to video frames by the scoreboard clock sync.",
+                       ["Clock", "Event", "Team", "Opta player", "Possession agrees", "Our player nearest ball",
+                        "Named player hit"], ev)
+
+        # --- Comparison with published data (tools/compare_reference_stats.py) ---
+        if ref_csv.exists():
+            cmp = pd.read_csv(ref_csv).fillna("")
+            rows = [[r.metric, str(r.ours), str(r.reference), r.reference_scope] for r in cmp.itertuples()]
+            table_page(pdf, "Comparison with published data",
+                       "Published data is mostly FULL-MATCH; our window is the first half. "
+                       "Each row states what the reference covers.",
+                       ["Metric", "Ours", "Reference", "Reference scope"], rows,
+                       col_widths=[0.38, 0.1, 0.1, 0.42], font=7)
+
         # --- Data-quality appendix (always present) ---
         n_tracks = sum(1 for v in team_map.values() if v in ("team_a", "team_b"))
         n_unknown = sum(1 for v in team_map.values() if v == "unknown")
@@ -192,7 +283,19 @@ def main():
             f"Track fragmentation estimate: {frag}",
             "  (well above 1× means IDs fragmented; team totals stand, per-player numbers are best-effort)",
         ]
-        if player_map:
+        if player_map and "track_identities" in player_map.get("method", ""):
+            ignored = player_map.get("ignored_tracks", [])
+            stab = ", ".join(f"{names.get(t, t)} {s:.0%}" for t, s in (player_map.get("link_stability") or {}).items()
+                             if s is not None)
+            lines[1:4] = [
+                f"Identities: {len(player_map['players'])} persistent players",
+                f"  ({player_map['method'].split('(')[-1].rstrip(')')})",
+                f"  {player_map['identified_detection_fraction']:.0%} of on-pitch person detections identified;",
+                f"  {len(player_map.get('unidentified_tracks', []))} unlinked fragments; "
+                f"{len(ignored)} officials/off-pitch tracks excluded from all stats",
+                f"  links stable under perturbation: {stab}",
+            ]
+        elif player_map:
             ignored = player_map.get("ignored_tracks", [])
             n_user = sum(1 for i in ignored if i.get("reason") == "user")
             lines.insert(2, f"Curation: {len(player_map.get('players', {}))} identified players; "

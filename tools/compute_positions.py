@@ -5,6 +5,12 @@ Reads only pipeline artifacts, never the video.
 Positions are player foot-points in pitch meters when a calibration exists
 (with a pitch outline drawn on the figures), otherwise raw pixels, flagged.
 
+With identities (player_map.json) + possession_timeline.parquet
+(compute_possession.py) it also draws, per team, every player's average
+position IN vs OUT of possession (avg_positions_<team>_by_phase.png) with
+shape metrics - back-line height, team length and width - in positions.json
+"by_phase". Team colours come from the match config "colors" if present.
+
 Usage:
     python tools/compute_positions.py --match-id <match_id>
 """
@@ -16,9 +22,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 from _common import (PITCH_LENGTH, PITCH_WIDTH, apply_calibration, load_calibration,
-                     load_meta, load_player_map, load_team_map, load_tracks, match_dir,
+                     load_meta, load_player_map, load_team_map, load_tracks, match_config, match_dir,
                      resolve_track_teams, write_json)
 
 TEAM_COLORS = {"team_a": "#d62728", "team_b": "#1f77b4"}
@@ -61,6 +68,60 @@ def heatmap_figure(xy, title, unit, length, width, calibrated, out_path):
     ax.set_title(title + ("" if calibrated else "  [UNCALIBRATED — pixel coords]"))
     fig.savefig(out_path, dpi=130, bbox_inches="tight")
     plt.close(fig)
+
+
+def phase_figures(players, pm, timeline, cfg, length, width, fig_dir, figures):
+    """Per team: average position of every identified player in possession vs
+    out of possession (possession_timeline.parquet), one figure with two
+    panels, plus shape metrics. Returns {team: {phase: metrics}}."""
+    state = dict(zip(timeline["frame"].tolist(), timeline["state"].tolist()))
+    t2p = pm["track_to_player"]
+    info = pm["players"]
+    ident = players[players["track_id"].isin(list(t2p))].copy()
+    ident["state"] = ident["frame"].map(state)
+    names = {"team_a": cfg.get("team_a_name", "team_a"), "team_b": cfg.get("team_b_name", "team_b")}
+    colors = cfg.get("colors", TEAM_COLORS)
+    out = {}
+    for team in ("team_a", "team_b"):
+        other = "team_b" if team == "team_a" else "team_a"
+        sub_team = ident[ident["team"] == team]
+        gk_x = sub_team[sub_team["track_id"].map(lambda t: info[t2p[t]].get("role") == "GK")]["pitch_x"].median()
+        own_goal = 0.0 if gk_x < length / 2 else length
+        fig, axes = plt.subplots(1, 2, figsize=(17, 6))
+        out[team] = {}
+        for ax, (phase, holder) in zip(axes, (("in_possession", team), ("out_of_possession", other))):
+            sub = sub_team[sub_team["state"] == holder]
+            avg = sub.groupby("track_id")[["pitch_x", "pitch_y"]].mean()
+            draw_pitch(ax, length, width)
+            ax.scatter(avg["pitch_x"], avg["pitch_y"], s=170, color=colors.get(team, "#444"),
+                       edgecolors="black", zorder=3)
+            outfield, back = [], []
+            for tid, r in avg.iterrows():
+                p = info[t2p[tid]]
+                label = (p.get("name") or str(p["number"])).split(" ")[-1]
+                ax.annotate(label, (r["pitch_x"], r["pitch_y"]), xytext=(0, -14), textcoords="offset points",
+                            ha="center", fontsize=8, zorder=4)
+                if p.get("role") != "GK":
+                    outfield.append((r["pitch_x"], r["pitch_y"]))
+                    if str(p.get("role", "")).startswith("line1"):
+                        back.append(r["pitch_x"])
+            if outfield:
+                xy = np.array(outfield)
+                m = {"frames": int(sub["frame"].nunique()),
+                     "defensive_line_m_from_own_goal": round(float(abs(np.mean(back) - own_goal)), 1) if back else None,
+                     "avg_shape_length_m": round(float(np.ptp(xy[:, 0])), 1),
+                     "avg_shape_width_m": round(float(np.ptp(xy[:, 1])), 1)}
+                out[team][phase] = m
+                ax.set_title(f"{names[team]} {phase.replace('_', ' ')} - {m['frames'] / 25 / 60:.1f} min; "
+                             f"back line {m['defensive_line_m_from_own_goal']} m from goal, "
+                             f"avg-shape length {m['avg_shape_length_m']} m, width {m['avg_shape_width_m']} m", fontsize=9)
+        attack = "->" if own_goal == 0 else "<-"
+        fig.suptitle(f"{names[team]} average positions by phase (attacking {attack}); names role-inferred")
+        path = fig_dir / f"avg_positions_{team}_by_phase.png"
+        fig.savefig(path, dpi=120, bbox_inches="tight")
+        plt.close(fig)
+        figures[f"avg_positions_{team}_by_phase"] = str(path)
+    return out
 
 
 def main():
@@ -132,7 +193,15 @@ def main():
     plt.close(fig)
     figures["avg_positions"] = str(avg_path)
 
-    result = {"calibrated": calibrated, "unit": unit, "teams": teams, "figures": figures}
+    phase_shape = {}
+    tl_path = match_dir(args.match_id, args.tmp_dir) / "possession_timeline.parquet"
+    if pm and calibrated and tl_path.exists():
+        phase_shape = phase_figures(players, pm, pd.read_parquet(tl_path, columns=["frame", "state"]),
+                                    match_config(args.match_id, args.tmp_dir, args.config_dir),
+                                    length, width, fig_dir, figures)
+
+    result = {"calibrated": calibrated, "unit": unit, "teams": teams, "figures": figures,
+              "by_phase": phase_shape}
     out = write_json(match_dir(args.match_id, args.tmp_dir) / "positions.json", result)
     for team, t in teams.items():
         print(f"{team}: avg position ({t['avg_x']}, {t['avg_y']}) {unit}, {t['n_points']} points")

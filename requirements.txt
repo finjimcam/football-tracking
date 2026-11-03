@@ -4,6 +4,12 @@ matplotlib
 numpy
 pandas
 pyarrow
+scipy
+scikit-learn
+networkx
+av
+# Optional: Intel iGPU inference for tools/detect_frames.py (--device intel:gpu)
+openvino
 python-dotenv
 ipyfilechooser
 git+https://github.com/Labellerr/SDKPython.git

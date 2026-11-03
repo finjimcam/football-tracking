@@ -96,6 +96,8 @@ tool scripts:
 | Fine-tune YOLO on the dataset | [workflows/train_yolo_model.md](workflows/train_yolo_model.md) | `tools/train_yolo.py` |
 | Track players + draw trajectories on video | [workflows/track_and_visualize.md](workflows/track_and_visualize.md) | `tools/track_players.py` |
 | Generate a positional heatmap | [workflows/generate_heatmap.md](workflows/generate_heatmap.md) | `tools/generate_heatmap.py` |
+| Full match report from a match video (Veo-style clips, manual roster) | [workflows/generate_match_report.md](workflows/generate_match_report.md) + [workflows/curate_and_identify_players.md](workflows/curate_and_identify_players.md) | `tools/ingest_video.py` → … → `tools/build_report.py` |
+| **Broadcast/tactical-cam half: persistent identities for all 22, verification vs Opta, phase clips** | [workflows/track_identities.md](workflows/track_identities.md) | `tools/detect_frames.py`, `tools/calibrate_auto.py`, `tools/track_identities.py`, `tools/track_ball.py`, `tools/compute_possession.py`, `tools/verify_tracking.py`, `tools/compare_reference_stats.py`, `tools/render_tracking_video.py`, `tools/cut_phase_clips.py` |
 
 **Notes that apply across all of them:**
 - `tools/coco_to_yolo.py` depends on the external `yolo_finetune_utils` repo
@@ -108,6 +110,14 @@ tool scripts:
   and a default `TEAM_COLORS`; it's gitignored along with `.tmp/`, `runs/`,
   `yolo_format/`, and `*.pt` weights, all of which are regenerable
   intermediates per the File Structure convention above.
+- Hand-verified per-match inputs live in `config/`: `<id>_match.json`
+  (teams, kits, clock sync, analysis window), `<id>_reference.json`
+  (published Opta stats/lineups/events with sources), `<id>_calibration.json`.
+  `_common.match_config()` reads the live `_match.json` over meta.json's copy.
+- Shared helpers: `tools/_common.py` (paths, calibration, H.264 `VideoWriter`,
+  clock labels) and `tools/_pitch.py` (pitch-line model, PTZ camera geometry).
+- The disk on this machine runs near-full: check free space before long runs;
+  renders use H.264 (~5 MB/min) via PyAV.
 - `requirements.txt` lists the dependencies these tools need
   (`ultralytics`, `opencv-python`, the Labellerr SDK, etc.); a GPU-backed
   environment is required for training and for tracking/heatmap generation
