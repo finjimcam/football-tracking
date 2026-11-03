@@ -1,0 +1,24 @@
+s,clock,type,team,player,frame,possession_share,possession_ok,nearest_to_ball,named_player_hit,named_player_rank
+79,01:19,offside,team_b,Son,2809,1.0,True,,,
+236,03:56,goal,team_b,Kulusevski,6734,1.0,True,Kulusevski,True,1.0
+360,06:00,corner_won,team_a,,9834,0.81,True,,,
+457,07:37,shot,team_a,Foden,12259,1.0,True,De Bruyne,False,
+583,09:43,foul_won,team_a,Rodri,15409,0.0,False,,,
+827,13:47,corner_won,team_a,,21509,1.0,True,,,
+854,14:14,shot,team_a,Cancelo,22184,0.0,False,Laporte,False,
+859,14:19,shot,team_a,Bernardo Silva,22309,0.0,False,,,
+973,16:13,shot,team_a,Cancelo,25159,1.0,True,,,
+1112,18:32,offside,team_a,Cancelo,28634,1.0,True,,,
+1203,20:03,shot,team_a,Gundogan,30909,1.0,True,Laporte,False,7.0
+1253,20:53,corner_won,team_a,,32159,0.94,True,,,
+1277,21:17,shot,team_a,Cancelo,32759,1.0,True,Gundogan,False,
+1365,22:45,foul_won,team_a,Rodri,34959,0.0,False,,,
+1410,23:30,shot,team_a,Foden,36084,1.0,True,Bernardo Silva,False,2.0
+1460,24:20,shot,team_b,Emerson Royal,37334,1.0,True,Bentancur,False,6.0
+1799,29:59,shot,team_a,Gundogan,45809,1.0,True,,,
+1828,30:28,foul_won,team_b,Emerson Royal,46534,0.92,True,Kulusevski,False,9.0
+1968,32:48,goal,team_a,Gundogan,50034,1.0,True,De Bruyne,False,4.0
+2175,36:15,shot,team_a,Cancelo,55209,1.0,True,Foden,False,5.0
+2270,37:50,foul_won,team_b,Sessegnon,57584,1.0,True,,,
+2475,41:15,shot,team_a,Sterling,62709,0.0,False,Rodri,False,5.0
+2778,46:18,offside,team_b,Kane,70284,1.0,True,,,
