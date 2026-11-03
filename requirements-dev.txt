@@ -1,0 +1,13 @@
+# Test/CI environment (pytest + the numpy/OpenCV stages). Deliberately no
+# torch/ultralytics: detection is the only stage that needs them and the
+# tests exercise everything downstream of it on synthetic data.
+numpy==2.2.3
+pandas==2.2.3
+pyarrow==24.0.0
+scipy==1.15.3
+scikit-learn==1.7.0
+networkx==3.5
+matplotlib==3.10.1
+opencv-python-headless==5.0.0.93
+av==18.1.0
+pytest==8.3.5

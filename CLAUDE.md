@@ -118,6 +118,11 @@ tool scripts:
   clock labels) and `tools/_pitch.py` (pitch-line model, PTZ camera geometry).
 - The disk on this machine runs near-full: check free space before long runs;
   renders use H.264 (~5 MB/min) via PyAV.
+- Tests: `pip install -r requirements-dev.txt && pytest -q` (~15 s; synthetic
+  data, no videos or torch needed). CI runs the same on every push/PR
+  (`.github/workflows/tests.yml`). Add a test when changing a tool's logic.
+- Docker (CPU): `docker build -t football-tracking .` then mount the repo at
+  `/app`; `.env` is excluded from the image by `.dockerignore`.
 - `requirements.txt` lists the dependencies these tools need
   (`ultralytics`, `opencv-python`, the Labellerr SDK, etc.); a GPU-backed
   environment is required for training and for tracking/heatmap generation

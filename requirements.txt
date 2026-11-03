@@ -1,15 +1,21 @@
-ultralytics
-opencv-python
-matplotlib
-numpy
-pandas
-pyarrow
-scipy
-scikit-learn
-networkx
-av
+# Pinned to the versions the pipeline was verified with (2026-11-03, Python 3.13).
+# CPU-only machines: install torch from https://download.pytorch.org/whl/cpu
+# (the Dockerfile does this) - the default Linux wheel bundles CUDA.
+ultralytics==8.4.89
+torch==2.12.1
+torchvision==0.27.1
+opencv-python==5.0.0.93
+matplotlib==3.10.1
+numpy==2.2.3
+pandas==2.2.3
+pyarrow==24.0.0
+scipy==1.15.3
+scikit-learn==1.7.0
+networkx==3.5
+av==18.1.0
+python-dotenv==1.0.1
 # Optional: Intel iGPU inference for tools/detect_frames.py (--device intel:gpu)
-openvino
-python-dotenv
+openvino==2026.4.1
+# Notebook / Labellerr annotation stage only (not part of the verified environment)
 ipyfilechooser
 git+https://github.com/Labellerr/SDKPython.git
