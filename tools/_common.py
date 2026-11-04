@@ -18,6 +18,7 @@ Not a CLI tool. Owns the artifact layout so every stage agrees on paths:
 """
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -32,13 +33,17 @@ OUTPUTS_DIR = Path("outputs")
 
 def compute_match_id(video_path):
     """Video file stem + first 8 chars of the file's SHA-1 (per the workflow,
-    so the same file always maps to the same ID)."""
+    so the same file always maps to the same ID). Characters outside
+    [A-Za-z0-9_-] in the stem become '_' so IDs are shell/path-safe
+    ("Man City vs Spurs.mp4" -> "Man_City_vs_Spurs_<sha>"); stems that were
+    already clean (testvideo, synthetic_match) keep their old IDs."""
     video_path = Path(video_path)
     sha1 = hashlib.sha1()
     with open(video_path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             sha1.update(chunk)
-    return f"{video_path.stem}_{sha1.hexdigest()[:8]}"
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", video_path.stem).strip("_")
+    return f"{stem}_{sha1.hexdigest()[:8]}"
 
 
 def match_dir(match_id, tmp_root=TMP_ROOT, create=False):
@@ -206,6 +211,81 @@ def load_calibration(match_id, config_dir=CONFIG_DIR, path=None):
     raise SystemExit(f"{path}: unknown calibration mode '{mode}'")
 
 
+class VideoWriter:
+    """MP4 writer: H.264 via PyAV (libx264) when available, else OpenCV mp4v.
+
+    H.264 matters for disk: a 720p render is ~5 MB/min at crf 26 versus
+    several times that for mp4v, and a full half is ~47 minutes. Feed BGR
+    uint8 frames of exactly (width, height)."""
+
+    def __init__(self, path, fps, width, height, crf=26, preset="veryfast"):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.width, self.height = int(width) // 2 * 2, int(height) // 2 * 2  # yuv420 needs even dims
+        try:
+            import av  # noqa: F401
+            from fractions import Fraction
+            self._av = av
+            self._out = av.open(str(self.path), "w")
+            self._stream = self._out.add_stream("libx264", rate=Fraction(fps).limit_denominator(1000))
+            self._stream.width, self._stream.height = self.width, self.height
+            self._stream.pix_fmt = "yuv420p"
+            self._stream.options = {"crf": str(crf), "preset": preset}
+            self.codec = "h264"
+        except Exception:
+            import cv2
+            self._av = None
+            self._cv = cv2.VideoWriter(str(self.path), cv2.VideoWriter_fourcc(*"mp4v"), fps,
+                                       (self.width, self.height))
+            if not self._cv.isOpened():
+                raise SystemExit(f"Could not open a video writer for {self.path}")
+            self.codec = "mp4v"
+
+    def write(self, frame_bgr):
+        if frame_bgr.shape[1] != self.width or frame_bgr.shape[0] != self.height:
+            frame_bgr = frame_bgr[:self.height, :self.width]
+        if self._av is None:
+            self._cv.write(frame_bgr)
+            return
+        vf = self._av.VideoFrame.from_ndarray(np.ascontiguousarray(frame_bgr), format="bgr24")
+        for pkt in self._stream.encode(vf):
+            self._out.mux(pkt)
+
+    def close(self):
+        if self._av is None:
+            self._cv.release()
+            return
+        for pkt in self._stream.encode():
+            self._out.mux(pkt)
+        self._out.close()
+
+
+def match_config(match_id, tmp_root=TMP_ROOT, config_dir=CONFIG_DIR):
+    """Match config (team names, kits, periods, clock sync). Prefers the live
+    config/<match_id>_match.json - the hand-maintained source of truth - over
+    the copy ingest_video.py froze into meta.json."""
+    live = Path(config_dir) / f"{match_id}_match.json"
+    if live.exists():
+        return read_json(live)
+    return load_meta(match_id, tmp_root).get("config", {})
+
+
+def reference_path(match_id, config_dir=CONFIG_DIR):
+    """Published match facts (lineups, Opta stats, timestamped events)."""
+    return Path(config_dir) / f"{match_id}_reference.json"
+
+
+def clock_label(frame, cfg, fps=25.0):
+    """Match clock 'MM:SS' for a video frame using config clock_sync, or None."""
+    sync = cfg.get("clock_sync") if cfg else None
+    if not sync:
+        return None
+    s = (frame - sync["kickoff_frame"]) / sync.get("fps", fps)
+    if s < 0:
+        return None
+    return f"{int(s // 60):02d}:{int(s % 60):02d}"
+
+
 def pitch_dims(calib):
     """(length, width) in meters — the calibration's own dims when it has
     them (calibrate_pitch.py stores the user-entered size), else FIFA default."""
@@ -241,10 +321,15 @@ def apply_calibration(df, calib, cols=("foot_x", "foot_y"), out_cols=("pitch_x",
         frame_index, frame_H = calib["frame_index"], calib["frame_H"]
         pos = np.searchsorted(frame_index, df["frame"].to_numpy())
         pos = np.clip(pos, 0, len(frame_index) - 1)
+        # Vectorized per-row homography, chunked to bound memory. (The old
+        # per-frame loop rescanned every row for every frame - O(frames x
+        # rows), fine for a 300-frame clip, ~10^11 ops for a 70k-frame half.)
         proj = np.empty_like(xy)
-        for p in np.unique(pos):
-            sel = pos == p
-            proj[sel] = project_points(frame_H[p], xy[sel])
+        for s in range(0, len(xy), 500_000):
+            e = min(s + 500_000, len(xy))
+            h = np.einsum("nij,nj->ni", frame_H[pos[s:e]],
+                          np.column_stack([xy[s:e], np.ones(e - s)]))
+            proj[s:e] = h[:, :2] / h[:, 2:3]
     else:
         proj = project_points(calib["homography"], xy)
     df[out_cols[0]] = proj[:, 0]

@@ -15,6 +15,9 @@ yolo_finetune_utils/
 # Match footage (real player video, kept out of the repo)
 *.mp4
 outputs/videos/
+# Frames/crops cut from match footage (verification contact sheets) - same policy
+outputs/verification/**/*.jpg
+outputs/verification/**/*.png
 
 # Python
 __pycache__/
