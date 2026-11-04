@@ -24,6 +24,7 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 13px; }
 a { color: var(--link); }
 a:hover { color: #A9CBFF; }
@@ -191,6 +192,23 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .scroll::-webkit-scrollbar, .log::-webkit-scrollbar { width: 8px; height: 8px; }
 .scroll::-webkit-scrollbar-thumb, .log::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 4px; }
 
+/* lines picker */
+.lines-side { flex: 1 1 300px; max-width: 360px; }
+.lines-list { max-height: 60vh; overflow: auto; }
+.lines-stage { position: relative; width: 100%; background: #0B0D10; border-radius: 6px; overflow: hidden; }
+.lines-img, .lines-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.lines-svg { cursor: crosshair; touch-action: manipulation; }
+.ov-box { fill: none; stroke: #B4BAC4; stroke-opacity: 0.7; stroke-width: 1.2; }
+.ov-label { font: 700 16px var(--sans); text-anchor: middle; paint-order: stroke; stroke: #0E1013; stroke-width: 3px; }
+.lines-strip { width: 100%; display: block; border-radius: 4px; cursor: pointer; touch-action: none; }
+.lines-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.lines-tools .btn { min-width: 44px; min-height: 36px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { display: inline-block; width: 12px; height: 8px; border-radius: 2px; }
+.mini-select { height: 30px; background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; color: var(--text); padding: 0 6px; }
+button.job-row { font: inherit; cursor: pointer; }
+
 @media (max-width: 640px) {
   .topbar { padding: 8px 12px; gap: 8px 10px; }
   .tabs { order: 10; width: 100%; overflow-x: auto; flex-wrap: nowrap; }
@@ -198,4 +216,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .stage-row { grid-template-columns: 22px minmax(0, 1fr); }
   .stage-actions { grid-column: 2; justify-content: flex-start; }
   .stage-form { padding-left: 14px; }
+  .lines-side { max-width: none; }
+  .lines-list { max-height: 30vh; }
 }

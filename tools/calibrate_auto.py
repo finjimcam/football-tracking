@@ -496,7 +496,7 @@ def main():
         "global_searches": searches,
     }
     calib["mode"] = "dynamic"
-    calib["frame_homographies"] = str(npz_path)
+    calib["frame_homographies"] = Path(npz_path).as_posix()  # same on Windows and Linux
     calib["camera_model"] = {
         "method": "fixed-position PTZ, per-frame chamfer snap to pitch lines (tools/calibrate_auto.py)",
         "C": [round(float(v), 3) for v in cam.C], "roll_deg": round(math.degrees(cam.roll), 4),
