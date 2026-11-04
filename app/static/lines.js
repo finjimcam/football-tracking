@@ -12,6 +12,7 @@ const KEYS_HELP = [
   ['c', 'clear picks'], ['p', 'previous phase'],
   ['[ / ]', 'clip export: start / end the clip here'], ['e', 'clip export: keep / drop this phase'],
   ['i / Identify mode', 'click a player, or drag a box round an unidentified one, then pick who it is'],
+  ['Shift-click / long-press', 'change who a player is without leaving line picking'],
 ];
 const STRIP_ROW = 12;
 const COL = { seen: '#5DBB63', filled: '#E8A33A', lost: '#7A2E2E', link: '#FFFFFF', head: '#FFD84D' };
@@ -83,7 +84,7 @@ export async function viewLines(view, parts, params, ui) {
   const btn = (label, aria, fn, cls) => h('button', { type: 'button', class: 'btn small ' + (cls || ''), 'aria-label': aria, onclick: fn }, label);
   const playBtn = btn('▶', 'Play', () => togglePlay());
   const MODE_HELP = {
-    pick: '',
+    pick: 'Shift-click (or long-press) a player to change who they are.',
     relink: 'Re-link: tap the player a lost (red/amber) chain should continue on.',
     swap: 'Fix swap: tap the chain that jumped to the wrong player (or its B/M row in the strip), then tap the right player.',
     identify: 'Identify: click a player, or drag a box round one with no number (?), then pick who it is.',
@@ -192,7 +193,7 @@ export async function viewLines(view, parts, params, ui) {
     return n ? { label: String(n.number), full: `${n.number} ${n.name || ''}`.trim(), manual: n.manual } : null;
   };
   function drawIdPanel() {
-    idPanel.hidden = !(st.mode === 'identify' && st.idBox);
+    idPanel.hidden = !st.idBox || st.idBox.dragging;
     if (idPanel.hidden) return;
     const cur = st.idBox.tid != null ? nameOf(st.idBox.tid) : null;
     idPanel.replaceChildren(
@@ -267,7 +268,7 @@ export async function viewLines(view, parts, params, ui) {
             h('div', { class: 'spacer' }), applyBtn),
           anchorList,
           h('div', { class: 'muted', style: 'font-size:12px;line-height:1.4' },
-            'Tell the tracker who players are: Identify mode, then click a player or drag a box round one with no number. ',
+            'Tell the tracker who players are: Shift-click (or long-press) a player while picking lines, or use Identify mode to click a player or drag a box round one with no number. ',
             'Apply to tracking re-runs Track identities (about 3 min) so the names, stats and paths for the whole match use your picks.')),
         h('details', {}, h('summary', { class: 'muted', style: 'cursor:pointer' }, 'Controls'),
           h('dl', { class: 'kv', style: 'margin-top:8px' }, KEYS_HELP.flatMap(([k, v]) => [h('dt', {}, k), h('dd', { style: 'font-family:var(--sans)' }, v)]))),
@@ -418,15 +419,19 @@ export async function viewLines(view, parts, params, ui) {
         overlay.append(svg('rect', { x: a.box[0] - 3, y: a.box[1] - 3, width: a.box[2] - a.box[0] + 6, height: a.box[3] - a.box[1] + 6,
           fill: 'none', stroke: '#FFD84D', 'stroke-width': 3 }));
       }
-      if (st.idBox) {
-        const b = st.idBox.box;
-        overlay.append(svg('rect', { x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1], fill: 'rgba(255,216,77,0.12)', stroke: '#FFD84D', 'stroke-width': 2, 'stroke-dasharray': '6 4' }));
-      }
     } else {
       for (const r of rows) {
         if (taken.has(r[0])) continue;
         overlay.append(svg('rect', { x: r[1], y: r[2], width: r[3] - r[1], height: r[4] - r[2], class: 'ov-box' }));
+        const nm = nameOf(r[0]); // who the tracker thinks this is, small and dim
+        const t = svg('text', { x: (r[1] + r[3]) / 2, y: r[2] - 5, class: 'ov-num', fill: nm ? (nm.manual ? '#FFD84D' : '#FFFFFF') : '#EF5B5B' });
+        t.textContent = nm ? nm.label : '?';
+        overlay.append(t);
       }
+    }
+    if (st.idBox) {
+      const b = st.idBox.box;
+      overlay.append(svg('rect', { x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1], fill: 'rgba(255,216,77,0.12)', stroke: '#FFD84D', 'stroke-width': 2, 'stroke-dasharray': '6 4' }));
     }
     const byLine = { back: [], mid: [] };
     st.chains.forEach((ch, ci) => {
@@ -442,6 +447,12 @@ export async function viewLines(view, parts, params, ui) {
           'stroke-width': s === 'f' ? 1.5 : 2.5, 'stroke-dasharray': s === 'f' ? '4 4' : null }));
         const t = svg('text', { x: fx, y: fy - 22, class: 'ov-label', fill: color });
         t.textContent = (ch.line === 'back' ? 'B' : 'M') + (s === 'f' ? '~' : s === 'l' ? '*' : '');
+        const nm = s !== 'f' ? nameOf(p[0]) : null; // the shirt number of the player the chain is on
+        if (nm) {
+          const n = svg('tspan', { dx: 4, fill: nm.manual ? '#FFD84D' : '#FFFFFF', class: 'ov-chain-num' });
+          n.textContent = nm.label;
+          t.append(n);
+        }
         overlay.append(t);
       }
       byLine[ch.line].push([py, fx, fy]);
@@ -586,9 +597,31 @@ export async function viewLines(view, parts, params, ui) {
     drag = null;
     if (dragged && st.idBox) { stopPlay(); st.idBox.dragging = false; drawIdPanel(); draw(); }
   });
+  function askWho(x, y) {
+    const tid = hitTest(x, y);
+    const r = ((st.phase && st.phase.rows[st.cur]) || []).find((row) => row[0] === tid);
+    if (!r) { msg.textContent = 'No tracked box there. Use Identify mode (i) to drag a box round the player.'; return; }
+    st.idBox = { box: [r[1], r[2], r[3], r[4]], tid };
+    drawIdPanel(); draw();
+    msg.textContent = 'Who is this? Pick a name under the video.';
+  }
+  // long-press (touch) = shift-click: change who a player is without leaving line picking
+  let press = null, pressed = false;
+  overlay.addEventListener('pointerdown', (ev) => {
+    if (st.mode === 'identify' || ev.button !== 0 || ev.pointerType === 'mouse') return;
+    const at = toVideo(ev);
+    pressed = false;
+    press = setTimeout(() => { press = null; pressed = true; stopPlay(); askWho(...at); }, 550);
+  });
+  const endPress = () => { if (press) { clearTimeout(press); press = null; } };
+  overlay.addEventListener('pointerup', endPress);
+  overlay.addEventListener('pointercancel', endPress);
+  overlay.addEventListener('pointermove', (ev) => { if (press && ev.pointerType !== 'mouse' && (Math.abs(ev.movementX) + Math.abs(ev.movementY) > 6)) endPress(); });
   overlay.addEventListener('click', (ev) => {
     stopPlay();
     const [x, y] = toVideo(ev);
+    if (pressed) { pressed = false; return; }
+    if (ev.shiftKey && st.mode !== 'identify') { askWho(x, y); return; }
     if (st.mode === 'identify') {
       if (dragged) { dragged = false; return; }
       const tid = hitTest(x, y);
@@ -618,6 +651,9 @@ export async function viewLines(view, parts, params, ui) {
     ev.preventDefault();
     stopPlay();
     const [x, y] = toVideo(ev);
+    if (press || (ev.pointerType && ev.pointerType !== 'mouse')) { // a touch long-press, not a right-click
+      endPress(); pressed = true; askWho(x, y); return;
+    }
     const tid = hitTest(x, y);
     if (tid != null) edit('relink', st.cur, tid);
   });
@@ -659,7 +695,7 @@ export async function viewLines(view, parts, params, ui) {
     else if (k === '[') setExport(st.phase.start, { trim_in: st.cur });
     else if (k === ']') setExport(st.phase.start, { trim_out: st.cur });
     else if (k === 'e') { const ex = curExport(); if (ex) setExport(st.phase.start, { keep: !ex.keep }); }
-    else if (k === 'Escape') setMode('pick');
+    else if (k === 'Escape') { if (st.idBox && st.mode !== 'identify') { st.idBox = null; drawIdPanel(); draw(); } else setMode('pick'); }
     else return;
     ev.preventDefault();
   };

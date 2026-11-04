@@ -52,7 +52,11 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   Identify mode every box shows its tracked shirt number: white is
   role-inferred, gold is set by you, and a red **?** means unidentified.
   Click a player, or drag a box round one the tracker missed, then pick a
-  name from the lineup (`config/<id>_reference.json`). Each pick is an
+  name from the lineup (`config/<id>_reference.json`). You can also do it while
+  picking lines: Shift-click (or long-press on a phone) a player to open the same
+  name picker without leaving Pick mode. In Pick mode each B/M marker shows the
+  shirt number of the player it's on (gold if you set it), and unpicked
+  players show a small number (red **?** if unidentified). Each pick is an
   *anchor*, saved to `config/<id>_identity_anchors.json` (frame plus the
   detection's box). **Apply to tracking** queues *Track identities* with
   cached tracklets (about 3 min). That run names each identity chain after
