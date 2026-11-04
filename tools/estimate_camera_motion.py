@@ -252,7 +252,7 @@ def main():
                         inliers=np.array(inlier_counts), failed=np.array(failed, dtype=int))
 
     calib["mode"] = "dynamic"
-    calib["frame_homographies"] = str(npz_path)
+    calib["frame_homographies"] = Path(npz_path).as_posix()  # same on Windows and Linux
     calib["motion_summary"] = {
         "frames": n,
         "failed_pairs": len(failed),

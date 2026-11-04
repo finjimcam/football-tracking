@@ -46,7 +46,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from _common import load_meta, match_dir, read_json, write_json
+from _common import Progress, load_meta, match_dir, read_json, write_json
 
 PERSON_CLASS = 0        # COCO person
 SPORTS_BALL_CLASS = 32  # COCO sports ball
@@ -62,6 +62,24 @@ def model_input_size(width, height, imgsz):
     with the long side = imgsz. 1280x720 @ 1280 -> (736, 1280)."""
     scale = imgsz / max(width, height)
     return (int(math.ceil(height * scale / 32) * 32), int(math.ceil(width * scale / 32) * 32))
+
+
+def resolve_device(device):
+    """'auto' -> '0' with CUDA (e.g. the pphub GTX 1060), else 'intel:gpu'
+    when OpenVINO is installed (the dev laptop's iGPU), else 'cpu'."""
+    if device != "auto":
+        return device
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "0"
+    except ImportError:
+        pass
+    try:
+        import openvino  # noqa: F401
+        return "intel:gpu"
+    except ImportError:
+        return "cpu"
 
 
 def load_model(weights, device, input_hw):
@@ -145,8 +163,9 @@ def main():
     parser.add_argument("--weights", default="yolo26n.pt",
                         help="YOLO weights (auto-downloaded by ultralytics if missing). yolo26n was "
                              "picked on this footage: same person recall as yolov8n, ~2x the ball hits")
-    parser.add_argument("--device", default="intel:gpu",
-                        help="intel:gpu / intel:cpu (OpenVINO), cpu, or a CUDA index")
+    parser.add_argument("--device", default="auto",
+                        help="auto (CUDA if available, else intel:gpu if OpenVINO is installed, "
+                             "else cpu), intel:gpu / intel:cpu (OpenVINO), cpu, or a CUDA index")
     parser.add_argument("--imgsz", type=int, default=1280, help="Long side of the inference size")
     parser.add_argument("--person-conf", type=float, default=0.10)
     parser.add_argument("--ball-conf", type=float, default=0.05)
@@ -154,6 +173,7 @@ def main():
     parser.add_argument("--limit", type=int, default=None, help="Only process this many frames (testing)")
     parser.add_argument("--tmp-dir", default=".tmp")
     args = parser.parse_args()
+    args.device = resolve_device(args.device)
 
     meta = load_meta(args.match_id, args.tmp_dir)
     video = args.video or meta["video"]
@@ -184,6 +204,7 @@ def main():
         pos = todo[0][0]
         t_start, done = time.time(), 0
         total = sum(c1 - c0 + 1 for c0, c1 in todo)
+        prog = Progress(total, "detecting")
         for c0, c1 in todo:
             if pos != c0:  # skip over an already-finished chunk
                 cap.set(cv2.CAP_PROP_POS_FRAMES, c0)
@@ -199,6 +220,7 @@ def main():
                                     conf=conf, verbose=False, device=args.device)[0]
                 rows.extend(frame_rows(res, fi, fps, frame, args.person_conf))
                 done += 1
+                prog.update(done)
                 if done % 500 == 0:
                     el = time.time() - t_start
                     rate = done / el
@@ -212,6 +234,7 @@ def main():
             df.to_parquet(tmp, index=False)
             tmp.replace(final)
         cap.release()
+        prog.done()
         elapsed = time.time() - t_start
     else:
         elapsed = 0.0

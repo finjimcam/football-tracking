@@ -95,7 +95,8 @@ def create_app(root, runner=None, busy_check=None):
             stage = catalog.get_stage(req.stage)
             match = _match_or_404(req.match_id or "") if stage.per_match else {}
             args = catalog.build_args(stage, req.params, match_id=req.match_id,
-                                      videos_dir=root / "videos", meta_video=match.get("video"))
+                                      videos_dir=root / "videos", meta_video=match.get("video"),
+                                      config_dir=root / "config")
         except catalog.ParamError as e:
             raise HTTPException(400, str(e)) from None
         return runner.submit(stage, args, match_id=req.match_id if stage.per_match else None,

@@ -28,13 +28,24 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
 - **Code / Review / Sorter / Matrix / Present** tabs are placeholders that
   link to the issues that will build them (#3, #1, #4, #11, #12).
 
+## Two pipelines
+A match whose `config/<id>_match.json` exists gets the **broadcast** pipeline
+([workflows/track_identities.md](../workflows/track_identities.md)): detect,
+automatic calibration, identities, ball, possession, then phase clips and the
+picked-lines render. Every other match gets the **match report** pipeline.
+When a video is ingested, a `config/<stem>_<sha8>_match.json` with the
+matching name is passed in automatically. `detect_frames.py --device auto`
+uses CUDA when it's available, so it runs on pphub's GTX 1060.
+
 ## How jobs run (`app/jobs.py`)
 - Each job runs one subprocess, `python -u tools/<tool> <args>`, from the repo
   root. Args come only from `app/catalog.py`: the browser can pick which
   stage to run and fill in that stage's own options, but can't add other
   flags, and video paths have to point inside `videos/`.
-- **Heavy** stages (tracking, camera motion, rendering) run one at a time
-  under `nice -n 10 ionice -c3`. If you start the app with `--busy-check`,
+- **Heavy** stages run under `nice -n 10 ionice -c3` in two lanes: GPU
+  (tracking, detection, rendering) and CPU (automatic calibration,
+  identities, verification, phase clips). Each lane runs one job at a time,
+  so the CPU lane can run alongside the GPU one. If you start the app with `--busy-check`,
   they also wait while that command exits 0 (for example, while
   Jellyfin/Kodi is playing). Use **Run now** to start one anyway. Light
   stages run two at a time.

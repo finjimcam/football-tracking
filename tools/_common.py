@@ -235,7 +235,7 @@ def load_calibration(match_id, config_dir=CONFIG_DIR, path=None):
         raise SystemExit(f"{path} has keyframes but no per-frame homographies yet — "
                          "run tools/estimate_camera_motion.py first")
     if mode == "dynamic":
-        npz_path = Path(calib["frame_homographies"])
+        npz_path = Path(str(calib["frame_homographies"]).replace("\\", "/"))  # written on Windows too
         if not npz_path.exists():
             raise SystemExit(f"{npz_path} (referenced by {path}) not found — "
                              ".tmp may have been cleared; re-run tools/estimate_camera_motion.py")
