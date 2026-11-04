@@ -216,3 +216,32 @@ def test_cut_anchor_semantics():
     from cut_phase_clips import norm_anchors
     assert norm_anchors([[50, 2, 1], [10, 1], [50, 9]]) == [[10, 1], [50, 2, 1]]
     assert norm_anchors([(10, 1), (5, 2)]) == [[5, 2], [10, 1]]
+
+
+def test_chains_never_share_a_track():
+    """Two picked defenders both lose their tracks at frame 50; one fresh track
+    (id 9) appears next to defender A. Without exclusivity both chains hand
+    off onto it and draw two markers on one player."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    from types import SimpleNamespace as R
+
+    from cut_phase_clips import build_chains
+
+    def row(tid, px, py):
+        return R(track_id=tid, pitch_x=px, pitch_y=py, foot_x=px * 10, foot_y=py * 10)
+
+    rows_idx = {}
+    for f in range(0, 101):
+        cur = {}
+        if f < 50:
+            cur[1] = row(1, 20.0, 10.0)
+            cur[2] = row(2, 20.0, 12.0)
+        elif f >= 52:
+            cur[9] = row(9, 20.2, 10.5)   # A again, under a fresh id
+        rows_idx[f] = cur
+    slots = [{"line": "back", "anchors": [[10, 1]]}, {"line": "back", "anchors": [[10, 2]]}]
+    chains = build_chains(rows_idx, slots, 0, 100, 25, None)
+    on9 = [i for i, ch in enumerate(chains) if ch["raw"].get(80, (None,))[0] == 9]
+    assert on9 == [0]  # only A's chain (closer) takes track 9
+    assert chains[1]["raw"].get(80) is None
+    assert build_chains(rows_idx, slots, 0, 100, 25, None, max_rounds=0)[1]["raw"][80][0] == 9  # the old bug
