@@ -38,7 +38,7 @@ from pathlib import Path
 import cv2
 import pandas as pd
 
-from _common import compute_match_id, match_dir, read_json
+from _common import Progress, compute_match_id, match_dir, read_json
 
 PERSON_CLASS = 0       # COCO `person`
 SPORTS_BALL_CLASS = 32  # COCO `sports ball`
@@ -80,28 +80,34 @@ def rows_from_boxes(res, frame_idx, class_name, fps, with_ids):
     return rows
 
 
-def track_pass(model, video, class_id, class_name, fps, conf, imgsz, tracker, device):
+def track_pass(model, video, class_id, class_name, fps, conf, imgsz, tracker, device, frame_count=0):
     """Tracking pass (players): boxes come back with persistent track IDs."""
     rows = []
+    prog = Progress(frame_count, "player pass")
     results = model.track(
         source=str(video), classes=[class_id], conf=conf, imgsz=imgsz,
         tracker=str(tracker), persist=True, stream=True, verbose=False, device=device,
     )
     for frame_idx, res in enumerate(results):
         rows.extend(rows_from_boxes(res, frame_idx, class_name, fps, with_ids=True))
+        prog.update(frame_idx + 1)
+    prog.done()
     return rows
 
 
-def detect_pass(model, video, class_id, class_name, fps, conf, imgsz, device):
+def detect_pass(model, video, class_id, class_name, fps, conf, imgsz, device, frame_count=0):
     """Detection-only pass (ball): no tracker, so nothing below a tracker's
     new_track_thresh gets silently dropped. track_id is -1 on every row."""
     rows = []
+    prog = Progress(frame_count, "ball pass")
     results = model.predict(
         source=str(video), classes=[class_id], conf=conf, imgsz=imgsz,
         stream=True, verbose=False, device=device,
     )
     for frame_idx, res in enumerate(results):
         rows.extend(rows_from_boxes(res, frame_idx, class_name, fps, with_ids=False))
+        prog.update(frame_idx + 1)
+    prog.done()
     return rows
 
 
@@ -153,7 +159,7 @@ def main():
           f"imgsz {args.imgsz}, tracker {tracker})...")
     player_model = YOLO(args.player_weights)
     player_rows = track_pass(player_model, video, PERSON_CLASS, "player", fps,
-                             args.conf, args.imgsz, tracker, args.device)
+                             args.conf, args.imgsz, tracker, args.device, frame_count)
 
     ball_weights = args.ball_weights or args.player_weights
     ball_class = args.ball_class if args.ball_class is not None else (
@@ -161,7 +167,7 @@ def main():
     print(f"[{match_id}] ball pass ({ball_weights}, class {ball_class}, imgsz {args.imgsz}, detect-only)...")
     ball_model = YOLO(ball_weights)
     ball_rows = detect_pass(ball_model, video, ball_class, "ball", fps,
-                            args.ball_conf, args.imgsz, args.device)
+                            args.ball_conf, args.imgsz, args.device, frame_count)
 
     df = pd.DataFrame(player_rows + ball_rows,
                       columns=["frame", "t_s", "track_id", "class",

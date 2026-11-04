@@ -36,7 +36,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from _common import OUTPUTS_DIR, ignored_track_ids, load_meta, load_player_map, load_tracks
+from _common import OUTPUTS_DIR, Progress, ignored_track_ids, load_meta, load_player_map, load_tracks
 
 UNKNOWN_COLOR = (160, 160, 160)
 IGNORED_COLOR = (90, 90, 90)
@@ -156,7 +156,9 @@ def main():
     trails = defaultdict(lambda: deque(maxlen=max(trail_n, 1)))  # player key -> foot points
 
     n_written = 0
+    prog = Progress(end_f - start_f + 1, "rendering")
     for frame_idx in range(start_f, end_f + 1):
+        prog.update(frame_idx - start_f)
         ok, canvas = cap.read()
         if not ok:
             print(f"WARNING: video ended early at frame {frame_idx}")
@@ -208,6 +210,7 @@ def main():
 
     cap.release()
     writer.release()
+    prog.done()
     print(f"Wrote {out_path} ({n_written} frames @ {fps:g} fps, {size[0]}x{size[1]})")
 
 

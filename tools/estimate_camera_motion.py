@@ -36,7 +36,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from _common import (calibration_path, load_meta, match_dir, project_points,
+from _common import (Progress, calibration_path, load_meta, match_dir, project_points,
                      read_json, write_json)
 
 MIN_PAIR_INLIERS = 15
@@ -187,6 +187,7 @@ def main():
     H_back = [np.eye(3)]
     inlier_counts = [0]
     failed = []
+    prog = Progress(frame_count, "camera motion")
     while True:
         ok, cur = cap.read()
         if not ok:
@@ -201,9 +202,11 @@ def main():
         inlier_counts.append(n_inl)
         prev_gray = cur_gray
         n += 1
+        prog.update(n)
         if n % 500 == 0:
             print(f"  {n}/{frame_count} frames...")
     cap.release()
+    prog.done()
     print(f"  estimated {n - 1} frame pairs, {len(failed)} fell back to identity")
 
     # Cumulative chain: C[f] maps frame f pixels → frame 0 pixels.

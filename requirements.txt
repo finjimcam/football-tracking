@@ -7,3 +7,5 @@ pyarrow
 python-dotenv
 ipyfilechooser
 git+https://github.com/Labellerr/SDKPython.git
+fastapi>=0.115,<0.116
+uvicorn>=0.32,<0.33

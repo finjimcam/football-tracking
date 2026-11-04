@@ -18,6 +18,7 @@ Not a CLI tool. Owns the artifact layout so every stage agrees on paths:
 """
 import hashlib
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +29,40 @@ PITCH_WIDTH = 68.0
 TMP_ROOT = Path(".tmp")
 CONFIG_DIR = Path("config")
 OUTPUTS_DIR = Path("outputs")
+
+
+class Progress:
+    """Machine-readable progress for long loops: prints `PROGRESS done/total label`
+    lines, which the web app's job runner (app/jobs.py) turns into a progress
+    bar and keeps out of the log. Throttled to ~1 line per 0.5% (or 30 s), so CLI
+    output stays readable too.
+
+        prog = Progress(frame_count, "tracking players")
+        for i, ... in enumerate(...):
+            prog.update(i + 1)
+        prog.done()
+    """
+
+    def __init__(self, total, label=""):
+        self.total = max(int(total or 0), 0)
+        self.label = label
+        self.step = max(1, self.total // 200)
+        self.last_n = -1
+        self.last_t = 0.0
+
+    def update(self, n):
+        now = time.monotonic()
+        if n - self.last_n >= self.step or now - self.last_t >= 30:
+            self._emit(n, now)
+
+    def done(self):
+        if self.total and self.last_n != self.total:
+            self._emit(self.total, time.monotonic())
+
+    def _emit(self, n, now):
+        self.last_n, self.last_t = n, now
+        total = max(self.total, n)
+        print(f"PROGRESS {n}/{total} {self.label}".rstrip(), flush=True)
 
 
 def compute_match_id(video_path):

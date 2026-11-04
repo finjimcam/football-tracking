@@ -97,6 +97,11 @@ tool scripts:
 | Track players + draw trajectories on video | [workflows/track_and_visualize.md](workflows/track_and_visualize.md) | `tools/track_players.py` |
 | Generate a positional heatmap | [workflows/generate_heatmap.md](workflows/generate_heatmap.md) | `tools/generate_heatmap.py` |
 
+**Web front end (Stopframe):** `tools/serve_app.py` serves a browser UI
+(`app/`) that runs the match-report stages as background jobs with logs and
+progress. See [app/README.md](app/README.md). Long loops in tools print
+`PROGRESS done/total` lines via `_common.Progress` for its progress bars.
+
 **Notes that apply across all of them:**
 - `tools/coco_to_yolo.py` depends on the external `yolo_finetune_utils` repo
   (`git clone https://github.com/Labellerr/yolo_finetune_utils.git`), which
