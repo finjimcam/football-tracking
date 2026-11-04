@@ -11,6 +11,7 @@ const KEYS_HELP = [
   ['Enter', 'save + next phase'], ['s', 'skip phase (no lines)'], ['r', 'reset to auto guess here'],
   ['c', 'clear picks'], ['p', 'previous phase'],
   ['[ / ]', 'clip export: start / end the clip here'], ['e', 'clip export: keep / drop this phase'],
+  ['i / Identify mode', 'click a player, or drag a box round an unidentified one, then pick who it is'],
 ];
 const STRIP_ROW = 12;
 const COL = { seen: '#5DBB63', filled: '#E8A33A', lost: '#7A2E2E', link: '#FFFFFF', head: '#FFD84D' };
@@ -85,11 +86,15 @@ export async function viewLines(view, parts, params, ui) {
     pick: '',
     relink: 'Re-link: tap the player a lost (red/amber) chain should continue on.',
     swap: 'Fix swap: tap the chain that jumped to the wrong player (or its B/M row in the strip), then tap the right player.',
+    identify: 'Identify: click a player, or drag a box round one with no number (?), then pick who it is.',
   };
   const modeBtns = {};
   function setMode(mode) {
     st.mode = mode;
     st.swapChain = null;
+    st.idBox = null;
+    overlay.style.touchAction = mode === 'identify' ? 'none' : '';
+    if (typeof drawIdPanel === 'function') drawIdPanel();
     for (const [k, b] of Object.entries(modeBtns)) {
       b.setAttribute('aria-pressed', String(k === mode));
       b.classList.toggle('primary', k === mode);
@@ -98,7 +103,7 @@ export async function viewLines(view, parts, params, ui) {
     if (st.phase) draw();
   }
   const modeGroup = h('div', { role: 'group', 'aria-label': 'Click mode', class: 'lines-tools' },
-    [['pick', 'Pick'], ['relink', 'Re-link'], ['swap', 'Fix swap']].map(([k, label]) => {
+    [['pick', 'Pick'], ['relink', 'Re-link'], ['swap', 'Fix swap'], ['identify', 'Identify']].map(([k, label]) => {
       modeBtns[k] = h('button', { type: 'button', class: 'btn small' + (k === 'pick' ? ' primary' : ''),
         'aria-pressed': String(k === 'pick'), onclick: () => setMode(k) }, label);
       return modeBtns[k];
@@ -178,6 +183,67 @@ export async function viewLines(view, parts, params, ui) {
     } catch (e) { toast(e.message, true); }
   } }, 'Render picked lines');
 
+  // ---------- identify players (issue #16) ----------
+  const idPanel = h('div', { class: 'id-panel', hidden: true, role: 'group', 'aria-label': 'Who is this player?' });
+  const anchorList = h('div', { class: 'id-anchors' });
+  const anchorInfo = h('span', { class: 'muted mono', style: 'font-size:11px' });
+  const nameOf = (tid) => {
+    const n = sum.names[String(tid)];
+    return n ? { label: String(n.number), full: `${n.number} ${n.name || ''}`.trim(), manual: n.manual } : null;
+  };
+  function drawIdPanel() {
+    idPanel.hidden = !(st.mode === 'identify' && st.idBox);
+    if (idPanel.hidden) return;
+    const cur = st.idBox.tid != null ? nameOf(st.idBox.tid) : null;
+    idPanel.replaceChildren(
+      h('div', { class: 'section-label' }, 'Who is this?', cur ? h('span', { class: 'dim' }, ` · tracking says ${cur.full}`) : h('span', { class: 'dim' }, ' · unidentified')),
+      h('div', { class: 'id-names' }, sum.lineup.length ? sum.lineup.map((p) => h('button', {
+        type: 'button', class: 'id-name' + (cur && +cur.label === p.number ? ' on' : ''),
+        onclick: () => identify(p.number),
+      }, `${p.number} ${p.name || ''}`, p.gk ? h('span', { class: 'dim' }, ' GK') : null, p.sub ? h('span', { class: 'dim' }, ' sub') : null))
+        : h('span', { class: 'muted' }, 'No lineup for this team in config/<id>_reference.json')),
+      h('div', {}, btn('Cancel', 'Cancel (Esc)', () => { st.idBox = null; drawIdPanel(); draw(); })));
+  }
+  async function identify(number) {
+    const b = st.idBox;
+    if (!b) return;
+    try {
+      const res = await api(`/matches/${encodeURIComponent(matchId)}/lines/identify`, {
+        method: 'POST', body: { team, frame: st.cur, box: b.box, number } });
+      sum.anchors = res.anchors;
+      const a = res.anchor;
+      st.idBox = null;
+      drawIdPanel(); drawAnchors(); draw();
+      msg.textContent = `Anchored No. ${a.number} ${a.name || ''} here. Add more, then Apply to tracking.`;
+    } catch (e) { toast(e.message, true); }
+  }
+  async function unidentify(id) {
+    try {
+      const res = await api(`/matches/${encodeURIComponent(matchId)}/lines/identify/${encodeURIComponent(id)}?team=${team}`, { method: 'DELETE' });
+      sum.anchors = res.anchors;
+      drawAnchors(); draw();
+    } catch (e) { toast(e.message, true); }
+  }
+  function drawAnchors() {
+    const pend = sum.anchors.filter((a) => a.pending).length;
+    anchorInfo.textContent = sum.anchors.length ? `${sum.anchors.length} anchor${sum.anchors.length === 1 ? '' : 's'}${pend ? ` · ${pend} not applied` : ''}` : '';
+    applyBtn.disabled = !sum.anchors.length || null;
+    anchorList.replaceChildren(...(sum.anchors.length ? sum.anchors.map((a) => h('div', { class: 'id-anchor' },
+      h('button', { type: 'button', class: 'id-anchor-main', title: a.phase != null ? 'Go to this frame' : 'Outside the phases listed here',
+        onclick: () => { if (a.phase != null) { gotoStart(a.phase).then(() => seek(a.frame)); } } },
+        h('span', { class: 'mono muted' }, a.clock || `f${a.frame}`), h('b', {}, `${a.number} ${a.name || ''}`),
+        a.pending ? pill('stale', 'not applied') : pill('done', 'applied')),
+      h('button', { type: 'button', class: 'btn small danger', 'aria-label': `Remove the anchor for ${a.name || a.number}`, onclick: () => unidentify(a.id) }, '✕')))
+      : [h('div', { class: 'muted', style: 'font-size:12px' }, 'None yet. Use Identify mode (i) on the frame.')]));
+  }
+  const applyBtn = h('button', { type: 'button', class: 'btn small primary', onclick: async () => {
+    try {
+      const job = await api('/jobs', { method: 'POST', body: { stage: 'b_identities', match_id: matchId, params: { reuse_tracklets: true } } });
+      toast('Track identities queued with your anchors. Afterwards re-run Track ball, Compute possession and the stats stages.');
+      location.hash = `#/match/${encodeURIComponent(matchId)}?job=${job.id}`;
+    } catch (e) { toast(e.message, true); }
+  } }, 'Apply to tracking');
+
   view.replaceChildren(h('div', { class: 'cols' },
     h('div', { class: 'col-side lines-side' },
       h('section', { class: 'panel', 'aria-labelledby': 'h-phases' },
@@ -196,6 +262,13 @@ export async function viewLines(view, parts, params, ui) {
               ? h('a', { class: 'btn small', href: `/api/matches/${encodeURIComponent(matchId)}/files/clips_zip`, download: '' }, 'Download last zip') : null),
           h('div', { class: 'muted', style: 'font-size:12px;line-height:1.4' },
             'Tick the phases to export and trim each one with Start here / End here. You get one MP4 per phase, with your picked lines, in a zip you can drop into PowerPoint.')),
+        h('div', { style: 'display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--line);padding-top:10px' },
+          h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap' }, h('span', { class: 'section-label' }, 'Identified players'), anchorInfo,
+            h('div', { class: 'spacer' }), applyBtn),
+          anchorList,
+          h('div', { class: 'muted', style: 'font-size:12px;line-height:1.4' },
+            'Tell the tracker who players are: Identify mode, then click a player or drag a box round one with no number. ',
+            'Apply to tracking re-runs Track identities (about 3 min) so the names, stats and paths for the whole match use your picks.')),
         h('details', {}, h('summary', { class: 'muted', style: 'cursor:pointer' }, 'Controls'),
           h('dl', { class: 'kv', style: 'margin-top:8px' }, KEYS_HELP.flatMap(([k, v]) => [h('dt', {}, k), h('dd', { style: 'font-family:var(--sans)' }, v)]))),
         h('div', { class: 'legend' },
@@ -210,7 +283,7 @@ export async function viewLines(view, parts, params, ui) {
       h('section', { class: 'panel' },
         h('div', { class: 'panel-head' }, title, sub, dirtyChip),
         h('div', { class: 'panel-body', style: 'display:flex;flex-direction:column;gap:8px' },
-          stage, strip, transport, actions, clipTools, msg)))));
+          stage, idPanel, strip, transport, actions, clipTools, msg)))));
 
   // ---------- phase list ----------
   function drawList() {
@@ -332,9 +405,28 @@ export async function viewLines(view, parts, params, ui) {
     const rows = ph.rows[f] || [];
     const taken = new Set();
     for (const ch of st.chains) { const p = chainAt(ch, f); if (p && p[4] !== 'f') taken.add(p[0]); }
-    for (const r of rows) {
-      if (taken.has(r[0])) continue;
-      overlay.append(svg('rect', { x: r[1], y: r[2], width: r[3] - r[1], height: r[4] - r[2], class: 'ov-box' }));
+    if (st.mode === 'identify') {
+      const here = sum.anchors.filter((a) => a.frame === f);
+      for (const r of rows) {
+        const nm = nameOf(r[0]);
+        overlay.append(svg('rect', { x: r[1], y: r[2], width: r[3] - r[1], height: r[4] - r[2], class: 'ov-box' + (nm ? '' : ' unid') }));
+        const t = svg('text', { x: (r[1] + r[3]) / 2, y: r[2] - 6, class: 'ov-label', fill: nm ? (nm.manual ? '#FFD84D' : '#FFFFFF') : '#EF5B5B' });
+        t.textContent = nm ? nm.label : '?';
+        overlay.append(t);
+      }
+      for (const a of here) {
+        overlay.append(svg('rect', { x: a.box[0] - 3, y: a.box[1] - 3, width: a.box[2] - a.box[0] + 6, height: a.box[3] - a.box[1] + 6,
+          fill: 'none', stroke: '#FFD84D', 'stroke-width': 3 }));
+      }
+      if (st.idBox) {
+        const b = st.idBox.box;
+        overlay.append(svg('rect', { x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1], fill: 'rgba(255,216,77,0.12)', stroke: '#FFD84D', 'stroke-width': 2, 'stroke-dasharray': '6 4' }));
+      }
+    } else {
+      for (const r of rows) {
+        if (taken.has(r[0])) continue;
+        overlay.append(svg('rect', { x: r[1], y: r[2], width: r[3] - r[1], height: r[4] - r[2], class: 'ov-box' }));
+      }
     }
     const byLine = { back: [], mid: [] };
     st.chains.forEach((ch, ci) => {
@@ -345,18 +437,21 @@ export async function viewLines(view, parts, params, ui) {
       if (ci === st.swapChain) {
         overlay.append(svg('ellipse', { cx: fx, cy: fy, rx: 24, ry: 10, fill: 'none', stroke: '#FFD84D', 'stroke-width': 3 }));
       }
-      overlay.append(svg('ellipse', { cx: fx, cy: fy, rx: 16, ry: 6, fill: 'none', stroke: color,
-        'stroke-width': s === 'f' ? 1.5 : 2.5, 'stroke-dasharray': s === 'f' ? '4 4' : null }));
-      const t = svg('text', { x: fx, y: fy - 22, class: 'ov-label', fill: color });
-      t.textContent = (ch.line === 'back' ? 'B' : 'M') + (s === 'f' ? '~' : s === 'l' ? '*' : '');
-      overlay.append(t);
+      if (st.mode !== 'identify') { // identify mode labels every box with its shirt number instead
+        overlay.append(svg('ellipse', { cx: fx, cy: fy, rx: 16, ry: 6, fill: 'none', stroke: color,
+          'stroke-width': s === 'f' ? 1.5 : 2.5, 'stroke-dasharray': s === 'f' ? '4 4' : null }));
+        const t = svg('text', { x: fx, y: fy - 22, class: 'ov-label', fill: color });
+        t.textContent = (ch.line === 'back' ? 'B' : 'M') + (s === 'f' ? '~' : s === 'l' ? '*' : '');
+        overlay.append(t);
+      }
       byLine[ch.line].push([py, fx, fy]);
     });
     for (const [line, pts] of Object.entries(byLine)) {
       if (pts.length < 2) continue;
       pts.sort((a, b) => a[0] - b[0]);
       overlay.append(svg('polyline', { points: pts.map((p) => `${p[1]},${p[2]}`).join(' '), fill: 'none',
-        stroke: line === 'back' ? sum.color : '#FFFFFF', 'stroke-width': 3, 'stroke-linejoin': 'round', opacity: 0.9 }));
+        stroke: line === 'back' ? sum.color : '#FFFFFF', 'stroke-width': 3, 'stroke-linejoin': 'round',
+        opacity: st.mode === 'identify' ? 0.35 : 0.9 }));
     }
     drawStrip();
   }
@@ -471,9 +566,38 @@ export async function viewLines(view, parts, params, ui) {
     msg.textContent = `Fixing a ${line} chain: now tap the player it should be on.`;
     draw();
   }
+  // identify: drag a box round a player (pointer events), or click one
+  let drag = null, dragged = false;
+  overlay.addEventListener('pointerdown', (ev) => {
+    if (st.mode !== 'identify' || ev.button !== 0) return;
+    drag = toVideo(ev); dragged = false;
+    overlay.setPointerCapture(ev.pointerId);
+  });
+  overlay.addEventListener('pointermove', (ev) => {
+    if (!drag) return;
+    const [x, y] = toVideo(ev);
+    if (!dragged && Math.hypot(x - drag[0], y - drag[1]) < 10) return;
+    dragged = true;
+    st.idBox = { box: [Math.min(drag[0], x), Math.min(drag[1], y), Math.max(drag[0], x), Math.max(drag[1], y)], tid: null, dragging: true };
+    draw();
+  });
+  overlay.addEventListener('pointerup', () => {
+    if (!drag) return;
+    drag = null;
+    if (dragged && st.idBox) { stopPlay(); st.idBox.dragging = false; drawIdPanel(); draw(); }
+  });
   overlay.addEventListener('click', (ev) => {
     stopPlay();
     const [x, y] = toVideo(ev);
+    if (st.mode === 'identify') {
+      if (dragged) { dragged = false; return; }
+      const tid = hitTest(x, y);
+      const r = ((st.phase && st.phase.rows[st.cur]) || []).find((row) => row[0] === tid);
+      if (!r) { msg.textContent = 'No tracked box there: drag a box round the player instead.'; return; }
+      st.idBox = { box: [r[1], r[2], r[3], r[4]], tid };
+      drawIdPanel(); draw();
+      return;
+    }
     if (st.mode === 'swap' && st.swapChain == null) {
       const ci = chainNear(x, y);
       if (ci == null) { msg.textContent = 'Tap the marker of the chain that jumped (or its row label in the strip).'; return; }
@@ -531,6 +655,7 @@ export async function viewLines(view, parts, params, ui) {
     else if (k === 'p') gotoIndex(idx() - 1);
     else if (k === 'k') togglePlay();
     else if (k === 'x') setMode(st.mode === 'swap' ? 'pick' : 'swap');
+    else if (k === 'i') setMode(st.mode === 'identify' ? 'pick' : 'identify');
     else if (k === '[') setExport(st.phase.start, { trim_in: st.cur });
     else if (k === ']') setExport(st.phase.start, { trim_out: st.cur });
     else if (k === 'e') { const ex = curExport(); if (ex) setExport(st.phase.start, { keep: !ex.keep }); }
@@ -551,6 +676,7 @@ export async function viewLines(view, parts, params, ui) {
   });
 
   drawList();
+  drawAnchors();
   const want = Number(params.get('phase'));
   const first = sum.phases.find((p) => p.start === want) || sum.phases.find((p) => p.status === 'todo') || sum.phases[0];
   if (first) gotoStart(first.start);

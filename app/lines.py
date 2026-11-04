@@ -24,7 +24,12 @@ TOOLS = Path(__file__).resolve().parent.parent / "tools"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
-from _common import clock_label, load_calibration, load_meta, match_config  # noqa: E402
+import json  # noqa: E402
+import time  # noqa: E402
+import uuid  # noqa: E402
+
+from _common import clock_label, load_calibration, load_meta, load_player_map, match_config  # noqa: E402
+from identity_anchors import anchors_path, iou, load_anchors, save_anchors  # noqa: E402
 from cut_phase_clips import (build_chains, entry_slots, export_path, export_range,  # noqa: E402
                              homography_lookup, index_rows, load_export, load_selection, load_team_rows,
                              norm_anchors, phases, save_export, save_selection, selection_path)
@@ -35,6 +40,7 @@ TEAMS = ("team_a", "team_b")
 # Same defaults as cut_phase_clips.py / select_shape_players.py: phases are
 # keyed by start frame, so these must match or saved picks won't line up.
 MERGE_S, MIN_S, PRE_S, POST_S = 2.0, 3.0, 1.5, 1.0
+ANCHOR_LOCK = threading.Lock()  # one anchors file per match, shared by both teams' pickers
 
 
 class LinesError(ValueError):
@@ -67,6 +73,10 @@ class MatchLines:
         self.H_at = homography_lookup(load_calibration(match_id, self.config_dir))
         self.sel_path = selection_path(match_id, team, PHASE, self.config_dir)
         self.exp_path = export_path(match_id, team, PHASE, self.config_dir)
+        self.anchor_path = anchors_path(match_id, self.config_dir)
+        self.tracks_path = mdir / "tracks.parquet"
+        self.lineup = self._lineup()
+        self.names = self._names(load_player_map(match_id, self.tmp_dir) or {})
         self.lock = threading.Lock()
 
     # ---- helpers ------------------------------------------------------
@@ -113,6 +123,92 @@ class MatchLines:
         return {"keep": keep, "in": a, "out": b, "trimmed": (a, b) != (seg[0], seg[1]),
                 "clip_s": round((b - a + 1) / self.fps, 1)}
 
+    # ---- identify (issue #16) ------------------------------------------
+    def _lineup(self):
+        try:
+            ref = json.loads((self.config_dir / f"{self.match_id}_reference.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        lu = (ref.get("lineups") or {}).get(self.team) or {}
+        out = []
+        for li, line in enumerate(lu.get("lines") or []):
+            for person in line:
+                if isinstance(person, dict) and person.get("number") is not None:
+                    out.append({"number": int(person["number"]), "name": person.get("name"), "gk": li == 0})
+        for person in lu.get("subs") or lu.get("substitutes") or []:
+            if isinstance(person, dict) and person.get("number") is not None:
+                out.append({"number": int(person["number"]), "name": person.get("name"), "gk": False, "sub": True})
+        return out
+
+    def _names(self, pm):
+        out = {}
+        for pl in pm.get("players", {}).values():
+            if pl.get("team") != self.team:
+                continue
+            for t in pl.get("track_ids", []):
+                out[int(t)] = {"number": pl.get("number"), "name": pl.get("name"),
+                               "manual": str(pl.get("name_source", "")).startswith("manual")}
+        return out
+
+    def _anchors_json(self):
+        stamp = self.tracks_path.stat().st_mtime if self.tracks_path.exists() else 0
+        mine = [a for a in load_anchors(self.anchor_path) if a.get("team") == self.team]
+        for a in mine:
+            a["pending"] = a.get("created", 0) > stamp
+            a["phase"] = next((sg[0] for sg in self.segs if sg[0] <= a["frame"] <= sg[1]), None)
+            a["clock"] = clock_label(int(a["frame"]), self.cfg, self.fps) or ""
+        return sorted(mine, key=lambda a: a["frame"])
+
+    def identify(self, frame, box, number):
+        """Anchor "the detected player in `box` at `frame` is No. `number`".
+        The box can be a clicked detection's own box or a rough box dragged
+        round a player: the detection whose feet are inside it (best overlap
+        first) is the one anchored."""
+        person = next((p for p in self.lineup if p["number"] == int(number)), None)
+        if person is None:
+            raise LinesError(f"No. {number} isn't in the {self.team} lineup (config/<id>_reference.json)")
+        if not box or len(box) != 4:
+            raise LinesError("box must be [x1, y1, x2, y2]")
+        x1, y1, x2, y2 = (float(v) for v in box)
+        box = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
+        rows = pd.read_parquet(self.tracks_path, filters=[("frame", "==", int(frame))],
+                               columns=["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y",
+                                        "tracklet"])
+        rows = rows[rows["class"] == "player"]
+        best, score = None, 0.0
+        for r in rows.itertuples():
+            v = iou([r.x1, r.y1, r.x2, r.y2], box)
+            inside = box[0] <= r.foot_x <= box[2] and box[1] <= r.foot_y <= box[3]
+            sc = v + (1.0 if inside else 0.0)
+            if (inside or v >= 0.3) and sc > score:
+                best, score = r, sc
+        if best is None:
+            raise LinesError("No detected player in that box at this frame. Try a frame where the player "
+                             "is visible and has a box (the detector missed them here)")
+        anchor = {"id": uuid.uuid4().hex[:10], "team": self.team, "number": person["number"],
+                  "name": person["name"], "frame": int(frame),
+                  "box": [round(float(v), 1) for v in (best.x1, best.y1, best.x2, best.y2)],
+                  "track_id": int(best.track_id),
+                  "tracklet": int(best.tracklet) if pd.notna(best.tracklet) and best.tracklet >= 0 else None,
+                  "created": time.time()}
+        with ANCHOR_LOCK:
+            anchors = load_anchors(self.anchor_path)
+            # one anchor per detection: re-identifying the same box replaces it
+            anchors = [a for a in anchors if not (int(a["frame"]) == anchor["frame"]
+                                                  and iou(a.get("box") or [0, 0, 0, 0], anchor["box"]) > 0.7)]
+            anchors.append(anchor)
+            save_anchors(self.anchor_path, anchors)
+        return {"anchor": anchor, "anchors": self._anchors_json()}
+
+    def unidentify(self, anchor_id):
+        with ANCHOR_LOCK:
+            anchors = load_anchors(self.anchor_path)
+            keep = [a for a in anchors if a.get("id") != anchor_id]
+            if len(keep) == len(anchors):
+                raise LinesError("No such anchor")
+            save_anchors(self.anchor_path, keep)
+        return {"anchors": self._anchors_json()}
+
     def summary(self):
         sel = load_selection(self.sel_path)
         exp = load_export(self.exp_path)
@@ -136,7 +232,9 @@ class MatchLines:
                 "color": colors.get(self.team) or ("#6CABDD" if self.team == "team_a" else "#F0F0F0"),
                 "fps": self.fps, "width": self.meta["width"], "height": self.meta["height"],
                 "calibrated": self.H_at is not None, "selection_file": self.sel_path.name,
-                "export_file": self.exp_path.name, "phases": out}
+                "export_file": self.exp_path.name, "phases": out,
+                "lineup": self.lineup, "names": {str(k): v for k, v in self.names.items()},
+                "anchors": self._anchors_json(), "anchors_file": self.anchor_path.name}
 
     def phase(self, start):
         k, (s, e, c0, c1) = self._seg(start)

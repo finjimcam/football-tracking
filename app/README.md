@@ -48,6 +48,18 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   queues `cut_phase_clips.py --shape-selection --export-selection --separate`:
   one MP4 per kept phase, with your lines, zipped for PowerPoint. Download it
   from the match page or from *Download last zip*.
+  **Identify** (`i`, issue #16): tell the tracker who players are. In
+  Identify mode every box shows its tracked shirt number: white is
+  role-inferred, gold is set by you, and a red **?** means unidentified.
+  Click a player, or drag a box round one the tracker missed, then pick a
+  name from the lineup (`config/<id>_reference.json`). Each pick is an
+  *anchor*, saved to `config/<id>_identity_anchors.json` (frame plus the
+  detection's box). **Apply to tracking** queues *Track identities* with
+  cached tracklets (about 3 min). That run names each identity chain after
+  the player its anchors point at, and moves anchored fragments onto the
+  right player (`tools/identity_anchors.py`). Re-run *Track ball*, *Compute
+  possession* and the stats stages afterwards, so stats and paths for the
+  whole match use the corrected identities.
   The chain, gap-filling and re-link logic runs on the server
   (`app/lines.py` calls the same functions), so the page shows exactly what
   the render will draw. Keys: a/d ±0.5 s, A/D ±2 s, ,/. ±1 frame, k

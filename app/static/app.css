@@ -210,6 +210,23 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { display: inline-block; width: 12px; height: 8px; border-radius: 2px; }
+.ov-box.unid { stroke: #EF5B5B; stroke-opacity: 0.9; stroke-dasharray: 4 3; }
+.id-panel { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--accent); border-radius: 6px; background: var(--raised); }
+.id-names { display: flex; flex-wrap: wrap; gap: 4px; }
+.id-anchors { display: flex; flex-direction: column; max-height: 30vh; overflow: auto; }
+.id-anchor { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--row-line); }
+.id-name {
+  min-height: 32px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--raised-2);
+  color: var(--text); font-size: 12px;
+}
+.id-name:hover { background: var(--hover); }
+.id-name.on { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.id-name.on .dim { color: var(--bg); }
+.id-anchor-main {
+  flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px;
+  padding: 6px 4px; background: transparent; border: 0; text-align: left; color: var(--text);
+}
+.id-anchor-main:hover { background: var(--raised-2); }
 .mini-select { height: 30px; background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; color: var(--text); padding: 0 6px; }
 button.job-row { font: inherit; cursor: pointer; }
 

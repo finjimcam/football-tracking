@@ -35,6 +35,10 @@ re-runs in minutes - tune and re-run freely.
    in config/<id>_reference.json, listed right-to-left from each team's
    perspective) by average depth and width in the team shape. These names
    are ROLE-INFERRED; verify_tracking.py checks them against Opta events.
+   Manual anchors from the Stopframe Lines tab (config/<id>_identity_anchors.json,
+   tools/identity_anchors.py, issue #16) override them: a chain is named
+   after the player its anchors point at, and an anchored tracklet is moved
+   into that player's chain.
 
 Output track_id scheme: team_a players 1-11 (1 = GK), team_b 101-111
 (101 = GK), everything else 10000 + tracklet. Officials and people living
@@ -53,6 +57,9 @@ from scipy.optimize import linear_sum_assignment
 
 from _common import (apply_calibration, load_calibration, load_meta, match_config, match_dir,
                      pitch_dims, read_json, reference_path, write_json)
+from identity_anchors import anchors_path, load_anchors  # noqa: E402
+from identity_anchors import apply as apply_anchors  # noqa: E402
+from identity_anchors import resolve as resolve_anchors  # noqa: E402
 
 TEAMS = ("team_a", "team_b")
 KIT_LABELS = ("team_a", "team_b", "gk_a", "gk_b", "official")
@@ -794,6 +801,19 @@ def main():
     filled = fill_gaps(tl, fps)
     print(f"  gap-filled {filled} short/unreadable tracklets")
 
+    # 4b. names (role-inferred), then the analyst's manual anchors (issue #16)
+    prov = p.assign(track_id=p["tracklet"].map(dict(zip(tl["tracklet"], tl["identity"]))).fillna(-1).astype(int))
+    names = infer_names(prov[prov["track_id"] >= 0], ref)
+    anchor_report = None
+    anchors = load_anchors(anchors_path(a.match_id, a.config_dir))
+    if anchors:
+        resolved = resolve_anchors(anchors, p, tl["tracklet"])
+        anchor_report = apply_anchors(tl, names, resolved)
+        r = anchor_report
+        print(f"  manual anchors: {r['anchors']} ({r['unresolved']} unresolved) -> {r['named_chains']} chains named, "
+              f"{r['moved']} tracklets moved onto their player, {r['evicted']} overlapping ones dropped"
+              + (f"; {len(r['conflicts'])} conflicting votes" if r["conflicts"] else ""))
+
     # 5. tracks.parquet in the pipeline schema
     ident = dict(zip(tl["tracklet"], tl["identity"]))
     cls_of = dict(zip(tl["tracklet"], tl["cls"]))
@@ -810,8 +830,7 @@ def main():
     tracks = tracks.sort_values(["frame", "class", "track_id"]).reset_index(drop=True)
     tracks.to_parquet(mdir / "tracks.parquet", index=False)
 
-    # 6. names + player_map / team_map
-    names = infer_names(p, ref)
+    # 6. player_map / team_map (names from step 4b)
     n_frames = f_hi - f_lo + 1
     players, t2p = {}, {}
     for team, base in (("team_a", 0), ("team_b", 100)):
@@ -828,8 +847,10 @@ def main():
             players[key] = {
                 "team": team, "number": info.get("number", k), "name": info.get("name"),
                 "role": info.get("role"),
-                "name_source": ("kit colour (goalkeeper)" if info.get("line", 1) == 0
-                                else "official lineup, role-inferred from average position"),
+                "name_source": info.get("name_source") or (
+                    "kit colour (goalkeeper)" if info.get("line", 1) == 0
+                    else "official lineup, role-inferred from average position"),
+                "anchors": info.get("anchors", 0),
                 "depth_m": info.get("depth_m"), "width_m": info.get("width_m"),
                 "track_ids": [tid], "detections": int(len(rows)),
                 "first_frame": int(rows["frame"].min()) if len(rows) else None,
@@ -856,6 +877,7 @@ def main():
         "ignored_tracks": ignored,
         "identified_detection_fraction": round(float((p["identity"] >= 0).sum() / max(len(p), 1)), 3),
         "link_stability": stability,
+        "manual_anchors": anchor_report,
     }
     write_json(mdir / "player_map.json", pm)
     team_map = {str(t): ("team_a" if 1 <= t <= 11 else "team_b" if 101 <= t <= 111 else "unknown")

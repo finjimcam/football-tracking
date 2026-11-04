@@ -103,6 +103,19 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
 - **Ball** (`track_ball.py`): drops detections projecting > 1 m off the pitch
   (spare balls), links the rest into ball tracklets, keeps the strongest
   per frame, interpolates gaps <= 12 frames.
+- **Manual anchors** (issue #16): `track_identities.py` applies
+  `config/<id>_identity_anchors.json` (made in the Lines tab's Identify
+  mode) after gap-filling. An anchor is a frame plus a detection box plus a
+  shirt number, and is re-found by box IoU, so it survives a tracklet
+  rebuild. The run then does two things:
+  - Each chain is named after the player most of its anchors point at; the
+    chain that had that name takes the displaced name.
+  - Anchored tracklets are moved into their player's chain, and that
+    chain's tracklets overlapping them in time are dropped from it.
+
+  `player_map.json` marks those names `name_source: manual (Lines tab
+  anchors)` and reports `manual_anchors` (unresolved anchors and
+  conflicting votes included). Re-run steps 4-10 afterwards.
 - **Possession** (`compute_possession.py`): nearest player within 2.5 m of the
   ball, 0.4 s hysteresis before switching, possession held through ball
   dropouts for up to 8 s -> per-frame `possession_timeline.parquet`.

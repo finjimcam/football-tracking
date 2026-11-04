@@ -10,6 +10,8 @@
     POST /api/jobs/{id}/cancel | /force
     PUT  /api/matches/{match_id}/lines/{start}/export   keep/drop + trim one phase clip
     PUT  /api/matches/{match_id}/lines/export           keep/drop every phase
+    POST /api/matches/{match_id}/lines/identify         anchor "this box is No. N" (issue #16)
+    DELETE /api/matches/{match_id}/lines/identify/{id}  remove an anchor
     GET  /api/system                      disk space + whether heavy jobs are held
 
 Everything else under / is the single-page app in app/static/.
@@ -51,6 +53,13 @@ class ExportEdit(BaseModel):
     trim_in: int | None = None
     trim_out: int | None = None
     reset_trim: bool = False
+
+
+class Identify(BaseModel):
+    team: str = "team_a"
+    frame: int
+    box: list
+    number: int
 
 
 class ExportAll(BaseModel):
@@ -150,6 +159,14 @@ def create_app(root, runner=None, busy_check=None, warm=False):
     @app.get("/api/matches/{match_id}/lines")
     def lines_summary(match_id: str, team: str = "team_a"):
         return _lines(match_id, team).summary()
+
+    @app.post("/api/matches/{match_id}/lines/identify")
+    def lines_identify(match_id: str, req: Identify):
+        return _lines_call(_lines(match_id, req.team).identify, req.frame, req.box, req.number)
+
+    @app.delete("/api/matches/{match_id}/lines/identify/{anchor_id}")
+    def lines_unidentify(match_id: str, anchor_id: str, team: str = "team_a"):
+        return _lines_call(_lines(match_id, team).unidentify, anchor_id)
 
     @app.put("/api/matches/{match_id}/lines/export")
     def lines_export_all(match_id: str, req: ExportAll):
