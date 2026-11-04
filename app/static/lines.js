@@ -6,6 +6,7 @@
 const KEYS_HELP = [
   ['Click player', 'cycle none → back → midfield'],
   ['Right-click / Re-link mode', 're-attach a lost chain to this player'],
+  ['x / Fix swap mode', 'click the chain that jumped to the wrong player, then the right player'],
   ['a / d', '−/+ 0.5 s'], ['A / D', '−/+ 2 s'], [', / .', '−/+ 1 frame'], ['k', 'play / pause'],
   ['Enter', 'save + next phase'], ['s', 'skip phase (no lines)'], ['r', 'reset to auto guess here'],
   ['c', 'clear picks'], ['p', 'previous phase'],
@@ -56,7 +57,7 @@ export async function viewLines(view, parts, params, ui) {
 
   const W = sum.width, H = sum.height, FPS = sum.fps;
   const IMG_W = Math.min(W, 1280);
-  const st = { phase: null, cur: 0, slots: [], chains: [], dirty: false, playing: false, relink: false, busy: false, loadedFrame: null };
+  const st = { phase: null, cur: 0, slots: [], chains: [], dirty: false, playing: false, mode: 'pick', swapChain: null, busy: false, loadedFrame: null };
 
   // ---------- layout ----------
   const list = h('div', { class: 'scroll lines-list' });
@@ -79,18 +80,34 @@ export async function viewLines(view, parts, params, ui) {
 
   const btn = (label, aria, fn, cls) => h('button', { type: 'button', class: 'btn small ' + (cls || ''), 'aria-label': aria, onclick: fn }, label);
   const playBtn = btn('▶', 'Play', () => togglePlay());
-  const relinkBtn = h('button', { type: 'button', class: 'btn small', 'aria-pressed': 'false', onclick: () => {
-    st.relink = !st.relink;
-    relinkBtn.setAttribute('aria-pressed', String(st.relink));
-    relinkBtn.classList.toggle('primary', st.relink);
-    msg.textContent = st.relink ? 'Re-link mode: tap the player a lost (red/amber) chain should continue on.' : '';
-  } }, 'Re-link mode');
+  const MODE_HELP = {
+    pick: '',
+    relink: 'Re-link: tap the player a lost (red/amber) chain should continue on.',
+    swap: 'Fix swap: tap the chain that jumped to the wrong player (or its B/M row in the strip), then tap the right player.',
+  };
+  const modeBtns = {};
+  function setMode(mode) {
+    st.mode = mode;
+    st.swapChain = null;
+    for (const [k, b] of Object.entries(modeBtns)) {
+      b.setAttribute('aria-pressed', String(k === mode));
+      b.classList.toggle('primary', k === mode);
+    }
+    msg.textContent = MODE_HELP[mode];
+    if (st.phase) draw();
+  }
+  const modeGroup = h('div', { role: 'group', 'aria-label': 'Click mode', class: 'lines-tools' },
+    [['pick', 'Pick'], ['relink', 'Re-link'], ['swap', 'Fix swap']].map(([k, label]) => {
+      modeBtns[k] = h('button', { type: 'button', class: 'btn small' + (k === 'pick' ? ' primary' : ''),
+        'aria-pressed': String(k === 'pick'), onclick: () => setMode(k) }, label);
+      return modeBtns[k];
+    }));
 
   const transport = h('div', { class: 'lines-tools' },
     btn('−2s', 'Back 2 seconds', () => step(-2 * FPS)), btn('−½s', 'Back half a second', () => step(-FPS / 2)),
     btn('−1f', 'Previous frame', () => step(-1)), playBtn, btn('+1f', 'Next frame', () => step(1)),
     btn('+½s', 'Forward half a second', () => step(FPS / 2)), btn('+2s', 'Forward 2 seconds', () => step(2 * FPS)),
-    h('div', { class: 'spacer' }), relinkBtn);
+    h('div', { class: 'spacer' }), modeGroup);
   const actions = h('div', { class: 'lines-tools' },
     btn('Save + next', 'Save picks and go to the next phase (Enter)', () => save(false), 'primary'),
     btn('Skip phase', 'Save as no lines (s)', () => save(true)),
@@ -173,12 +190,12 @@ export async function viewLines(view, parts, params, ui) {
     gotoStart(sum.phases[i].start);
   }
 
-  async function edit(action, frame, tid) {
+  async function edit(action, frame, tid, chain) {
     if (!st.phase || st.busy) return;
     st.busy = true;
     try {
       const r = await api(`/matches/${encodeURIComponent(matchId)}/lines/${st.phase.start}/edit`, {
-        method: 'POST', body: { team, slots: st.slots, action, frame: frame ?? st.cur, tid },
+        method: 'POST', body: { team, slots: st.slots, action, frame: frame ?? st.cur, tid, chain },
       });
       st.slots = r.slots;
       st.chains = r.chains;
@@ -249,18 +266,21 @@ export async function viewLines(view, parts, params, ui) {
       overlay.append(svg('rect', { x: r[1], y: r[2], width: r[3] - r[1], height: r[4] - r[2], class: 'ov-box' }));
     }
     const byLine = { back: [], mid: [] };
-    for (const ch of st.chains) {
+    st.chains.forEach((ch, ci) => {
       const p = chainAt(ch, f);
-      if (!p) continue;
+      if (!p) return;
       const [, fx, fy, py, s] = p;
       const color = ch.line === 'back' ? sum.color : '#FFFFFF';
+      if (ci === st.swapChain) {
+        overlay.append(svg('ellipse', { cx: fx, cy: fy, rx: 24, ry: 10, fill: 'none', stroke: '#FFD84D', 'stroke-width': 3 }));
+      }
       overlay.append(svg('ellipse', { cx: fx, cy: fy, rx: 16, ry: 6, fill: 'none', stroke: color,
         'stroke-width': s === 'f' ? 1.5 : 2.5, 'stroke-dasharray': s === 'f' ? '4 4' : null }));
       const t = svg('text', { x: fx, y: fy - 22, class: 'ov-label', fill: color });
       t.textContent = (ch.line === 'back' ? 'B' : 'M') + (s === 'f' ? '~' : s === 'l' ? '*' : '');
       overlay.append(t);
       byLine[ch.line].push([py, fx, fy]);
-    }
+    });
     for (const [line, pts] of Object.entries(byLine)) {
       if (pts.length < 2) continue;
       pts.sort((a, b) => a[0] - b[0]);
@@ -287,6 +307,7 @@ export async function viewLines(view, parts, params, ui) {
     const fx = (f) => x0 + ((f - ph.start) / span) * (x1 - x0);
     st.chains.forEach((ch, i) => {
       const y = 3 + i * STRIP_ROW;
+      if (i === st.swapChain) { g.fillStyle = '#FFD84D'; g.fillRect(0, y - 1, 16, STRIP_ROW - 1); }
       g.fillStyle = ch.line === 'back' ? sum.color : '#FFFFFF';
       g.font = '600 10px Inter Tight, sans-serif';
       g.fillText(ch.line === 'back' ? 'B' : 'M', 4, y + 9);
@@ -351,12 +372,40 @@ export async function viewLines(view, parts, params, ui) {
     const rect = overlay.getBoundingClientRect();
     return [((ev.clientX - rect.left) / rect.width) * W, ((ev.clientY - rect.top) / rect.height) * H];
   }
+  function chainNear(x, y) {
+    let best = null, bd = 30;
+    st.chains.forEach((ch, i) => {
+      const p = chainAt(ch, st.cur);
+      if (!p) return;
+      const d = Math.hypot(x - p[1], y - p[2]);
+      if (d < bd) { best = i; bd = d; }
+    });
+    return best;
+  }
+  function selectSwapChain(i) {
+    st.swapChain = i;
+    const line = st.chains[i].line === 'back' ? 'back-line' : 'midfield';
+    msg.textContent = `Fixing a ${line} chain: now tap the player it should be on.`;
+    draw();
+  }
   overlay.addEventListener('click', (ev) => {
     stopPlay();
     const [x, y] = toVideo(ev);
+    if (st.mode === 'swap' && st.swapChain == null) {
+      const ci = chainNear(x, y);
+      if (ci == null) { msg.textContent = 'Tap the marker of the chain that jumped (or its row label in the strip).'; return; }
+      selectSwapChain(ci);
+      return;
+    }
     const tid = hitTest(x, y);
     if (tid == null) { msg.textContent = 'No player there: click on a box or near the feet.'; return; }
-    edit(st.relink ? 'relink' : 'cycle', st.cur, tid);
+    if (st.mode === 'swap') {
+      const ci = st.swapChain;
+      st.swapChain = null;
+      edit('swap', st.cur, tid, ci).then(() => { const m = msg.textContent; setMode('pick'); msg.textContent = m; });
+      return;
+    }
+    edit(st.mode === 'relink' ? 'relink' : 'cycle', st.cur, tid);
   });
   overlay.addEventListener('contextmenu', (ev) => {
     ev.preventDefault();
@@ -372,7 +421,16 @@ export async function viewLines(view, parts, params, ui) {
     stopPlay();
     seek(st.phase.start + frac * (st.phase.end - st.phase.start));
   };
-  strip.addEventListener('pointerdown', (ev) => { stripSeek(ev); strip.setPointerCapture(ev.pointerId); });
+  strip.addEventListener('pointerdown', (ev) => {
+    const rect = strip.getBoundingClientRect();
+    if (st.mode === 'swap' && ev.clientX - rect.left < 18) { // the B/M labels pick a chain
+      const i = Math.floor((ev.clientY - rect.top - 3) / STRIP_ROW);
+      if (i >= 0 && i < st.chains.length) selectSwapChain(i);
+      return;
+    }
+    stripSeek(ev);
+    strip.setPointerCapture(ev.pointerId);
+  });
   strip.addEventListener('pointermove', (ev) => { if (ev.buttons) stripSeek(ev); });
 
   const onKey = (ev) => {
@@ -389,6 +447,8 @@ export async function viewLines(view, parts, params, ui) {
     else if (k === 'c') edit('clear');
     else if (k === 'p') gotoIndex(idx() - 1);
     else if (k === 'k') togglePlay();
+    else if (k === 'x') setMode(st.mode === 'swap' ? 'pick' : 'swap');
+    else if (k === 'Escape') setMode('pick');
     else return;
     ev.preventDefault();
   };

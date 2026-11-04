@@ -33,6 +33,7 @@ class LinesEdit(BaseModel):
     action: str = "chains"
     frame: int | None = None
     tid: int | None = None
+    chain: int | None = None
 
 
 class LinesSave(BaseModel):
@@ -141,7 +142,8 @@ def create_app(root, runner=None, busy_check=None, warm=False):
 
     @app.post("/api/matches/{match_id}/lines/{start}/edit")
     def lines_edit(match_id: str, start: int, req: LinesEdit):
-        return _lines_call(_lines(match_id, req.team).edit, start, req.slots, req.action, req.frame, req.tid)
+        return _lines_call(_lines(match_id, req.team).edit, start, req.slots, req.action, req.frame, req.tid,
+                           req.chain)
 
     @app.put("/api/matches/{match_id}/lines/{start}")
     def lines_save(match_id: str, start: int, req: LinesSave):

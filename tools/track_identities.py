@@ -344,6 +344,77 @@ def _flicker(tl):
     return float((minority > 0.2).mean())
 
 
+def contact_pairs(df, key, contact_m):
+    """Same-team pairs closer than contact_m, per frame: DataFrame
+    [frame, a, b, d] with a < b (values of `key`). Vectorised self-join on
+    (frame, team) - a python loop over 70k frames took minutes."""
+    q = df[["frame", "team", key, "pitch_x", "pitch_y"]]
+    m = q.merge(q, on=["frame", "team"], suffixes=("_a", "_b"))
+    m = m[m[f"{key}_a"] < m[f"{key}_b"]]
+    d = np.hypot(m["pitch_x_a"] - m["pitch_x_b"], m["pitch_y_a"] - m["pitch_y_b"])
+    m = m.assign(d=d)[d < contact_m]
+    return m.rename(columns={f"{key}_a": "a", f"{key}_b": "b"})[["frame", "a", "b", "d"]]
+
+
+def episodes(pairs, join_frames=3):
+    """Collapse per-frame contact pairs into episodes: one row per run of
+    frames (gaps <= join_frames) per pair, at its closest approach."""
+    if pairs.empty:
+        return pairs.assign(ep=[])
+    pairs = pairs.sort_values(["a", "b", "frame"])
+    new = (pairs["a"].diff().ne(0) | pairs["b"].diff().ne(0) | pairs["frame"].diff().gt(join_frames))
+    pairs = pairs.assign(ep=new.cumsum())
+    return pairs.loc[pairs.groupby("ep")["d"].idxmin()]
+
+
+def split_at_contacts(p, tl, next_id, contact_m, min_side=15):
+    """Issue #34: cut both same-team tracklets at the closest approach of every
+    contact (feet within contact_m). Inside a contact the frame-to-frame
+    tracker has no good way to tell two teammates apart and sometimes comes
+    out on the wrong one; cutting hands that decision to the global linker,
+    which weighs velocity continuity and each piece's place in the team shape.
+    The piece before the cut gets a new id and ends 'contact'; the last piece
+    keeps the original id. Cuts that would leave a side shorter than
+    min_side detections are skipped. Returns (p, next_id, n_cuts,
+    {tracklet: (starts_at_contact, ends_at_contact)})."""
+    team_of = dict(zip(tl["tracklet"], tl["cls"]))
+    q = p[p["tracklet"] >= 0].assign(team=lambda d: d["tracklet"].map(team_of))
+    q = q[q["team"].isin(TEAMS)]
+    ep = episodes(contact_pairs(q, "tracklet", contact_m))
+    if ep.empty:
+        return p, next_id, 0, {}
+    frames_of = {t: np.sort(g.to_numpy()) for t, g in q.groupby("tracklet")["frame"]}
+    cuts = {}
+    for r in ep.itertuples():
+        ok = True
+        for t in (r.a, r.b):
+            fr = frames_of[t]
+            k = np.searchsorted(fr, r.frame, side="right")
+            if k < min_side or len(fr) - k < min_side:
+                ok = False
+        if ok:
+            for t in (r.a, r.b):
+                cuts.setdefault(int(t), set()).add(int(r.frame))
+    new_ids = p["tracklet"].to_numpy().copy()
+    frames = p["frame"].to_numpy()
+    flags, n_cuts = {}, 0
+    for t, cs in cuts.items():
+        rows = np.flatnonzero(new_ids == t)
+        bounds = sorted(cs)
+        # pieces: (-inf, c0], (c0, c1], ..., (c_last, inf) -> last keeps id t
+        lo = -np.inf
+        for k, c in enumerate(bounds):
+            sel = rows[(frames[rows] > lo) & (frames[rows] <= c)]
+            new_ids[sel] = next_id
+            flags[next_id] = (k > 0, True)
+            next_id += 1
+            n_cuts += 1
+            lo = c
+        flags[t] = (True, flags.get(t, (False, False))[1])
+    p = p.assign(tracklet=new_ids)
+    return p, next_id, n_cuts, flags
+
+
 def role_vectors(p, tl, team, min_visible=4, frame="centroid"):
     """Each tracklet's place in the team shape, which survives a long
     off-screen gap far better than its absolute position does.
@@ -377,6 +448,9 @@ def link_flow(T, fps, a, window, n_paths=10, vmax=None, w_role=None, c_link=None
     st, en = T["start"].to_numpy(), T["end"].to_numpy()
     ent, ext = T[["entry_x", "entry_y"]].to_numpy(), T[["exit_x", "exit_y"]].to_numpy()
     vout = T[["vout_x", "vout_y"]].to_numpy()
+    vin = T[["vin_x", "vin_y"]].to_numpy()
+    sc = T["start_contact"].to_numpy(bool) if "start_contact" in T else np.zeros(len(T), bool)
+    ec = T["end_contact"].to_numpy(bool) if "end_contact" in T else np.zeros(len(T), bool)
     role = T[["role_x", "role_y"]].to_numpy()
     has_role = np.isfinite(role).all(axis=1)
     scale = 100
@@ -413,9 +487,14 @@ def link_flow(T, fps, a, window, n_paths=10, vmax=None, w_role=None, c_link=None
         d = np.hypot(ent[j, 0] - pred[:, 0], ent[j, 1] - pred[:, 1])
         sig = 0.8 + 1.5 * np.minimum(gap, 10.0)
         lam = 1 - np.exp(-gap / a.role_tau_s)
+        if ec[i]:  # issue #34: at a contact cut, place in the shape matters even with no gap
+            lam = np.where(sc[j], np.maximum(lam, a.contact_role), lam)
         rr = np.where(has_role[i] & has_role[j],
                       np.hypot(role[j, 0] - role[i, 0], role[j, 1] - role[i, 1]) / a.role_sigma_m, 1.0)
         cost = d / sig + w_role * lam * rr + c_link
+        if a.w_vel:  # velocity continuity across short gaps (a runner keeps running)
+            dv = np.hypot(vin[j, 0] - vout[i, 0], vin[j, 1] - vout[i, 1])
+            cost = cost + np.where(gap < 1.0, a.w_vel * dv / 3.0, 0.0)
         short = gap < 2.0
         keep = short.copy()
         long_idx = np.flatnonzero(~short)
@@ -574,6 +653,16 @@ def main():
     parser.add_argument("--max-succ", type=int, default=12, help="Long-gap successor candidates kept per tracklet")
     parser.add_argument("--overlap-frames", type=int, default=3)
     parser.add_argument("--min-len", type=int, default=8, help="Shorter tracklets skip the flow (gap-filled later)")
+    parser.add_argument("--contact-m", type=float, default=0.0,
+                        help="Cut same-team tracklets where two come within this many metres, so the "
+                             "linker (not the frame-to-frame tracker) decides who is who after a "
+                             "collision (issue #34). 0 = off")
+    parser.add_argument("--contact-min-side", type=int, default=15,
+                        help="Skip a contact cut that would leave a piece shorter than this (detections)")
+    parser.add_argument("--contact-role", type=float, default=0.6,
+                        help="Weight of the team-shape term on links across a contact cut (0-1)")
+    parser.add_argument("--w-vel", type=float, default=0.0,
+                        help="Cost per 3 m/s of velocity change across links with gaps < 1 s")
     parser.add_argument("--no-stability", action="store_true", help="Skip the perturbed re-solves")
     parser.add_argument("--reuse-tracklets", action="store_true",
                         help="Reuse tracklets_cache.parquet from the last run: re-run only linking + outputs "
@@ -643,6 +732,16 @@ def main():
               f"{flicker0:.0%} -> {_flicker(tl):.0%}; {n_cuts} tracklet(s) cut at a team flip")
         p.to_parquet(cache_p, index=False)
         tl.to_parquet(cache_tl, index=False)
+    if a.contact_m > 0:
+        ended = dict(zip(tl["tracklet"], tl["ended"]))
+        p, _, n_cc, flags = split_at_contacts(p, tl, int(p["tracklet"].max()) + 1, a.contact_m,
+                                              a.contact_min_side)
+        tl = summarize(p, fps, L, W)
+        tl["ended"] = [("contact" if flags.get(t, (False, False))[1] and t not in ended else ended.get(t, "contact"))
+                       for t in tl["tracklet"]]
+        tl["start_contact"] = [flags.get(t, (False, False))[0] for t in tl["tracklet"]]
+        tl["end_contact"] = [flags.get(t, (False, False))[1] and t not in ended for t in tl["tracklet"]]
+        print(f"  cut {n_cc} tracklet piece(s) at same-team contacts (< {a.contact_m} m)")
     team_tl = tl[tl["cls"].isin(TEAMS)]
     print(f"  {len(tl)} tracklets; classes: " + ", ".join(f"{k} {v}" for k, v in tl["cls"].value_counts().items()))
     print(f"  team tracklets: median {team_tl['n'].median():.0f} frames; ended by "

@@ -11,7 +11,7 @@ def args(**overrides):
         gate=1.2, gate_step=0.3, gate_max=3.0, kit_penalty=2.5, max_miss=12, new_conf=0.35,
         vmax=8.5, reach_m=3.0, w_role=1.5, role_tau_s=5.0, role_sigma_m=8.0, c_link=0.5,
         reward=0.5, reward_per_s=1.0, edge_s=20.0, cost_late=8.0, max_gap_s=300.0, max_succ=12,
-        overlap_frames=3)
+        overlap_frames=3, w_vel=0.0, contact_role=0.6)
     for k, v in overrides.items():
         setattr(a, k, v)
     return a
@@ -62,6 +62,7 @@ def test_link_flow_chains_each_player_through_off_screen_gaps():
             rows.append(dict(tracklet=tid, start=s, end=e, n=e - s + 1,
                              entry_x=50 + direction * 0.08 * s, entry_y=y,
                              exit_x=50 + direction * 0.08 * e, exit_y=y,
+                             vin_x=direction * 2.0, vin_y=0.0,
                              vout_x=direction * 2.0, vout_y=0.0, role_x=np.nan, role_y=np.nan))
             tid += 1
     assign, links = T.link_flow(pd.DataFrame(rows), 25.0, args(), (0, 400), n_paths=2)
