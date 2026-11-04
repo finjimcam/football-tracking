@@ -64,6 +64,22 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   (`app/lines.py` calls the same functions), so the page shows exactly what
   the render will draw. Keys: a/d ±0.5 s, A/D ±2 s, ,/. ±1 frame, k
   play, Enter save + next, s skip, r auto guess, c clear, p previous.
+- **Players** (issue #16, also *Players* on a broadcast match's page): every
+  player's whole-match path, heatmap and running stats, computed from
+  `tracks.parquet` by `tools/player_paths.py` (`app/players.py` wraps it).
+  Pick a player on the left. The pitch shows where they were (heatmap:
+  seconds per 2.5 m cell, square-root scale), their path at 2 Hz, the team's
+  average positions with them highlighted, and which way the team attacks.
+  The sliders and presets (0–15′, 15–30′, …) limit everything to part of
+  the match. Stats: distance, minutes tracked and coverage, per-90
+  distance, average and top speed (99th percentile), sprints (25 km/h or
+  faster held for at least 1 s) and distance per speed band. Gaps in the tracking
+  are left out, so distance is a lower bound. Names come from
+  `player_map.json`: a gold dot means anchors you set in Identify mode, and
+  the note under the stats says how many of a chain's joins were
+  uncertain. A wide heatmap with many uncertain joins usually means the
+  chain picks up a team-mate, so add anchors in the Lines tab and press
+  *Apply to tracking*. The tab reloads the new identities by itself.
 - **Code / Review / Sorter / Matrix / Present** tabs are placeholders that
   link to the issues that will build them (#3, #1, #4, #11, #12).
 

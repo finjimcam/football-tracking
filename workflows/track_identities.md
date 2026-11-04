@@ -116,6 +116,10 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   `player_map.json` marks those names `name_source: manual (Lines tab
   anchors)` and reports `manual_anchors` (unresolved anchors and
   conflicting votes included). Re-run steps 4-10 afterwards.
+  Check the result in Stopframe's **Players** tab (`tools/player_paths.py`,
+  which also prints the same stats table from the CLI). It shows each player's
+  whole-match path and heatmap. A full-back whose heatmap covers the whole
+  pitch, or a chain with many `fragile_links`, is where anchors help most.
 - **Possession** (`compute_possession.py`): nearest player within 2.5 m of the
   ball, 0.4 s hysteresis before switching, possession held through ball
   dropouts for up to 8 s -> per-frame `possession_timeline.parquet`.

@@ -12,6 +12,8 @@
     PUT  /api/matches/{match_id}/lines/export           keep/drop every phase
     POST /api/matches/{match_id}/lines/identify         anchor "this box is No. N" (issue #16)
     DELETE /api/matches/{match_id}/lines/identify/{id}  remove an anchor
+    GET  /api/matches/{match_id}/players                every player's full-match stats (issue #16)
+    GET  /api/matches/{match_id}/players/{pid}          one player's path, heatmap and stats (?start=&end= frames)
     GET  /api/system                      disk space + whether heavy jobs are held
 
 Everything else under / is the single-page app in app/static/.
@@ -27,6 +29,7 @@ from pydantic import BaseModel, Field
 from app import catalog, matches
 from app.jobs import JobRunner
 from app.lines import FrameSource, LinesCache, LinesError
+from app.players import PlayersCache, PlayersError
 
 STATIC = Path(__file__).parent / "static"
 
@@ -155,6 +158,27 @@ def create_app(root, runner=None, busy_check=None, warm=False):
             return fn(*a, **kw)
         except LinesError as e:
             raise HTTPException(400, str(e)) from None
+
+    players_cache = PlayersCache(root)
+
+    def _players(match_id):
+        _match_or_404(match_id)
+        try:
+            return players_cache.get(match_id)
+        except PlayersError as e:
+            raise HTTPException(409, str(e)) from None
+
+    @app.get("/api/matches/{match_id}/players")
+    def players_summary(match_id: str):
+        return _players(match_id).summary()
+
+    @app.get("/api/matches/{match_id}/players/{pid}")
+    def player_detail(match_id: str, pid: str, start: int | None = None, end: int | None = None):
+        mp = _players(match_id)
+        try:
+            return mp.player(pid, start, end)
+        except PlayersError as e:
+            raise HTTPException(404 if "Unknown" in str(e) else 400, str(e)) from None
 
     @app.get("/api/matches/{match_id}/lines")
     def lines_summary(match_id: str, team: str = "team_a"):
