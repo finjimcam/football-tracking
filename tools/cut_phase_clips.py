@@ -179,13 +179,27 @@ def entry_slots(entry):
     """[{"line": "back"|"mid", "anchors": [[frame, track_id], ...]}] from a saved
     entry: the slot format, or the first-version back/mid tid lists (anchored
     at the entry's keyframe). One slot = one player chain; anchors are frames
-    where the analyst said "this track id is that player"."""
+    where the analyst said "this track id is that player". An anchor with a
+    third element [frame, track_id, 1] is a CUT: "from this frame on" (used
+    to undo an identity swap at a collision), instead of the default
+    halfway split between neighbouring anchors."""
     if entry.get("slots") is not None:
-        return [{"line": sl["line"], "anchors": sorted([int(f), int(t)] for f, t in sl["anchors"])}
-                for sl in entry["slots"]]
+        return [{"line": sl["line"], "anchors": norm_anchors(sl["anchors"])} for sl in entry["slots"]]
     kf = entry.get("keyframe")
     return ([{"line": "back", "anchors": [[int(kf), int(t)]]} for t in entry.get("back", [])]
             + [{"line": "mid", "anchors": [[int(kf), int(t)]]} for t in entry.get("mid", [])])
+
+
+def norm_anchors(anchors):
+    """Sorted [[frame, tid]] / [[frame, tid, 1]] (cut) with ints; a cut and a
+    plain anchor on the same frame keep only the cut."""
+    out = {}
+    for a in anchors:
+        f, t = int(a[0]), int(a[1])
+        cut = len(a) > 2 and bool(a[2])
+        if f not in out or cut:
+            out[f] = [f, t, 1] if cut else [f, t]
+    return [out[f] for f in sorted(out)]
 
 
 def index_rows(rows_by_frame):
@@ -228,11 +242,25 @@ def track_run(rows_idx, tid, frames, fps, forbidden=(), handoff_s=3.0, vmax=8.0)
 
 def follow_chain(rows_idx, anchors, lo, hi, fps, forbidden=()):
     """One player's detections across lo..hi from its anchors: each anchor runs
-    forwards and backwards, the runs of neighbouring anchors meeting halfway."""
-    obs, anchors = {}, sorted(anchors)
-    for i, (af, at) in enumerate(anchors):
-        end = hi if i + 1 == len(anchors) else (af + anchors[i + 1][0]) // 2
-        begin = lo if i == 0 else (anchors[i - 1][0] + af) // 2 + 1
+    forwards and backwards, the runs of neighbouring anchors meeting halfway -
+    except at a CUT anchor, which owns everything from its own frame on (the
+    previous anchor's run stops the frame before it)."""
+    obs, anchors = {}, norm_anchors(anchors)
+    for i, a in enumerate(anchors):
+        af, at = a[0], a[1]
+        cut = len(a) > 2
+        if i + 1 == len(anchors):
+            end = hi
+        elif len(anchors[i + 1]) > 2:
+            end = anchors[i + 1][0] - 1
+        else:
+            end = (af + anchors[i + 1][0]) // 2
+        if i == 0:
+            begin = lo
+        elif cut:
+            begin = af
+        else:
+            begin = (anchors[i - 1][0] + af) // 2 + 1
         obs.update(track_run(rows_idx, at, range(af, min(end, hi) + 1), fps, forbidden))
         obs.update(track_run(rows_idx, at, range(af, max(begin, lo) - 1, -1), fps, forbidden))
     return obs
@@ -279,10 +307,10 @@ def fill_gaps(obs, fps, H_at, lo, hi, fill_s=4.0, end_hold=12):
 
 def build_chains(rows_idx, slots, lo, hi, fps, H_at):
     """[{"line", "pts": {frame: (tid, px, py, fx, fy, status)}, "raw": detections}] for one phase."""
-    every = {t for sl in slots for _, t in sl["anchors"]}
+    every = {a[1] for sl in slots for a in sl["anchors"]}
     chains = []
     for sl in slots:
-        mine = {t for _, t in sl["anchors"]}
+        mine = {a[1] for a in sl["anchors"]}
         raw = follow_chain(rows_idx, sl["anchors"], lo, hi, fps, forbidden=every - mine)
         chains.append({"line": sl["line"], "raw": raw, "pts": fill_gaps(raw, fps, H_at, lo, hi)})
     return chains

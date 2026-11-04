@@ -28,8 +28,11 @@ def root(tmp_path):
     return build_synthetic(tmp_path)
 
 
-def build_synthetic(tmp_path):
-    """Write the synthetic match under tmp_path (also used for manual UI checks)."""
+def build_synthetic(tmp_path, collide=False):
+    """Write the synthetic match under tmp_path (also used for manual UI checks).
+    collide=True: defenders 1 and 3 run across each other, meeting at frame
+    200, and the tracker swaps their ids there (id 1 continues on player 3's
+    body and vice versa) - the case the picker's swap fix exists for."""
     tmp_path = Path(tmp_path)
     mdir = tmp_path / ".tmp" / MID
     mdir.mkdir(parents=True)
@@ -55,6 +58,12 @@ def build_synthetic(tmp_path):
         for tid, (px, py) in layout.items():
             px2 = px + 2 * np.sin(f / 40)
             t = tid
+            if collide and tid in (1, 3):
+                # 1 runs y 10 -> 42, 3 runs y 42 -> 10; they meet at f=200
+                u = min(max((f - 100) / 200, 0), 1)
+                py = 10 + 32 * u if tid == 1 else 42 - 32 * u
+                if f >= 200:
+                    t = 3 if tid == 1 else 1  # tracker id swap at the collision
             if tid == 2 and f >= 200:
                 t = 22  # fragment: same player, new track id
                 if f < 205:
@@ -165,3 +174,45 @@ def test_lines_need_tracking(client, root):
     (root / ".tmp" / MID / "possession_timeline.parquet").unlink()
     r = client.get(f"/api/matches/{MID}/lines")
     assert r.status_code == 409 and "possession" in r.json()["detail"]
+
+
+def test_swap_fix_after_collision(tmp_path):
+    from app.lines import MatchLines
+    root = build_synthetic(tmp_path, collide=True)
+    ml = MatchLines(root, MID, "team_a")
+    s, e = ml.segs[0][0], ml.segs[0][1]
+    kf = 150
+    slots = [{"line": "back", "anchors": [[kf, 1]]}, {"line": "back", "anchors": [[kf, 3]]}]
+    chains = ml._chains(slots, s, e)
+    assert chains[0]["pts"][260][0] == 1  # chain on player "1" followed id 1 onto the wrong body
+
+    # player 1's body carries id 3 after the swap: tell chain 0 it belongs on track 3 at frame 260
+    r = ml.edit(s, slots, "swap", frame=260, tid=3, chain=0)
+    assert "swap point" in r["msg"] and "other picked chain" in r["msg"]
+    cut_frames = {a[0] for sl in r["slots"] for a in sl["anchors"] if len(a) > 2}
+    assert len(cut_frames) == 1 and abs(next(iter(cut_frames)) - 200) <= 2
+    c0, c1 = r["chains"][0]["pts"], r["chains"][1]["pts"]
+    assert c0[150][0] == 1 and c0[190][0] == 1    # before the collision: unchanged
+    assert c0[210][0] == 3 and c0[300][0] == 3    # after: follows the right body
+    assert c1[190][0] == 3 and c1[210][0] == 1    # partner swapped back too
+
+    # same frame, same click again: nothing to do
+    again = ml.edit(s, r["slots"], "swap", frame=260, tid=3, chain=0)
+    assert "already on this player" in again["msg"]
+
+    # renderer agrees: cut anchors survive a save / load through the CLI format
+    sys.path.insert(0, str(ROOT / "tools"))
+    from cut_phase_clips import build_chains, entry_slots, load_selection
+    ml.save(s, r["slots"], keyframe=kf)
+    sel = load_selection(ml.sel_path)
+    re_slots = entry_slots(sel[s])
+    assert re_slots == r["slots"]
+    rendered = build_chains(ml.rows_idx, re_slots, s, e, ml.fps, ml.H_at)
+    assert rendered[0]["pts"][300][0] == 3
+
+
+def test_cut_anchor_semantics():
+    sys.path.insert(0, str(ROOT / "tools"))
+    from cut_phase_clips import norm_anchors
+    assert norm_anchors([[50, 2, 1], [10, 1], [50, 9]]) == [[10, 1], [50, 2, 1]]
+    assert norm_anchors([(10, 1), (5, 2)]) == [[5, 2], [10, 1]]
