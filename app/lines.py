@@ -17,6 +17,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 import cv2
+import numpy as np
 import pandas as pd
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
@@ -25,7 +26,8 @@ if str(TOOLS) not in sys.path:
 
 from _common import clock_label, load_calibration, load_meta, match_config  # noqa: E402
 from cut_phase_clips import (build_chains, entry_slots, homography_lookup, index_rows,  # noqa: E402
-                             load_selection, load_team_rows, phases, save_selection, selection_path)
+                             load_selection, load_team_rows, norm_anchors, phases, save_selection,
+                             selection_path)
 from select_shape_players import auto_slots, pick_keyframe, relink_target  # noqa: E402
 
 PHASE = "out_of_possession"
@@ -81,7 +83,7 @@ class MatchLines:
         for sl in slots or []:
             if sl.get("line") not in ("back", "mid"):
                 raise LinesError("slot line must be back or mid")
-            anchors = sorted([int(f), int(t)] for f, t in sl.get("anchors", []))
+            anchors = norm_anchors(sl.get("anchors", []))
             if not anchors:
                 raise LinesError("every slot needs an anchor")
             out.append({"line": sl["line"], "anchors": anchors})
@@ -151,15 +153,88 @@ class MatchLines:
                 "clocks": {f: clock_label(f, self.cfg, self.fps) for f in range(s, e + 1, int(self.fps))},
                 "rows": rows}
 
-    def edit(self, start, slots, action, frame=None, tid=None):
+    def swap_moment(self, t_old, t_new, frame, s, look_s=6.0):
+        """The frame the tracker most likely swapped ids t_old <-> t_new: their
+        closest approach (pitch distance) in the `look_s` before `frame`, while
+        both are detected. None if they're never both seen in that window."""
+        best, bd = None, 1e9
+        for f in range(frame, max(s, frame - int(look_s * self.fps)) - 1, -1):
+            cur = self.rows_idx.get(f)
+            if not cur or t_old not in cur or t_new not in cur:
+                continue
+            a, b = cur[t_old], cur[t_new]
+            d = float(np.hypot(a.pitch_x - b.pitch_x, a.pitch_y - b.pitch_y))
+            if d < bd - 1e-6:  # strict: ties keep the later frame
+                best, bd = f, d
+        return best, bd
+
+    def _first_seen(self, tid, frm, to):
+        for f in range(frm, to + 1):
+            if tid in self.rows_idx.get(f, {}):
+                return f
+        return None
+
+    def _recut(self, anchors, cut, frame, s, t_before, new_anchor):
+        """Anchors with `new_anchor` (a cut) added and the anchors between the
+        cut and the click dropped (they pointed at the wrong player). If that
+        leaves nothing before the cut, pin the pre-swap track just before it
+        so the chain still follows the right player up to the collision."""
+        kept = [a for a in anchors if not (cut <= a[0] <= frame)]
+        if t_before is not None and not any(a[0] < cut for a in kept):
+            for f in range(cut - 1, max(s, cut - int(4 * self.fps)) - 1, -1):
+                if t_before in self.rows_idx.get(f, {}):
+                    kept.append([f, t_before])
+                    break
+        return norm_anchors(kept + [new_anchor])
+
+    def _swap(self, slots, s, e, chain, frame, tid):
+        """Put chain `chain` onto track `tid` from the swap moment on; if `tid`
+        was on another picked chain, that chain takes this chain's old track
+        from the same moment (the two identities swap back)."""
+        if not 0 <= chain < len(slots):
+            raise LinesError("Pick the chain to fix first")
+        chains = self._chains(slots, s, e)
+        mine = chains[chain]["pts"].get(frame)
+        if mine and mine[0] == tid and mine[5] != "filled":
+            return slots, "That chain is already on this player here"
+        t_old = int(mine[0]) if mine else None
+        partner = next((i for i, ch in enumerate(chains) if i != chain and ch["pts"].get(frame)
+                        and ch["pts"][frame][0] == tid and ch["pts"][frame][5] != "filled"), None)
+        cut, dist = (None, None)
+        if t_old is not None and t_old != tid:
+            cut, dist = self.swap_moment(t_old, tid, frame, s)
+        if cut is None:
+            cut = frame
+        start_new = self._first_seen(tid, cut, frame)
+        slots[chain]["anchors"] = self._recut(slots[chain]["anchors"], cut, frame, s, t_old, [start_new, tid, 1])
+        line = "back" if slots[chain]["line"] == "back" else "midfield"
+        when = f"{(frame - cut) / self.fps:.1f} s earlier" if cut < frame else "here"
+        msg = f"Moved the {line} chain onto this player from the swap point ({when}"
+        msg += f", {dist:.1f} m apart)" if dist is not None else ")"
+        if partner is not None and t_old is not None:
+            p_new = self._first_seen(t_old, cut, frame)
+            if p_new is not None:
+                slots[partner]["anchors"] = self._recut(slots[partner]["anchors"], cut, frame, s, tid,
+                                                        [p_new, t_old, 1])
+                msg += "; swapped the other picked chain back too"
+        return slots, msg
+
+    def edit(self, start, slots, action, frame=None, tid=None, chain=None):
         """Apply one picker action to a draft (nothing saved). Actions:
         cycle (left-click: none -> back -> mid -> none), relink (right-click),
-        auto (reset to the automatic guess at `frame`), clear, chains (just
+        swap (fix an identity swap: chain `chain` belongs on `tid`), auto
+        (reset to the automatic guess at `frame`), clear, chains (just
         recompute). Returns the new slots + chains + a message."""
         _, (s, e, _c0, _c1) = self._seg(start)
         slots = self._clean_slots(slots)
         msg = ""
-        if action in ("cycle", "relink"):
+        if action == "swap":
+            if frame is None or tid is None or chain is None or not s <= int(frame) <= e:
+                raise LinesError("frame (inside the phase), chain and track id are required")
+            if int(tid) not in self.rows_idx.get(int(frame), {}):
+                raise LinesError("That player isn't detected on this frame")
+            slots, msg = self._swap(slots, s, e, int(chain), int(frame), int(tid))
+        elif action in ("cycle", "relink"):
             if frame is None or tid is None or not s <= int(frame) <= e:
                 raise LinesError("frame (inside the phase) and track id are required")
             frame, tid = int(frame), int(tid)

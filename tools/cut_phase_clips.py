@@ -179,13 +179,27 @@ def entry_slots(entry):
     """[{"line": "back"|"mid", "anchors": [[frame, track_id], ...]}] from a saved
     entry: the slot format, or the first-version back/mid tid lists (anchored
     at the entry's keyframe). One slot = one player chain; anchors are frames
-    where the analyst said "this track id is that player"."""
+    where the analyst said "this track id is that player". An anchor with a
+    third element [frame, track_id, 1] is a CUT: "from this frame on" (used
+    to undo an identity swap at a collision), instead of the default
+    halfway split between neighbouring anchors."""
     if entry.get("slots") is not None:
-        return [{"line": sl["line"], "anchors": sorted([int(f), int(t)] for f, t in sl["anchors"])}
-                for sl in entry["slots"]]
+        return [{"line": sl["line"], "anchors": norm_anchors(sl["anchors"])} for sl in entry["slots"]]
     kf = entry.get("keyframe")
     return ([{"line": "back", "anchors": [[int(kf), int(t)]]} for t in entry.get("back", [])]
             + [{"line": "mid", "anchors": [[int(kf), int(t)]]} for t in entry.get("mid", [])])
+
+
+def norm_anchors(anchors):
+    """Sorted [[frame, tid]] / [[frame, tid, 1]] (cut) with ints; a cut and a
+    plain anchor on the same frame keep only the cut."""
+    out = {}
+    for a in anchors:
+        f, t = int(a[0]), int(a[1])
+        cut = len(a) > 2 and bool(a[2])
+        if f not in out or cut:
+            out[f] = [f, t, 1] if cut else [f, t]
+    return [out[f] for f in sorted(out)]
 
 
 def index_rows(rows_by_frame):
@@ -228,11 +242,25 @@ def track_run(rows_idx, tid, frames, fps, forbidden=(), handoff_s=3.0, vmax=8.0)
 
 def follow_chain(rows_idx, anchors, lo, hi, fps, forbidden=()):
     """One player's detections across lo..hi from its anchors: each anchor runs
-    forwards and backwards, the runs of neighbouring anchors meeting halfway."""
-    obs, anchors = {}, sorted(anchors)
-    for i, (af, at) in enumerate(anchors):
-        end = hi if i + 1 == len(anchors) else (af + anchors[i + 1][0]) // 2
-        begin = lo if i == 0 else (anchors[i - 1][0] + af) // 2 + 1
+    forwards and backwards, the runs of neighbouring anchors meeting halfway -
+    except at a CUT anchor, which owns everything from its own frame on (the
+    previous anchor's run stops the frame before it)."""
+    obs, anchors = {}, norm_anchors(anchors)
+    for i, a in enumerate(anchors):
+        af, at = a[0], a[1]
+        cut = len(a) > 2
+        if i + 1 == len(anchors):
+            end = hi
+        elif len(anchors[i + 1]) > 2:
+            end = anchors[i + 1][0] - 1
+        else:
+            end = (af + anchors[i + 1][0]) // 2
+        if i == 0:
+            begin = lo
+        elif cut:
+            begin = af
+        else:
+            begin = (anchors[i - 1][0] + af) // 2 + 1
         obs.update(track_run(rows_idx, at, range(af, min(end, hi) + 1), fps, forbidden))
         obs.update(track_run(rows_idx, at, range(af, max(begin, lo) - 1, -1), fps, forbidden))
     return obs
@@ -277,15 +305,72 @@ def fill_gaps(obs, fps, H_at, lo, hi, fill_s=4.0, end_hold=12):
     return out
 
 
-def build_chains(rows_idx, slots, lo, hi, fps, H_at):
-    """[{"line", "pts": {frame: (tid, px, py, fx, fy, status)}, "raw": detections}] for one phase."""
-    every = {t for sl in slots for _, t in sl["anchors"]}
-    chains = []
-    for sl in slots:
-        mine = {t for _, t in sl["anchors"]}
-        raw = follow_chain(rows_idx, sl["anchors"], lo, hi, fps, forbidden=every - mine)
-        chains.append({"line": sl["line"], "raw": raw, "pts": fill_gaps(raw, fps, H_at, lo, hi)})
-    return chains
+def _run_start(raw, f, tid):
+    """First frame of the unbroken run of `tid` in a chain that contains frame f."""
+    k = f
+    while (k - 1) in raw and raw[k - 1][0] == tid:
+        k -= 1
+    return k
+
+
+def _claim(raw, f, tid, fps):
+    """How strongly a chain owns `tid` at frame f: (start of its unbroken run
+    on tid, pitch distance from the chain's previous sighting to where tid
+    starts). Earlier run wins; on a tie (both handed off onto the same fresh
+    track) the chain that was closer wins."""
+    k = _run_start(raw, f, tid)
+    here = raw[k]
+    for b in range(k - 1, k - int(4 * fps) - 1, -1):
+        prev = raw.get(b)
+        if prev is not None:
+            return k, float(np.hypot(here[1] - prev[1], here[2] - prev[2]))
+    return k, 0.0
+
+
+def build_chains(rows_idx, slots, lo, hi, fps, H_at, max_rounds=6):
+    """[{"line", "pts": {frame: (tid, px, py, fx, fy, status)}, "raw": detections}] for one phase.
+
+    One track belongs to at most one chain per frame (issue #34: chains were
+    "merging" - after a drop-out a chain handed off onto a fresh track that
+    another picked chain was already following, so two markers sat on one
+    player on ~26% of picked frames). Conflicts are resolved jointly: the
+    chain that has the track among its own anchors keeps it, else the one
+    that has held it longest; the other chain is re-followed with that track
+    forbidden, so it shows a gap (filled or lost) instead of doubling up."""
+    every = {a[1] for sl in slots for a in sl["anchors"]}
+    mine = [{a[1] for a in sl["anchors"]} for sl in slots]
+    extra = [set() for _ in slots]
+
+    def follow(i):
+        return follow_chain(rows_idx, slots[i]["anchors"], lo, hi, fps,
+                            forbidden=(every - mine[i]) | (extra[i] - mine[i]))
+
+    raws = [follow(i) for i in range(len(slots))]
+    for _ in range(max_rounds):
+        users = {}
+        for i, raw in enumerate(raws):
+            for f, o in raw.items():
+                users.setdefault((f, o[0]), []).append(i)
+        losers = {}
+        for (f, tid), cis in users.items():
+            if len(cis) < 2:
+                continue
+            anchored = [i for i in cis if tid in mine[i]]
+            if len(anchored) == 1:
+                win = anchored[0]
+            else:
+                win = min(cis, key=lambda i: (*_claim(raws[i], f, tid, fps), i))
+            for i in cis:
+                if i != win and tid not in mine[i]:
+                    losers.setdefault(i, set()).add(tid)
+        losers = {i: t for i, t in losers.items() if not t <= extra[i]}
+        if not losers:
+            break
+        for i, tids in losers.items():
+            extra[i] |= tids
+            raws[i] = follow(i)
+    return [{"line": sl["line"], "raw": raw, "pts": fill_gaps(raw, fps, H_at, lo, hi)}
+            for sl, raw in zip(slots, raws)]
 
 
 def chains_by_frame(chains):

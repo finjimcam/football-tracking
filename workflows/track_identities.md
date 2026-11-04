@@ -134,6 +134,34 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection
   Output: `<id>_<team>_<phase>_shape_selected.mp4`. `--auto-fill` writes the
   guess for every phase without a window (smoke test; membership changed on
   ~4% of frames instead of ~23%).
+  **Web picker (2026-11-04):** the Stopframe app's Lines tab
+  (`tools/serve_app.py`, see `app/README.md`) does the same job in a browser,
+  so no desktop window is needed. It reads and writes the same selection
+  file. **Fix swap** (`x`) repairs a chain that jumped to the wrong player
+  at a collision. Tap the chain, then the right player. The cut goes in at
+  the two players' closest approach in the previous 6 s, not where you
+  tapped, and a picked partner chain swaps back too. These are saved as cut
+  anchors `[frame, track_id, 1]` ("from this frame on"); plain anchors still
+  split halfway.
+  **Chains are exclusive:** one track belongs to at most one chain per frame.
+  Before this fix, a chain that lost its player could hand off onto a track
+  another picked chain was already following, and two markers sat on one
+  player. That happened on 26% of the picked frames (2604 of 10162). With
+  exclusivity the 14 picked phases read 83% detected, 5% filled and 12% lost.
+  The difference was fake "detected" frames that are now honest gaps to
+  re-link.
+- **Contact swaps** (`contact_swaps.py`, issue #34): this is a proxy for
+  identities that swap when two teammates collide. Take each identity's
+  average place in the team shape for 3 s before and 3 s after every contact
+  (< 1 m). If "A before ≈ B after" fits better than "A before ≈ A after" by
+  more than 2 m, flag the contact as a swap. On the 2026-11-04 baseline,
+  City had 11 of 87 evaluable contacts flagged and Spurs 29 of 129. The
+  check can't see a swap during a full crossing, because the swap looks
+  like a bounce. Use it to compare variants, not as a true error rate.
+  `track_identities.py --contact-m` (off by default) cuts both tracklets at
+  same-team contacts so the global linker decides who is who. `--w-vel` adds
+  velocity continuity to short links. Experiments, and the standing
+  improvement loop, are tracked in issue #35.
 - **Verification** (`verify_tracking.py`): see "Reading the verification".
 
 ## Reading the verification ("does it match?")

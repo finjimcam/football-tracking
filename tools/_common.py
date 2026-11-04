@@ -240,6 +240,7 @@ def load_calibration(match_id, config_dir=CONFIG_DIR, path=None):
             raise SystemExit(f"{npz_path} (referenced by {path}) not found — "
                              ".tmp may have been cleared; re-run tools/estimate_camera_motion.py")
         data = np.load(npz_path)
+        calib["frame_homographies"] = str(npz_path)  # normalised, for callers that np.load it again
         calib["frame_index"] = data["frames"]
         calib["frame_H"] = data["H"]
         return calib

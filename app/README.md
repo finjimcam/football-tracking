@@ -29,7 +29,13 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   of a team's out-of-possession phases. This is the browser version of
   `tools/select_shape_players.py`. Click a player to cycle none → back →
   midfield. Right-click (or use Re-link mode) to put a lost chain back on a
-  player. A strip under the frame shows each chain as green (detected), amber
+  player. **Fix swap** (`x`) is for chains that jumped to the wrong player
+  when two players collided: tap the chain, then the right player. The
+  picker finds the swap moment (the two players' closest approach in the
+  last 6 s) and cuts the chain there. If the other player was also on a
+  picked chain, that chain swaps back too. Cut anchors are saved as
+  `[frame, track_id, 1]` ("from this frame on"), which the renderer and the
+  CLI picker understand. A strip under the frame shows each chain as green (detected), amber
   (filled) or red (lost), with white ticks at hand-offs. Picks are saved to
   the same `config/<id>_<team>_out_of_possession_shape_selection.json` the
   CLI picker uses, so either one can carry on from the other.
