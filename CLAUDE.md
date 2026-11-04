@@ -99,6 +99,11 @@ tool scripts:
 | Full match report from a match video (Veo-style clips, manual roster) | [workflows/generate_match_report.md](workflows/generate_match_report.md) + [workflows/curate_and_identify_players.md](workflows/curate_and_identify_players.md) | `tools/ingest_video.py` → … → `tools/build_report.py` |
 | **Broadcast/tactical-cam half: persistent identities for all 22, verification vs Opta, phase clips** | [workflows/track_identities.md](workflows/track_identities.md) | `tools/detect_frames.py`, `tools/calibrate_auto.py`, `tools/track_identities.py`, `tools/track_ball.py`, `tools/compute_possession.py`, `tools/verify_tracking.py`, `tools/compare_reference_stats.py`, `tools/render_tracking_video.py`, `tools/cut_phase_clips.py` |
 
+**Web front end (Stopframe):** `tools/serve_app.py` serves a browser UI
+(`app/`) that runs the match-report stages as background jobs with logs and
+progress. See [app/README.md](app/README.md). Long loops in tools print
+`PROGRESS done/total` lines via `_common.Progress` for its progress bars.
+
 **Notes that apply across all of them:**
 - `tools/coco_to_yolo.py` depends on the external `yolo_finetune_utils` repo
   (`git clone https://github.com/Labellerr/yolo_finetune_utils.git`), which
