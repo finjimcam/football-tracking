@@ -19,3 +19,5 @@ openvino==2026.4.1
 # Notebook / Labellerr annotation stage only (not part of the verified environment)
 ipyfilechooser
 git+https://github.com/Labellerr/SDKPython.git
+fastapi>=0.115,<0.116
+uvicorn>=0.32,<0.33
