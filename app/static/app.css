@@ -213,7 +213,68 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .mini-select { height: 30px; background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; color: var(--text); padding: 0 6px; }
 button.job-row { font: inherit; cursor: pointer; }
 
+/* code window (issue #3) */
+.code-player { display: flex; flex-direction: column; gap: 8px; }
+.code-video { width: 100%; aspect-ratio: 16 / 9; background: #0B0D10; border-radius: 6px; display: block; }
+.code-seek { width: 100%; accent-color: var(--accent); margin: 0; }
+.code-time { font-size: 12px; color: var(--text-2); margin-left: auto; }
+.code-side { flex: 1 1 340px; max-width: 460px; }
+.code-pad { display: flex; flex-direction: column; gap: 12px; }
+.code-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+.code-btn {
+  min-height: 56px; border: 0; border-radius: 6px; background: var(--c); padding: 6px 8px;
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; text-align: left;
+  font-weight: 600; box-shadow: inset 0 -2px 0 rgba(0,0,0,.25);
+}
+.code-btn:hover { filter: brightness(1.1); }
+.code-btn:active { transform: translateY(1px); }
+.code-btn.hit { animation: hit .35s ease-out; }
+@keyframes hit { 0% { box-shadow: 0 0 0 3px #fff; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.code-btn-label { font-size: 13px; line-height: 1.2; }
+.code-btn-meta { font-size: 10px; opacity: .8; font-weight: 500; }
+.code-labels-head { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 10px; }
+.code-sel { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.code-group { display: flex; flex-direction: column; gap: 6px; }
+.code-labels { display: flex; flex-wrap: wrap; gap: 4px; }
+.code-label {
+  min-height: 30px; padding: 0 9px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--raised-2);
+  color: var(--text-2); font-size: 12px;
+}
+.code-label:hover:not([disabled]) { background: var(--hover); }
+.code-label.on { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.code-label.on .dim { color: var(--bg); }
+.code-label[disabled] { opacity: .45; cursor: default; }
+.code-strip { min-height: 14px; }
+.code-list { max-height: 40vh; overflow: auto; }
+.code-row { display: flex; align-items: center; gap: 6px; padding-right: 10px; border-bottom: 1px solid var(--row-line); }
+.code-row.on { background: #23282F; box-shadow: inset 3px 0 0 var(--accent); }
+.code-row-main {
+  flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  padding: 8px 14px; background: transparent; border: 0; text-align: left; color: var(--text);
+}
+.code-row-main:hover { background: var(--raised-2); }
+.code-row-code { font-weight: 600; }
+.code-row-labels { display: flex; flex-wrap: wrap; gap: 4px; }
+.code-editor { display: flex; flex-direction: column; gap: 10px; }
+.code-editor input[type=text], .code-editor input[type=number] {
+  height: 32px; background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; padding: 0 8px; color: var(--text); min-width: 0;
+}
+.code-edit-rows { display: flex; flex-direction: column; gap: 6px; }
+.code-edit-row { display: grid; grid-template-columns: 34px minmax(70px, 1fr) 36px 48px 48px 30px 30px; gap: 4px; align-items: center; }
+.code-edit-row .btn { padding: 0; min-width: 30px; }
+.code-edit-row input[data-f=key] { text-align: center; padding: 0; }
+.code-edit-row.group { grid-template-columns: minmax(0, 1fr) auto 30px; }
+.code-edit-row.group input[data-f=labels] { grid-column: 1 / -1; order: 5; }
+.code-edit-row input[type=color] { width: 34px; height: 32px; padding: 0; border: 1px solid var(--line-2); border-radius: 6px; background: var(--bg); }
+
 @media (max-width: 640px) {
+  .code-side { max-width: none; }
+  /* phone: video, then the code window, then the instance list */
+  .code-layout > .col-main { display: contents; }
+  .code-layout > .col-main > *, .code-layout > .code-side { flex: 1 1 100%; }
+  .code-layout .code-video-panel { order: 1; }
+  .code-layout > .code-side { order: 2; }
+  .code-layout .code-list-panel { order: 3; }
   .topbar { padding: 8px 12px; gap: 8px 10px; }
   .tabs { order: 10; width: 100%; overflow-x: auto; flex-wrap: nowrap; }
   .view { padding: 12px 8px; }

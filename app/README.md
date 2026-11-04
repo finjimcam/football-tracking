@@ -52,8 +52,30 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   (`app/lines.py` calls the same functions), so the page shows exactly what
   the render will draw. Keys: a/d ±0.5 s, A/D ±2 s, ,/. ±1 frame, k
   play, Enter save + next, s skip, r auto guess, c clear, p previous.
-- **Code / Review / Sorter / Matrix / Present** tabs are placeholders that
-  link to the issues that will build them (#3, #1, #4, #11, #12).
+- **Code** (issue #3): the match video with a *code window* of tagging
+  buttons beside it, like a Sportscode code window or a Nacsport category
+  board. Press a button, or its hotkey, while the video plays to make an
+  *instance*: a clip from `lead` seconds before to `lag` seconds after that
+  moment (set per button, for example Shot −8/+5 s). The new instance is
+  selected, and the label buttons underneath describe it, one label per group:
+  Team (the two teams), Player (the match lineup from
+  `config/<id>_reference.json`, narrowed to the team once a Team label is
+  set), Outcome, Zone, or any groups you add. Label groups can have hotkeys
+  too. `[` / `]` move the selected clip's start/end to the current time,
+  Delete removes it (Ctrl+Z undoes), Space plays, ←/→ jump 2 s (Shift: 10 s),
+  and `,` / `.` step one frame. A strip under the video shows every instance
+  along the match (click to seek), and the list below plays one from its
+  start when you click it. **Edit layout** changes buttons (colour, label,
+  hotkey, seconds before/after, order) and label groups. Layouts save as
+  templates in `config/code_windows/<name>.json`, and *Default* is built in.
+  Instances save as you go to `config/<id>_instances.json`. Each one keeps
+  its code name and colour, so later layout edits never change past tags.
+  **CSV** downloads them, one column per label group. The video is served
+  from `GET /api/matches/{id}/video` with HTTP Range, so the browser can seek
+  without downloading the whole file. It needs a codec the browser plays
+  (H.264 MP4 does).
+- **Review / Sorter / Matrix / Present** tabs are placeholders that
+  link to the issues that will build them (#1, #4, #11, #12).
 
 ## Two pipelines
 A match whose `config/<id>_match.json` exists gets the **broadcast** pipeline
