@@ -53,12 +53,20 @@ def main():
         add("possession_switches", "match", "match", possession["possession_switches"], "count", conf)
         add("ball_detection_rate", "match", "match",
             round(100 * possession["ball_detection_rate"], 1), "percent", "high")
+        if possession.get("team_a_time_pct") is not None:  # time held, with hold through dropouts
+            add("possession_time_pct", "team", "team_a", possession["team_a_time_pct"], "percent", conf)
+            add("possession_time_pct", "team", "team_b", possession["team_b_time_pct"], "percent", conf)
 
     if positions:
         conf = "high" if positions["calibrated"] else "medium_uncalibrated"
         for team, t in positions["teams"].items():
             add("avg_position_x", "team", team, t["avg_x"], positions["unit"], conf)
             add("avg_position_y", "team", team, t["avg_y"], positions["unit"], conf)
+        for team, phases in positions.get("by_phase", {}).items():  # shape in / out of possession
+            for phase, m in phases.items():
+                for k in ("defensive_line_m_from_own_goal", "avg_shape_length_m", "avg_shape_width_m"):
+                    if m.get(k) is not None:
+                        add(f"{k}_{phase}", "team", team, m[k], "m", "identified")
 
     if physical:
         conf = "high" if physical["calibrated"] else "medium_uncalibrated"

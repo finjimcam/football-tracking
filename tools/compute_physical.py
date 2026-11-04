@@ -96,6 +96,9 @@ def main():
             "distance": round(float(tr["_step"][keep].sum()), 1),
             "duration_s": round(float(tr["_dt"][keep].sum()), 1),
             "max_speed": round(float(tr["_speed"][keep].max()), 2) if keep.any() else 0.0,
+            # Robust top speed: on broadcast footage the raw max sits at the
+            # glitch cap (tracking jumps), so the 99th percentile is reported too.
+            "top_speed_p99": round(float(np.percentile(tr["_speed"][keep], 99)), 2) if keep.sum() >= 50 else None,
         })
     track_rows.sort(key=lambda r: r["distance"], reverse=True)
 
@@ -110,12 +113,14 @@ def main():
                 continue
             dist = sum(r["distance"] for r in rows)
             dur = sum(r["duration_s"] for r in rows)
+            p99 = [r["top_speed_p99"] for r in rows if r.get("top_speed_p99") is not None]
             players_out.append({
                 "player": key, "team": info["team"], "number": info["number"],
                 "distance": round(dist, 1),
                 "duration_s": round(dur, 1),
                 "avg_speed": round(dist / dur, 2) if dur else 0.0,
                 "max_speed": max(r["max_speed"] for r in rows),
+                "top_speed_p99": max(p99) if p99 else None,
                 "n_tracks": len(rows),
                 "coverage": info["coverage"],
             })

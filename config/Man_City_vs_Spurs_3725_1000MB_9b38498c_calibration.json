@@ -1,0 +1,172 @@
+{
+  "mode": "dynamic",
+  "pitch_length": 105.0,
+  "pitch_width": 68.0,
+  "video": "Man City vs Spurs_3725_1000MB.mp4",
+  "note": "Seed for tools/calibrate_auto.py. Landmarks read off a gridded 2.4x zoom of frame 30000 (calibrate_pitch.py point format). calibrate_auto.py fits the fixed-position PTZ camera to these, then tracks every frame by snapping the pitch-line model to detected line pixels.",
+  "keyframes": [
+    {
+      "frame": 30000,
+      "points": [
+        {
+          "landmark": "Halfway line: top touchline",
+          "image": [
+            275,
+            132
+          ],
+          "pitch": [
+            52.5,
+            0.0
+          ]
+        },
+        {
+          "landmark": "Halfway line: bottom touchline",
+          "image": [
+            327,
+            625
+          ],
+          "pitch": [
+            52.5,
+            68.0
+          ]
+        },
+        {
+          "landmark": "Center circle: top intersection with halfway line",
+          "image": [
+            288,
+            242.5
+          ],
+          "pitch": [
+            52.5,
+            24.85
+          ]
+        },
+        {
+          "landmark": "Center circle: bottom intersection with halfway line",
+          "image": [
+            300,
+            361
+          ],
+          "pitch": [
+            52.5,
+            43.15
+          ]
+        },
+        {
+          "landmark": "Right penalty area: top-front corner",
+          "image": [
+            788,
+            149
+          ],
+          "pitch": [
+            88.5,
+            13.84
+          ]
+        },
+        {
+          "landmark": "Right penalty area: bottom-front corner",
+          "image": [
+            1037,
+            375
+          ],
+          "pitch": [
+            88.5,
+            54.16
+          ]
+        },
+        {
+          "landmark": "Right penalty area: top corner on goal line",
+          "image": [
+            1000,
+            131
+          ],
+          "pitch": [
+            105.0,
+            13.84
+          ]
+        },
+        {
+          "landmark": "Corner: top-right",
+          "image": [
+            929,
+            84
+          ],
+          "pitch": [
+            105.0,
+            0.0
+          ]
+        },
+        {
+          "landmark": "Right goal area: top-front corner",
+          "image": [
+            996,
+            182
+          ],
+          "pitch": [
+            99.5,
+            24.84
+          ]
+        },
+        {
+          "landmark": "Right goal area: bottom-front corner",
+          "image": [
+            1134,
+            277
+          ],
+          "pitch": [
+            99.5,
+            43.16
+          ]
+        },
+        {
+          "landmark": "Right goal area: top corner on goal line",
+          "image": [
+            1070,
+            175
+          ],
+          "pitch": [
+            105.0,
+            24.84
+          ]
+        },
+        {
+          "landmark": "Right goal area: bottom corner on goal line",
+          "image": [
+            1220,
+            268
+          ],
+          "pitch": [
+            105.0,
+            43.16
+          ]
+        }
+      ]
+    }
+  ],
+  "frame_homographies": ".tmp\\Man_City_vs_Spurs_3725_1000MB_9b38498c\\frame_homographies.npz",
+  "camera_model": {
+    "method": "fixed-position PTZ, per-frame chamfer snap to pitch lines (tools/calibrate_auto.py)",
+    "C": [
+      52.544,
+      120.787,
+      -33.77
+    ],
+    "roll_deg": -0.6499,
+    "principal_point": [
+      640.0,
+      360.0
+    ]
+  },
+  "motion_summary": {
+    "frames": 70284,
+    "start_frame": 1151,
+    "end_frame": 71434,
+    "snapped": 70283,
+    "flow_only": 0,
+    "reacquired": 1,
+    "lost": 0,
+    "median_frac2": 0.688,
+    "frac2_below_0.25": 0.0,
+    "global_searches": 1
+  }
+}
