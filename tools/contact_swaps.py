@@ -80,6 +80,31 @@ def reference_contacts(tracks, contact_m=1.0):
     return out
 
 
+def kit_contacts(tracks, contact_m=1.0, min_len=25):
+    """Identity-free contact set, same shape as reference_contacts(): contacts
+    between frame-to-frame tracklets whose majority kit is the same outfield
+    team, whether or not any run identified them. Issue #35: a reference run's
+    own contact set only holds players *it* identified, so that run scores 0
+    unlinked by construction and every other variant looks worse on coverage.
+    Pass a run with uncut tracklets (base) - its detections and kits are the
+    same as every variant's. Tracklets under min_len detections (fragments,
+    duplicate boxes) are left out: no run is expected to identify them."""
+    out = {}
+    pl = tracks[(tracks["class"] == "player") & tracks["pitch_x"].notna() & tracks["tracklet"].notna()]
+    size = pl.groupby("tracklet")["frame"].transform("size")
+    pl = pl[size >= min_len]
+    team_of = pl.groupby("tracklet")["kit"].agg(lambda s: s.mode().iat[0])
+    for team in TEAM_IDS:
+        ids = team_of.index[team_of == team].to_numpy()
+        t = pl[pl["tracklet"].isin(ids)]
+        pos = t.assign(track_id=t["tracklet"].astype(int)).set_index("frame")[["track_id", "pitch_x", "pitch_y"]]
+        at = {(int(f), int(k)): (x, y) for f, k, x, y in
+              zip(t["frame"], t["tracklet"], t["pitch_x"], t["pitch_y"])}
+        out[team] = [(fc, at[(fc, a)], at[(fc, b)])
+                     for a, b, fc, _ in contact_episodes(pos, ids.astype(int), contact_m)]
+    return out
+
+
 def evaluate(tracks, fps, contact_m=1.0, pre_s=3.0, post_s=3.0, gap_s=0.5, margin_m=2.0, min_frames=15,
              reference=None):
     """reference: reference_contacts() of another run -> score exactly that
@@ -154,7 +179,11 @@ def main():
     ap.add_argument("--margin-m", type=float, default=2.0)
     ap.add_argument("--tmp-dir", default=".tmp")
     ap.add_argument("--reference-tmp-dir", default=None,
-                    help="Score the contact set of this run instead (fair comparison between variants)")
+                    help="Score a fixed contact set taken from this run (fair comparison between variants)")
+    ap.add_argument("--reference-set", choices=["kit", "identity"], default="kit",
+                    help="kit: contacts between same-kit tracklets, identified or not (neutral, default); "
+                         "identity: contacts between the reference run's identities (biased: that run "
+                         "scores 0 unlinked)")
     a = ap.parse_args()
     meta = load_meta(a.match_id, a.tmp_dir)
     mdir = match_dir(a.match_id, a.tmp_dir)
@@ -162,8 +191,8 @@ def main():
     ref = None
     if a.reference_tmp_dir:
         rt = pd.read_parquet(match_dir(a.match_id, a.reference_tmp_dir) / "tracks.parquet",
-                             columns=["frame", "track_id", "class", "pitch_x", "pitch_y"])
-        ref = reference_contacts(rt, a.contact_m)
+                             columns=["frame", "track_id", "class", "pitch_x", "pitch_y", "tracklet", "kit"])
+        ref = (kit_contacts if a.reference_set == "kit" else reference_contacts)(rt, a.contact_m)
     res = evaluate(tracks, meta["fps"], contact_m=a.contact_m, margin_m=a.margin_m, reference=ref)
     write_json(mdir / ("contact_swaps_ref.json" if ref else "contact_swaps.json"), res)
     for team, r in res.items():

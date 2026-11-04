@@ -385,14 +385,20 @@ def split_at_contacts(p, tl, next_id, contact_m, min_side=15):
         return p, next_id, 0, {}
     frames_of = {t: np.sort(g.to_numpy()) for t, g in q.groupby("tracklet")["frame"]}
     cuts = {}
-    for r in ep.itertuples():
-        ok = True
-        for t in (r.a, r.b):
-            fr = frames_of[t]
-            k = np.searchsorted(fr, r.frame, side="right")
-            if k < min_side or len(fr) - k < min_side:
-                ok = False
-        if ok:
+
+    def piece_ok(t, f):
+        # issue #35: every *piece* must keep min_side detections, not just the
+        # two ends of the whole tracklet - repeated contacts on one tracklet
+        # used to leave tiny middle pieces that fell under --min-len, skipped
+        # the linker and lost their identity exactly at the contact.
+        fr = frames_of[t]
+        bounds = sorted(cuts.get(int(t), set()) | {int(f)})
+        edges = np.searchsorted(fr, bounds, side="right")
+        sizes = np.diff(np.concatenate(([0], edges, [len(fr)])))
+        return bool((sizes >= min_side).all())
+
+    for r in ep.sort_values("d").itertuples():  # closest contacts claim their cut first
+        if piece_ok(r.a, r.frame) and piece_ok(r.b, r.frame):
             for t in (r.a, r.b):
                 cuts.setdefault(int(t), set()).add(int(r.frame))
     new_ids = p["tracklet"].to_numpy().copy()

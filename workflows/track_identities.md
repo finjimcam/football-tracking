@@ -162,6 +162,18 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection
   same-team contacts so the global linker decides who is who. `--w-vel` adds
   velocity continuity to short links. Experiments, and the standing
   improvement loop, are tracked in issue #35.
+  To compare variants, score them all on one fixed contact set:
+  `contact_swaps.py --reference-tmp-dir <base run>`. By default the set is
+  contacts between same-kit tracklets of at least 25 detections, whether
+  any run identified them or not (`--reference-set kit`). Don't use
+  `--reference-set identity` for comparisons: it only holds the reference
+  run's own identified contacts, so that run scores 0 unlinked by
+  construction. A contact counts as *unlinked* when either player has no
+  identity at the contact frame. Fewer unlinked contacts is part of the
+  goal.
+  The cuts keep at least `--contact-min-side` detections in *every* piece.
+  Before 2026-11-04 only the two ends of the whole tracklet were checked,
+  and repeated contacts left tiny middle pieces that skipped the linker.
 - **Verification** (`verify_tracking.py`): see "Reading the verification".
 
 ## Reading the verification ("does it match?")
