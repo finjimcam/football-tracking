@@ -208,7 +208,7 @@ def main():
     ball.to_parquet(mdir / "ball_track.parquet", index=False)
 
     players = tracks[tracks["class"] != "ball"]
-    keep = [c for c in players.columns]
+    keep = [c for c in players.columns if c != "interp"]  # a re-run's tracks already carry interp
     out = pd.concat([players, ball.reindex(columns=keep + ["interp"])], ignore_index=True)
     out = out.sort_values(["frame", "class", "track_id"]).reset_index(drop=True)
     out.to_parquet(mdir / "tracks.parquet", index=False)

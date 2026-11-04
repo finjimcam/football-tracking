@@ -132,7 +132,45 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
 
   Passes are undercounted because the ball is seen in only ~42% of frames.
   Shots are the weak spot: near goal the ball is in the air or blurred and
-  the detector misses it. A fine-tuned ball model is the next step of #7.
+  the detector misses it.
+- **Fine-tuned ball detector** (issue #7, no hand labels): the cleaned track
+  teaches the detector.
+  1. `tools/make_ball_dataset.py` writes a person+ball YOLO dataset:
+     - person boxes are detections with conf >= 0.4;
+     - ball boxes come from `ball_track.parquet` (clutter already dropped),
+       plus interpolated balls in gaps of up to 4 frames;
+     - training and validation windows are kept apart.
+  2. Fine-tune `yolo26n.pt` at imgsz 1280.
+  3. Run `detect_frames.py --weights <best.pt>`. It finds the person and
+     ball classes by name, so both COCO and fine-tuned weights work.
+
+  Man City v Spurs, trained on minutes 0-32 of H1 (1695 frames), 8 epochs,
+  batch 4 (3.6 GB VRAM on the GTX 1060, 41 min). Evaluated on the held-out
+  minutes 35-47, same identities, with `track_ball.py` and
+  `compute_possession.py` re-run:
+
+  | | yolo26n | fine-tuned |
+  |---|---|---|
+  | raw ball detections | 40958 | 19946 (less junk) |
+  | ball located (detected) | 44.6% | 48.1% |
+  | ball-near-player frames | 4658 | **5441** (+17%) |
+  | City possession (Opta 71% full match) | 58% | **65%** |
+  | City pass share (Opta 71%) | 58% | 63% |
+
+  Spot-check of picks where the two disagree: the fine-tuned picks were the
+  ball (5/5 zoomed). The base picks were grass, a coach's hand, and a ball
+  on the touchline. Shots near goal are still missed by both.
+
+  The weights are not in the repo (`*.pt` is gitignored). On pphub they are
+  at `runs/ballft/v1/weights/best.pt`. Commands:
+  ```
+  python tools/make_ball_dataset.py --match-id <id> --out <dir> --train 1151:52000 --val 53000:71434
+  python tools/train_yolo.py --data <dir>/dataset.yaml --model yolo26n.pt --epochs 8 --imgsz 1280 --batch 4
+  python tools/detect_frames.py --match-id <id> --weights runs/detect/train/weights/best.pt
+  ```
+  On pphub, batch 8 at 1280 needs 5.9 GB of VRAM, which leaves Kodi nothing.
+  Use batch 4, and stop training if Jellyfin/Kodi starts playing (it resumes
+  from `last.pt`).
 - **Possession** (`compute_possession.py`): nearest player within 2.5 m of the
   ball, 0.4 s hysteresis before switching, possession held through ball
   dropouts for up to 8 s -> per-frame `possession_timeline.parquet`.

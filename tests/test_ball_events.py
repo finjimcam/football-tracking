@@ -139,3 +139,26 @@ def test_write_instances_replaces_only_auto_ones(tmp_path):
     assert [i["id"] for i in d["instances"]].count("old") == 0 and any(i["id"] == "hand" for i in d["instances"])
     shot = next(i for i in d["instances"] if i["code"] == "Shot")
     assert (shot["start"], shot["end"], shot["labels"]["Team"]) == (12.0, 25.0, "Tottenham")
+
+
+def test_class_ids_from_model_names():
+    import pytest as _pt
+    from detect_frames import class_ids
+    assert class_ids({0: "person", 1: "bicycle", 32: "sports ball"}) == (0, 32)  # pretrained COCO
+    assert class_ids({0: "person", 1: "ball"}) == (0, 1)                        # fine-tuned (#7)
+    with _pt.raises(SystemExit):
+        class_ids({0: "person"})
+
+
+def test_ball_labels_add_short_gaps_sized_like_detections():
+    from make_ball_dataset import ball_labels
+    ball = pd.DataFrame({"frame": [10, 11, 12, 13, 14, 20, 40],
+                         "interp": [False, True, True, False, True, False, False],
+                         "x1": [100, 0, 0, 110, 0, 200, 300], "y1": [50, 0, 0, 52, 0, 60, 70],
+                         "x2": [106, 0, 0, 117, 0, 207, 306], "y2": [56, 0, 0, 59, 0, 67, 76],
+                         "foot_x": [103, 105, 107, 113.5, 120, 203.5, 303], "foot_y": [56, 57, 58, 59, 60, 67, 76]})
+    lab = ball_labels(ball, interp_gap=4)
+    assert set(lab) == {10, 11, 12, 13, 20, 40}  # 14 is in a 7-frame gap (13 -> 20): too long to trust
+    assert lab[10] == (103.0, 53.0, 6, 6)
+    cx, cy, w, h = lab[11]
+    assert (cx, w, h) == (105, 7.0, 7.0) and cy == 57 - 3.5  # sized like the next detection (frame 13)
