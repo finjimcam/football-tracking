@@ -151,7 +151,7 @@ def test_stale_when_input_newer(root):
     d = root / ".tmp" / mid
     now = time.time()
     import os
-    os.utime(d / "team_map.json", (now - 100, now - 100))
+    os.utime(d / "team_map.json", (now - 1000, now - 1000))
     os.utime(d / "tracks.parquet", (now, now))
     assert matches.match_summary(root, mid)["stages"]["teams"]["state"] == "stale"
 
@@ -163,6 +163,40 @@ def test_camera_motion_depends_on_calibration_mode(root):
     for mode, want in (("static", "skip"), ("keyframes", "ready"), ("dynamic", "done")):
         calib.write_text(json.dumps({"mode": mode}))
         assert matches.match_summary(root, mid)["stages"]["camera_motion"]["state"] == want
+
+
+def test_broadcast_pipeline_and_ingest_picks_match_config(root):
+    cfg = root / "config"
+    cfg.mkdir()
+    (root / "videos" / "Man City v Spurs.mp4").write_bytes(b"x")
+    (cfg / "Man_City_v_Spurs_9b38498c_match.json").write_text(json.dumps(
+        {"team_a_name": "Man City", "analysis_window": {"start_frame": 10, "end_frame": 20}}))
+    args = build_args(get_stage("ingest"), {"video": "Man City v Spurs.mp4", "team_a_name": "X"},
+                      videos_dir=root / "videos", config_dir=cfg)
+    conf = json.loads(args[args.index("--config") + 1])
+    assert conf["team_a_name"] == "Man City" and conf["analysis_window"]["start_frame"] == 10
+    assert matches.list_videos(root)[0]["match_config"] == "Man_City_v_Spurs_9b38498c_match.json"
+
+    mid = make_match(root, "Man_City_v_Spurs_9b38498c")
+    m = matches.match_summary(root, mid)
+    assert m["pipeline"] == "broadcast"
+    assert m["stage_order"][:3] == ["b_detect", "b_calibrate", "b_identities"]
+    assert "track" not in m["stages"]
+    assert m["stages"]["b_calibrate"]["state"] == "blocked"  # no seed calibration yet
+    (cfg / f"{mid}_calibration.json").write_text(json.dumps({"mode": "dynamic", "keyframes": [{}]}))
+    assert matches.match_summary(root, mid)["stages"]["b_calibrate"]["state"] == "ready"
+    assert matches.match_summary(root, make_match(root, "plain_1234"))["pipeline"] == "report"
+
+
+def test_fixed_args_and_choices():
+    args = build_args(get_stage("b_shape_render"), {"team": "team_a"}, match_id="m")
+    assert args == ["--match-id", "m", "--shape-selection", "--team", "team_a"]
+    assert "--include-unidentified" in build_args(get_stage("b_possession"), {}, match_id="m")
+    with pytest.raises(ParamError, match="one of"):
+        build_args(get_stage("b_phases"), {"team": "team_c"}, match_id="m")
+    with pytest.raises(ParamError, match="comma-separated"):
+        build_args(get_stage("b_calibrate"), {"check_frames": "1; rm -rf"}, match_id="m")
+    assert get_stage("b_detect").lane == "heavy" and get_stage("b_calibrate").lane == "cpu"
 
 
 # ---- job runner -------------------------------------------------------

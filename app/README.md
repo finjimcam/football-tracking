@@ -25,16 +25,40 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   downloaded from here.
 - **Jobs**: the history of every job, with its log, exit code and timings.
   Queued or running jobs can be cancelled.
+- **Lines** (broadcast matches): pick the back line and midfield line for each
+  of a team's out-of-possession phases. This is the browser version of
+  `tools/select_shape_players.py`. Click a player to cycle none → back →
+  midfield. Right-click (or use Re-link mode) to put a lost chain back on a
+  player. A strip under the frame shows each chain as green (detected), amber
+  (filled) or red (lost), with white ticks at hand-offs. Picks are saved to
+  the same `config/<id>_<team>_out_of_possession_shape_selection.json` the
+  CLI picker uses, so either one can carry on from the other.
+  **Render picked lines** queues `cut_phase_clips.py --shape-selection`.
+  The chain, gap-filling and re-link logic runs on the server
+  (`app/lines.py` calls the same functions), so the page shows exactly what
+  the render will draw. Keys: a/d ±0.5 s, A/D ±2 s, ,/. ±1 frame, k
+  play, Enter save + next, s skip, r auto guess, c clear, p previous.
 - **Code / Review / Sorter / Matrix / Present** tabs are placeholders that
   link to the issues that will build them (#3, #1, #4, #11, #12).
+
+## Two pipelines
+A match whose `config/<id>_match.json` exists gets the **broadcast** pipeline
+([workflows/track_identities.md](../workflows/track_identities.md)): detect,
+automatic calibration, identities, ball, possession, then phase clips and the
+picked-lines render. Every other match gets the **match report** pipeline.
+When a video is ingested, a `config/<stem>_<sha8>_match.json` with the
+matching name is passed in automatically. `detect_frames.py --device auto`
+uses CUDA when it's available, so it runs on pphub's GTX 1060.
 
 ## How jobs run (`app/jobs.py`)
 - Each job runs one subprocess, `python -u tools/<tool> <args>`, from the repo
   root. Args come only from `app/catalog.py`: the browser can pick which
   stage to run and fill in that stage's own options, but can't add other
   flags, and video paths have to point inside `videos/`.
-- **Heavy** stages (tracking, camera motion, rendering) run one at a time
-  under `nice -n 10 ionice -c3`. If you start the app with `--busy-check`,
+- **Heavy** stages run under `nice -n 10 ionice -c3` in two lanes: GPU
+  (tracking, detection, rendering) and CPU (automatic calibration,
+  identities, verification, phase clips). Each lane runs one job at a time,
+  so the CPU lane can run alongside the GPU one. If you start the app with `--busy-check`,
   they also wait while that command exits 0 (for example, while
   Jellyfin/Kodi is playing). Use **Run now** to start one anyway. Light
   stages run two at a time.

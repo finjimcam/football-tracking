@@ -67,6 +67,9 @@ python tools/compare_reference_stats.py --match-id <id>
 python tools/render_tracking_video.py --match-id <id> --minimap --possession --team-a-color 235,190,80 --team-b-color 245,245,245
 python tools/cut_phase_clips.py --match-id <id> --team team_a
 python tools/cut_phase_clips.py --match-id <id> --team team_a --shape
+# steadier lines through hand-picked players:
+python tools/select_shape_players.py --match-id <id> --team team_a
+python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection
 ```
 
 ## How each stage works (and why)
@@ -111,7 +114,26 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape
   draws the back line (4 deepest visible outfielders) and midfield line (next
   3) per frame by depth from their own goal - deliberately NOT from
   identities, which swap among rotating players - and only when the line is
-  coherent (<= 12 m deep) with >= 7 outfielders on screen.
+  coherent (<= 12 m deep) with >= 7 outfielders on screen. That per-frame
+  guess flickers (line membership changed on ~23% of frames in the City
+  out-of-possession compilation). For a steady version, pick the players by
+  hand once per phase with `select_shape_players.py` (window; pre-filled with
+  the guess; saves `config/<id>_<team>_<phase>_shape_selection.json`, keyed by
+  phase start frame, so keep the same --merge-s/--min-s/--pre-s/--post-s),
+  then `cut_phase_clips.py --shape-selection`. Each pick is a *chain*: the
+  picked track id, handed to a *fresh* track nearby (<= 3 s, <= 15 m) if it
+  fragments - fresh only, so a lost pick can't jump onto an unpicked
+  neighbour. Gaps <= 4 s between sightings are filled by interpolating in
+  pitch space and projecting back through that frame's homography (pixel
+  interpolation is wrong on a panning camera); longer gaps stay open. The
+  selector's bottom strip shows each chain per frame (green detected, amber
+  interpolated, red lost, white tick = tracker hand-off); click it to seek,
+  right-click the right player after a gap to re-link the chain. On the 14
+  phases picked so far: 91% of chain-frames detected, 6% filled, 3% open.
+  Phases without a pick draw nothing (`--unselected auto` = old guess).
+  Output: `<id>_<team>_<phase>_shape_selected.mp4`. `--auto-fill` writes the
+  guess for every phase without a window (smoke test; membership changed on
+  ~4% of frames instead of ~23%).
 - **Verification** (`verify_tracking.py`): see "Reading the verification".
 
 ## Reading the verification ("does it match?")

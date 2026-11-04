@@ -1,9 +1,11 @@
 // Stopframe front end: plain ES module, no build step. Talks to app/server.py.
+import { viewLines } from './lines.js';
 const REPO = 'https://github.com/finjimcam/football-tracking/issues/';
 const WORKFLOW = 'https://github.com/finjimcam/football-tracking/blob/master/workflows/';
 const TABS = [
   { id: 'matches', name: 'Matches' },
   { id: 'jobs', name: 'Jobs' },
+  { id: 'lines', name: 'Lines' },
   { id: 'code', name: 'Code', issue: 3, blurb: 'Configurable code buttons for tagging instances while the video plays.' },
   { id: 'review', name: 'Review', issue: 1, blurb: 'Frame-accurate video player with the tagged timeline underneath.' },
   { id: 'sorter', name: 'Sorter', issue: 4, blurb: 'Every tagged instance in one list: edit, relabel, trim and delete.' },
@@ -15,6 +17,7 @@ const TERMINAL = new Set(['done', 'failed', 'cancelled', 'interrupted']);
 
 let STAGES = [];
 let timers = [];
+let leaveHooks = [];
 let routeToken = 0;
 
 // ---------- helpers ----------
@@ -230,9 +233,14 @@ function stageForm(stage, { matchId, video, onSubmitted, onCancel }) {
   const fields = stage.params.filter((p) => p.kind !== 'video').map((p) => {
     const id = `f-${stage.id}-${p.name}-${Math.random().toString(36).slice(2, 7)}`;
     if (p.kind === 'flag') {
-      const input = h('input', { type: 'checkbox', id });
+      const input = h('input', { type: 'checkbox', id, checked: p.default === true || null });
       inputs[p.name] = input;
       return h('label', { class: 'field check', for: id, title: p.help || null }, input, p.label);
+    }
+    if (p.kind === 'choice') {
+      const input = h('select', { id }, p.options.map((o) => h('option', { value: o, selected: o === p.default || null }, o)));
+      inputs[p.name] = input;
+      return h('label', { class: 'field', for: id }, p.label, input);
     }
     const input = h('input', {
       id, type: p.kind === 'int' || p.kind === 'float' ? 'number' : 'text',
@@ -243,14 +251,14 @@ function stageForm(stage, { matchId, video, onSubmitted, onCancel }) {
     inputs[p.name] = input;
     return h('label', { class: 'field', for: id }, p.label, input);
   });
-  const submit = h('button', { type: 'submit', class: 'btn primary small' }, icon('play'), stage.heavy ? 'Queue' : 'Run');
+  const submit = h('button', { type: 'submit', class: 'btn primary small' }, icon('play'), stage.lane !== 'light' ? 'Queue' : 'Run');
   const form = h('form', { class: 'stage-form', onsubmit: async (ev) => {
     ev.preventDefault();
     err.textContent = '';
     const params = {};
     for (const [k, input] of Object.entries(inputs)) {
       if (input.type === 'checkbox') { if (input.checked) params[k] = true; }
-      else if (input.value.trim() !== '') params[k] = input.value.trim();
+      else if (String(input.value).trim() !== '') params[k] = String(input.value).trim();
     }
     if (video) params.video = video;
     submit.disabled = true;
@@ -266,7 +274,7 @@ function stageForm(stage, { matchId, video, onSubmitted, onCancel }) {
   } },
   fields.length ? h('div', { class: 'fields' }, fields) : h('div', { class: 'dim', style: 'font-size:12px' }, 'No options: runs with the tool\'s defaults.'),
   fields.length ? h('div', { class: 'dim', style: 'font-size:11px' }, 'Leave a box empty to use the tool\'s default.') : null,
-  stage.heavy ? h('div', { class: 'note' }, 'Heavy job: runs one at a time at low priority, and waits while the media server is playing.') : null,
+  stage.lane !== 'light' ? h('div', { class: 'note' }, 'Heavy job: runs one at a time at low priority, and waits while the media server is playing.') : null,
   err,
   h('div', { class: 'form-actions' }, submit, h('button', { type: 'button', class: 'btn small', onclick: onCancel }, 'Close')));
   return form;
@@ -289,7 +297,7 @@ async function viewMatches(view) {
       matchesPanel.replaceChildren(h('div', { class: 'empty' }, `Couldn't reach the server: ${e.message}`));
       return;
     }
-    const perMatch = STAGES.filter((s) => s.per_match);
+    const byId = Object.fromEntries(STAGES.map((s) => [s.id, s]));
     matchesPanel.replaceChildren(
       h('div', { class: 'panel-head' }, h('h1', { id: 'h-matches' }, 'Matches'), h('span', { class: 'muted' }, `${data.matches.length}`)),
       data.matches.length ? h('div', {}, data.matches.map((m) => h('a', { class: 'match-row', href: '#/match/' + encodeURIComponent(m.match_id) },
@@ -305,7 +313,7 @@ async function viewMatches(view) {
         h('div', { style: 'display:flex;gap:6px;align-items:center' },
           m.active_stages.length ? pill('running', m.active_stages.length + ' job' + (m.active_stages.length > 1 ? 's' : '')) : null,
           m.artifacts.report.exists ? h('span', { class: 'tag' }, 'report') : null),
-        h('div', { class: 'stage-dots', 'aria-hidden': 'true' }, perMatch.map((s) => {
+        h('div', { class: 'stage-dots', 'aria-hidden': 'true' }, m.stage_order.map((id) => byId[id]).map((s) => {
           const st = m.stages[s.id].state;
           const cls = m.active_stages.includes(s.id) ? 'active' : st;
           return h('span', { class: cls, title: `${s.title}: ${stateLabel(st)}` });
@@ -318,7 +326,7 @@ async function viewMatches(view) {
       h('div', { class: 'panel-head' }, h('h2', { id: 'h-videos' }, 'Videos'), h('span', { class: 'muted mono', style: 'font-size:11px' }, 'videos/')),
       data.videos.length ? h('div', {}, data.videos.map((v) => {
         const row = h('div', { class: 'video-row' },
-          h('span', { class: 'name' }, v.name),
+          h('span', { class: 'name' }, v.name, v.match_config ? h('span', { class: 'tag', style: 'margin-left:8px', title: v.match_config }, 'broadcast config') : null),
           h('span', { class: 'dim mono', style: 'font-size:11px' }, bytes(v.size)),
           v.match_id
             ? h('a', { class: 'btn small', href: '#/match/' + encodeURIComponent(v.match_id) }, 'Open')
@@ -368,7 +376,8 @@ async function viewMatch(view, matchId, params) {
   const formSlots = new Map();
   const rowSlots = new Map();
 
-  const perMatch = STAGES.filter((s) => s.per_match);
+  const byId = Object.fromEntries(STAGES.map((s) => [s.id, s]));
+  const perMatch = match.stage_order.map((id) => byId[id]);
   for (const s of perMatch) {
     const rowSlot = h('div');
     const formSlot = h('div');
@@ -381,6 +390,9 @@ async function viewMatch(view, matchId, params) {
     h('div', { class: 'col-main' },
       h('section', { class: 'panel', 'aria-labelledby': 'h-pipeline' },
         h('div', { class: 'panel-head' }, h('h1', { id: 'h-pipeline' }, 'Pipeline'),
+          h('span', { class: 'tag' }, match.pipeline === 'broadcast' ? 'broadcast' : 'match report'),
+          match.pipeline === 'broadcast' ? h('div', { class: 'spacer' }) : null,
+          match.pipeline === 'broadcast' ? h('a', { class: 'btn small primary', href: '#/lines/' + encodeURIComponent(match.match_id) }, 'Pick lines') : null,
           h('span', { class: 'muted mono', style: 'font-size:11px' }, match.match_id)),
         stageList),
       h('section', { class: 'panel', 'aria-labelledby': 'h-out' },
@@ -435,7 +447,7 @@ async function viewMatch(view, matchId, params) {
         h('span', { class: 'stage-num' }, String(s.step).padStart(2, '0')),
         h('div', { style: 'min-width:0' },
           h('div', { class: 'stage-title' }, s.title,
-            s.heavy ? h('span', { class: 'tag heavy' }, 'GPU') : null,
+            s.heavy ? h('span', { class: 'tag heavy' }, 'GPU') : s.cpu_heavy ? h('span', { class: 'tag heavy' }, 'CPU') : null,
             s.interactive ? h('span', { class: 'tag' }, 'interactive') : null),
           h('div', { class: 'stage-summary' }, st.state === 'blocked' ? `Needs ${st.missing.join(', ')} first.` : (st.note || s.summary))),
         h('div', { class: 'stage-actions' }, job ? pill(job.status) : pill(st.state, stateLabel(st.state)), action)));
@@ -443,6 +455,8 @@ async function viewMatch(view, matchId, params) {
 
     const outs = [
       ['report', 'Report PDF'], ['stats', 'Stats CSV'], ['tracking_video', 'Tracking video'],
+      ['vs_reference', 'Vs published stats'], ['phase_index', 'Phase index CSV'],
+      ['phase_video', 'Phase compilation'], ['shape_video', 'Picked-lines video'],
     ].filter(([k]) => m.artifacts[k].exists);
     outputs.replaceChildren(outs.length
       ? h('div', { class: 'outputs' }, outs.map(([k, label]) => h('a', {
@@ -510,6 +524,8 @@ async function route() {
   routeToken++;
   timers.forEach(clearInterval);
   timers = [];
+  leaveHooks.forEach((fn) => { try { fn(); } catch { /* ignore */ } });
+  leaveHooks = [];
   const view = document.getElementById('view');
   const raw = location.hash.replace(/^#\/?/, '');
   const [path, query] = raw.split('?');
@@ -517,6 +533,11 @@ async function route() {
   const params = new URLSearchParams(query || '');
   const tab = TABS.find((t) => t.id === parts[0]);
   if (parts[0] === 'match' && parts[1]) await viewMatch(view, parts[1], params);
+  else if (parts[0] === 'lines') {
+    await viewLines(view, parts, params, {
+      h, api, toast, every, renderTabs, setCrumb, pill, onLeave: (fn) => leaveHooks.push(fn),
+    });
+  }
   else if (parts[0] === 'jobs') await viewJobs(view, parts[1]);
   else if (tab && tab.issue) viewPlaceholder(view, tab);
   else await viewMatches(view);

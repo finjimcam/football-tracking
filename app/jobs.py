@@ -5,11 +5,13 @@ shell), run from the repo root like the workflows do. Records live in
 .tmp/jobs/<id>.json and output in .tmp/jobs/<id>.log, so history survives a
 server restart (jobs that were running then are marked `interrupted`).
 
-Two lanes, each a FIFO worker pool:
-  heavy (GPU / full-video passes): 1 at a time, run under
-      `nice -n 10 ionice -c3` when those exist, and held while the optional
-      busy check (e.g. the media server's `media-busy`, exit 0 = busy) says
-      the machine is in use, unless the job was submitted with force=True;
+Three lanes, each a FIFO worker pool:
+  heavy (GPU passes) and cpu (long CPU / memory passes): 1 at a time each,
+      run under `nice -n 10 ionice -c3` when those exist, and held while the
+      optional busy check (e.g. the media server's `media-busy`, exit 0 =
+      busy) says the machine is in use, unless the job was submitted with
+      force=True. Separate lanes let e.g. calibrate_auto.py run alongside
+      detect_frames.py, as workflows/track_identities.md intends;
   light (artifact-only compute): 2 at a time.
 
 Progress: a tool may print lines like `PROGRESS 120/4500 tracking players`;
@@ -34,6 +36,7 @@ from pathlib import Path
 
 PROGRESS_RE = re.compile(r"^PROGRESS\s+(\d+)\s*/\s*(\d+)\s*(.*)$")
 TERMINAL = {"done", "failed", "cancelled", "interrupted"}
+POLITE_LANES = ("heavy", "cpu")  # niced + held by the busy check
 BUSY_RECHECK_S = 30
 
 
@@ -47,7 +50,7 @@ def parse_progress(line):
 
 class JobRunner:
     def __init__(self, root, python=sys.executable, busy_check=None, heavy_workers=1,
-                 light_workers=2, nice_heavy=True):
+                 light_workers=2, nice_heavy=True, cpu_workers=1):
         self.root = Path(root).resolve()
         self.dir = self.root / ".tmp" / "jobs"
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -56,7 +59,7 @@ class JobRunner:
         self.lock = threading.RLock()
         self.jobs = {}
         self.procs = {}
-        self.queues = {"heavy": queue.Queue(), "light": queue.Queue()}
+        self.queues = {"heavy": queue.Queue(), "cpu": queue.Queue(), "light": queue.Queue()}
         self.prefix = []
         if nice_heavy:
             if shutil.which("nice"):
@@ -64,7 +67,7 @@ class JobRunner:
             if shutil.which("ionice"):
                 self.prefix += ["ionice", "-c3"]
         self._load_history()
-        for lane, n in (("heavy", heavy_workers), ("light", light_workers)):
+        for lane, n in (("heavy", heavy_workers), ("cpu", cpu_workers), ("light", light_workers)):
             for i in range(n):
                 threading.Thread(target=self._worker, args=(lane,), daemon=True,
                                  name=f"jobs-{lane}-{i}").start()
@@ -100,7 +103,7 @@ class JobRunner:
         job = {
             "id": job_id, "stage": stage.id, "title": stage.title, "tool": stage.tool,
             "args": list(args), "match_id": match_id,
-            "lane": "heavy" if stage.heavy else "light", "force": bool(force),
+            "lane": stage.lane, "force": bool(force),
             "status": "queued", "note": None, "progress": None, "returncode": None,
             "created": time.time(), "started": None, "finished": None,
         }
@@ -193,7 +196,7 @@ class JobRunner:
             job = self.jobs.get(job_id)
             if not job or job["status"] in TERMINAL:
                 continue
-            if lane == "heavy":
+            if lane in POLITE_LANES:
                 while not job.get("force") and job["status"] not in TERMINAL and self._is_busy():
                     if job["status"] != "waiting":
                         self._update(job, status="waiting",
@@ -213,11 +216,12 @@ class JobRunner:
 
     def _run(self, job, lane):
         cmd = [self.python, "-u", str(self.root / "tools" / job["tool"]), *job["args"]]
-        if lane == "heavy":
+        polite = lane in POLITE_LANES
+        if polite:
             cmd = self.prefix + cmd
         env = dict(os.environ, PYTHONUNBUFFERED="1")
         with open(self.log_path(job["id"]), "a", encoding="utf-8", errors="replace") as log:
-            log.write("$ " + " ".join(cmd[len(self.prefix) if lane == "heavy" else 0:]) + "\n")
+            log.write("$ " + " ".join(cmd[len(self.prefix) if polite else 0:]) + "\n")
             log.flush()
             proc = subprocess.Popen(cmd, cwd=self.root, env=env, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,

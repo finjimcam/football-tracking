@@ -1,0 +1,416 @@
+// Lines tab: pick each phase's back line and midfield line (issue #32).
+// Browser twin of tools/select_shape_players.py. Chain logic lives server-side
+// (app/lines.py -> cut_phase_clips.py), so this page draws exactly what the
+// renderer will draw.
+
+const KEYS_HELP = [
+  ['Click player', 'cycle none → back → midfield'],
+  ['Right-click / Re-link mode', 're-attach a lost chain to this player'],
+  ['a / d', '−/+ 0.5 s'], ['A / D', '−/+ 2 s'], [', / .', '−/+ 1 frame'], ['k', 'play / pause'],
+  ['Enter', 'save + next phase'], ['s', 'skip phase (no lines)'], ['r', 'reset to auto guess here'],
+  ['c', 'clear picks'], ['p', 'previous phase'],
+];
+const STRIP_ROW = 12;
+const COL = { seen: '#5DBB63', filled: '#E8A33A', lost: '#7A2E2E', link: '#FFFFFF', head: '#FFD84D' };
+const SVGNS = 'http://www.w3.org/2000/svg';
+
+function svg(tag, attrs) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v != null) el.setAttribute(k, v);
+  return el;
+}
+
+export async function viewLines(view, parts, params, ui) {
+  const { h, api, toast, every, renderTabs, setCrumb, pill, onLeave } = ui;
+  renderTabs('lines');
+  const matchId = parts[1];
+  const team = params.get('team') === 'team_b' ? 'team_b' : 'team_a';
+
+  if (!matchId) {
+    setCrumb(null);
+    const data = await api('/matches');
+    const ok = data.matches.filter((m) => m.pipeline === 'broadcast');
+    view.replaceChildren(h('section', { class: 'panel' },
+      h('div', { class: 'panel-head' }, h('h1', {}, 'Lines'), h('span', { class: 'muted' }, 'Pick a match')),
+      ok.length ? h('div', {}, ok.map((m) => h('a', { class: 'match-row', href: '#/lines/' + encodeURIComponent(m.match_id) },
+        h('div', { class: 'match-title' }, `${m.team_a_name} v ${m.team_b_name}`),
+        m.artifacts.possession.exists ? pill('ready', 'ready') : pill('blocked', 'needs tracking'))))
+        : h('div', { class: 'empty' }, 'No broadcast matches yet. Ingest a video that has a config/<id>_match.json, then run its pipeline down to "Compute possession".')));
+    return;
+  }
+
+  let match;
+  try { match = await api('/matches/' + encodeURIComponent(matchId)); } catch (e) {
+    view.replaceChildren(h('div', { class: 'placeholder' }, h('h1', {}, 'Match not found'), h('p', {}, e.message)));
+    return;
+  }
+  setCrumb(match);
+  view.replaceChildren(h('div', { class: 'placeholder' }, h('h1', {}, 'Loading tracking…'),
+    h('p', {}, 'The first load reads the whole half\'s tracks (a few seconds).')));
+  let sum;
+  try { sum = await api(`/matches/${encodeURIComponent(matchId)}/lines?team=${team}`); } catch (e) {
+    view.replaceChildren(h('div', { class: 'placeholder' }, h('h1', {}, 'Not ready for line picking'), h('p', {}, e.message),
+      h('a', { class: 'btn', href: '#/match/' + encodeURIComponent(matchId) }, 'Open the pipeline')));
+    return;
+  }
+
+  const W = sum.width, H = sum.height, FPS = sum.fps;
+  const IMG_W = Math.min(W, 1280);
+  const st = { phase: null, cur: 0, slots: [], chains: [], dirty: false, playing: false, relink: false, busy: false, loadedFrame: null };
+
+  // ---------- layout ----------
+  const list = h('div', { class: 'scroll lines-list' });
+  const progress = h('span', { class: 'muted mono', style: 'font-size:11px' });
+  const teamSel = h('select', { 'aria-label': 'Team', class: 'mini-select', onchange: () => {
+    location.hash = `#/lines/${encodeURIComponent(matchId)}?team=${teamSel.value}`;
+  } }, ['team_a', 'team_b'].map((t) => h('option', { value: t, selected: t === team || null },
+    t === team ? sum.team_name : (t === 'team_a' ? match.team_a_name : match.team_b_name))));
+
+  const title = h('h1', { style: 'margin:0;font-size:14px' });
+  const sub = h('span', { class: 'muted mono', style: 'font-size:12px' });
+  const dirtyChip = h('span', { class: 'pill stale', hidden: true }, 'unsaved');
+  const msg = h('div', { class: 'note', role: 'status', 'aria-live': 'polite', style: 'min-height:18px' });
+
+  const img = h('img', { alt: 'Video frame', class: 'lines-img', draggable: 'false' });
+  const overlay = svg('svg', { viewBox: `0 0 ${W} ${H}`, class: 'lines-svg', role: 'img', 'aria-label': 'Tracked players and picked lines' });
+  const stage = h('div', { class: 'lines-stage', style: `aspect-ratio:${W}/${H}` }, img, overlay);
+  const strip = h('canvas', { class: 'lines-strip', 'aria-label': 'Chain timeline: click to seek', role: 'img' });
+  const counts = h('span', { class: 'mono', style: 'font-size:12px' });
+
+  const btn = (label, aria, fn, cls) => h('button', { type: 'button', class: 'btn small ' + (cls || ''), 'aria-label': aria, onclick: fn }, label);
+  const playBtn = btn('▶', 'Play', () => togglePlay());
+  const relinkBtn = h('button', { type: 'button', class: 'btn small', 'aria-pressed': 'false', onclick: () => {
+    st.relink = !st.relink;
+    relinkBtn.setAttribute('aria-pressed', String(st.relink));
+    relinkBtn.classList.toggle('primary', st.relink);
+    msg.textContent = st.relink ? 'Re-link mode: tap the player a lost (red/amber) chain should continue on.' : '';
+  } }, 'Re-link mode');
+
+  const transport = h('div', { class: 'lines-tools' },
+    btn('−2s', 'Back 2 seconds', () => step(-2 * FPS)), btn('−½s', 'Back half a second', () => step(-FPS / 2)),
+    btn('−1f', 'Previous frame', () => step(-1)), playBtn, btn('+1f', 'Next frame', () => step(1)),
+    btn('+½s', 'Forward half a second', () => step(FPS / 2)), btn('+2s', 'Forward 2 seconds', () => step(2 * FPS)),
+    h('div', { class: 'spacer' }), relinkBtn);
+  const actions = h('div', { class: 'lines-tools' },
+    btn('Save + next', 'Save picks and go to the next phase (Enter)', () => save(false), 'primary'),
+    btn('Skip phase', 'Save as no lines (s)', () => save(true)),
+    btn('Auto guess here', 'Reset to the automatic guess on this frame (r)', () => edit('auto')),
+    btn('Clear', 'Clear all picks (c)', () => edit('clear')),
+    btn('Previous phase', 'Previous phase (p)', () => gotoIndex(idx() - 1)),
+    h('div', { class: 'spacer' }), counts);
+
+  const renderBtn = h('button', { type: 'button', class: 'btn small primary', onclick: async () => {
+    try {
+      const job = await api('/jobs', { method: 'POST', body: { stage: 'b_shape_render', match_id: matchId, params: { team } } });
+      toast('Render queued: it waits its turn and runs at low priority');
+      location.hash = `#/match/${encodeURIComponent(matchId)}?job=${job.id}`;
+    } catch (e) { toast(e.message, true); }
+  } }, 'Render picked lines');
+
+  view.replaceChildren(h('div', { class: 'cols' },
+    h('div', { class: 'col-side lines-side' },
+      h('section', { class: 'panel', 'aria-labelledby': 'h-phases' },
+        h('div', { class: 'panel-head' }, h('h1', { id: 'h-phases' }, 'Phases'), progress, h('div', { class: 'spacer' }), teamSel),
+        list),
+      h('section', { class: 'panel' }, h('div', { class: 'panel-body', style: 'display:flex;flex-direction:column;gap:10px' },
+        h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap' }, renderBtn,
+          match.artifacts.shape_video && match.artifacts.shape_video.exists
+            ? h('a', { class: 'btn small', href: `/api/matches/${encodeURIComponent(matchId)}/files/shape_video`, target: '_blank', rel: 'noopener' }, 'Last render') : null),
+        h('details', {}, h('summary', { class: 'muted', style: 'cursor:pointer' }, 'Controls'),
+          h('dl', { class: 'kv', style: 'margin-top:8px' }, KEYS_HELP.flatMap(([k, v]) => [h('dt', {}, k), h('dd', { style: 'font-family:var(--sans)' }, v)]))),
+        h('div', { class: 'legend' },
+          h('span', {}, h('i', { style: `background:${sum.color}` }), 'back line'),
+          h('span', {}, h('i', { style: 'background:#fff' }), 'midfield line'),
+          h('span', {}, h('i', { style: `background:${COL.seen}` }), 'detected'),
+          h('span', {}, h('i', { style: `background:${COL.filled}` }), 'filled'),
+          h('span', {}, h('i', { style: `background:${COL.lost}` }), 'lost'),
+          h('span', {}, h('i', { style: 'background:#fff;width:2px' }), 'hand-off')),
+      ))),
+    h('div', { class: 'col-main' },
+      h('section', { class: 'panel' },
+        h('div', { class: 'panel-head' }, title, sub, dirtyChip),
+        h('div', { class: 'panel-body', style: 'display:flex;flex-direction:column;gap:8px' },
+          stage, strip, transport, actions, msg)))));
+
+  // ---------- phase list ----------
+  function drawList() {
+    const done = sum.phases.filter((p) => p.status !== 'todo').length;
+    progress.textContent = `${done}/${sum.phases.length} done`;
+    list.replaceChildren(...sum.phases.map((p) => h('button', {
+      type: 'button', class: 'job-row', 'aria-current': st.phase && p.start === st.phase.start ? 'true' : null,
+      onclick: () => gotoStart(p.start),
+    },
+    h('span', { style: 'font-weight:600' }, `${p.n}. `, h('span', { class: 'mono', style: 'font-weight:500' }, p.clock || ''),
+      h('span', { class: 'dim', style: 'font-weight:400;margin-left:6px' }, `${p.secs}s`)),
+    pill(p.status === 'picked' ? 'done' : p.status === 'skipped' ? 'skip' : 'ready', p.status === 'todo' ? 'to do' : p.status),
+    p.status === 'picked' ? h('span', { class: 'sub' }, `back ${p.n_back} · mid ${p.n_mid}`) : null)));
+    const cur = list.querySelector('[aria-current="true"]');
+    if (cur) cur.scrollIntoView({ block: 'nearest' });
+  }
+  const idx = () => sum.phases.findIndex((p) => st.phase && p.start === st.phase.start);
+
+  // ---------- data ----------
+  async function gotoStart(start) {
+    if (st.dirty && !confirm('This phase has unsaved picks. Leave without saving?')) return;
+    stopPlay();
+    st.busy = true;
+    title.textContent = 'Loading phase…';
+    try {
+      const d = await api(`/matches/${encodeURIComponent(matchId)}/lines/${start}?team=${team}`);
+      st.phase = d;
+      st.slots = d.slots;
+      st.chains = d.chains;
+      st.cur = d.keyframe;
+      st.dirty = false;
+      msg.textContent = d.source === 'auto' ? 'Pre-filled with the automatic guess: check it, fix it, then Save + next.' : '';
+      history.replaceState(null, '', `#/lines/${encodeURIComponent(matchId)}?team=${team}&phase=${start}`);
+      drawList();
+      draw();
+    } catch (e) { toast(e.message, true); } finally { st.busy = false; }
+  }
+  function gotoIndex(i) {
+    if (i < 0 || i >= sum.phases.length) return;
+    gotoStart(sum.phases[i].start);
+  }
+
+  async function edit(action, frame, tid) {
+    if (!st.phase || st.busy) return;
+    st.busy = true;
+    try {
+      const r = await api(`/matches/${encodeURIComponent(matchId)}/lines/${st.phase.start}/edit`, {
+        method: 'POST', body: { team, slots: st.slots, action, frame: frame ?? st.cur, tid },
+      });
+      st.slots = r.slots;
+      st.chains = r.chains;
+      st.dirty = true;
+      msg.textContent = r.msg || '';
+      draw();
+    } catch (e) { msg.textContent = e.message; } finally { st.busy = false; }
+  }
+
+  async function save(skip) {
+    if (!st.phase || st.busy) return;
+    st.busy = true;
+    try {
+      await api(`/matches/${encodeURIComponent(matchId)}/lines/${st.phase.start}`, {
+        method: 'PUT', body: { team, slots: skip ? [] : st.slots, keyframe: st.phase.keyframe, skip },
+      });
+      st.dirty = false;
+      sum = await api(`/matches/${encodeURIComponent(matchId)}/lines?team=${team}`);
+      toast(skip ? `Phase ${st.phase.n} skipped` : `Phase ${st.phase.n} saved`);
+    } catch (e) { toast(e.message, true); st.busy = false; return; }
+    st.busy = false;
+    const i = idx();
+    const next = sum.phases.findIndex((p, j) => j > i && p.status === 'todo');
+    if (next >= 0) gotoIndex(next);
+    else if (i + 1 < sum.phases.length) gotoIndex(i + 1);
+    else { drawList(); msg.textContent = 'That was the last phase. Render picked lines when you\'re ready.'; }
+  }
+
+  // ---------- frame + overlay ----------
+  let wantFrame = null, loading = false;
+  function loadFrame(f) {
+    wantFrame = f;
+    if (loading) return;
+    loading = true;
+    const pre = new Image();
+    pre.onload = () => {
+      img.src = pre.src;
+      st.loadedFrame = f;
+      loading = false;
+      if (wantFrame !== f) loadFrame(wantFrame);
+      else if (st.playing) setTimeout(playTick, 0);
+    };
+    pre.onerror = () => { loading = false; };
+    pre.src = `/api/matches/${encodeURIComponent(matchId)}/frame/${f}.jpg?w=${IMG_W}`;
+  }
+
+  function chainAt(ch, f) { return ch.pts[f] || null; }
+
+  function draw() {
+    const ph = st.phase;
+    if (!ph) return;
+    const f = st.cur;
+    const clock = ph.clocks[f - ((f - ph.start) % Math.round(FPS))] || '';
+    title.textContent = `Phase ${ph.n}/${sum.phases.length}`;
+    sub.textContent = `${clock}  frame ${f}  (${((f - ph.start) / FPS).toFixed(1)} s)`;
+    dirtyChip.hidden = !st.dirty;
+    const nb = st.slots.filter((s) => s.line === 'back').length;
+    counts.textContent = `BACK ${nb} · MID ${st.slots.length - nb}`;
+    loadFrame(f);
+
+    // overlay
+    overlay.replaceChildren();
+    const rows = ph.rows[f] || [];
+    const taken = new Set();
+    for (const ch of st.chains) { const p = chainAt(ch, f); if (p && p[4] !== 'f') taken.add(p[0]); }
+    for (const r of rows) {
+      if (taken.has(r[0])) continue;
+      overlay.append(svg('rect', { x: r[1], y: r[2], width: r[3] - r[1], height: r[4] - r[2], class: 'ov-box' }));
+    }
+    const byLine = { back: [], mid: [] };
+    for (const ch of st.chains) {
+      const p = chainAt(ch, f);
+      if (!p) continue;
+      const [, fx, fy, py, s] = p;
+      const color = ch.line === 'back' ? sum.color : '#FFFFFF';
+      overlay.append(svg('ellipse', { cx: fx, cy: fy, rx: 16, ry: 6, fill: 'none', stroke: color,
+        'stroke-width': s === 'f' ? 1.5 : 2.5, 'stroke-dasharray': s === 'f' ? '4 4' : null }));
+      const t = svg('text', { x: fx, y: fy - 22, class: 'ov-label', fill: color });
+      t.textContent = (ch.line === 'back' ? 'B' : 'M') + (s === 'f' ? '~' : s === 'l' ? '*' : '');
+      overlay.append(t);
+      byLine[ch.line].push([py, fx, fy]);
+    }
+    for (const [line, pts] of Object.entries(byLine)) {
+      if (pts.length < 2) continue;
+      pts.sort((a, b) => a[0] - b[0]);
+      overlay.append(svg('polyline', { points: pts.map((p) => `${p[1]},${p[2]}`).join(' '), fill: 'none',
+        stroke: line === 'back' ? sum.color : '#FFFFFF', 'stroke-width': 3, 'stroke-linejoin': 'round', opacity: 0.9 }));
+    }
+    drawStrip();
+  }
+
+  function drawStrip() {
+    const ph = st.phase;
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = strip.clientWidth || 600;
+    const rowsN = Math.max(st.chains.length, 1);
+    const cssH = rowsN * STRIP_ROW + 6;
+    strip.style.height = cssH + 'px';
+    strip.width = Math.round(cssW * dpr);
+    strip.height = Math.round(cssH * dpr);
+    const g = strip.getContext('2d');
+    g.scale(dpr, dpr);
+    g.fillStyle = '#0B0D10';
+    g.fillRect(0, 0, cssW, cssH);
+    const x0 = 18, x1 = cssW - 4, span = Math.max(ph.end - ph.start, 1);
+    const fx = (f) => x0 + ((f - ph.start) / span) * (x1 - x0);
+    st.chains.forEach((ch, i) => {
+      const y = 3 + i * STRIP_ROW;
+      g.fillStyle = ch.line === 'back' ? sum.color : '#FFFFFF';
+      g.font = '600 10px Inter Tight, sans-serif';
+      g.fillText(ch.line === 'back' ? 'B' : 'M', 4, y + 9);
+      for (let x = x0; x < x1; x++) {
+        const f = ph.start + Math.round(((x - x0) / (x1 - x0)) * span);
+        const p = ch.pts[f];
+        g.fillStyle = !p ? COL.lost : p[4] === 'f' ? COL.filled : COL.seen;
+        g.fillRect(x, y, 1, STRIP_ROW - 3);
+      }
+      g.fillStyle = COL.link;
+      for (const [f, p] of Object.entries(ch.pts)) if (p[4] === 'l') g.fillRect(fx(+f) - 1, y, 2, STRIP_ROW - 3);
+    });
+    g.fillStyle = COL.head;
+    g.fillRect(fx(st.cur) - 1, 0, 2, cssH);
+    strip.setAttribute('aria-label', `Chain timeline, frame ${st.cur} of ${ph.start}–${ph.end}: click to seek`);
+  }
+
+  // ---------- interaction ----------
+  function seek(f) {
+    const ph = st.phase;
+    if (!ph) return;
+    st.cur = Math.max(ph.start, Math.min(ph.end, Math.round(f)));
+    draw();
+  }
+  function step(n) { stopPlay(); seek(st.cur + n); }
+  function stopPlay() { st.playing = false; playBtn.textContent = '▶'; playBtn.setAttribute('aria-label', 'Play'); }
+  function togglePlay() {
+    if (st.playing) { stopPlay(); return; }
+    st.playing = true;
+    playBtn.textContent = '❚❚';
+    playBtn.setAttribute('aria-label', 'Pause');
+    playTick();
+  }
+  let lastTick = 0;
+  function playTick() {
+    if (!st.playing || !st.phase) return;
+    if (st.cur >= st.phase.end) { stopPlay(); return; }
+    // ~real time: advance by however many frames have elapsed since the last shown one
+    const now = performance.now();
+    const adv = lastTick ? Math.max(1, Math.min(6, Math.round(((now - lastTick) / 1000) * FPS))) : 1;
+    lastTick = now;
+    seek(st.cur + adv);
+  }
+
+  function hitTest(x, y) {
+    const rows = (st.phase && st.phase.rows[st.cur]) || [];
+    let best = null, bd = 1e9;
+    for (const r of rows) {
+      if (r[1] <= x && x <= r[3] && r[2] <= y && y <= r[4]) {
+        const d = Math.abs(x - (r[1] + r[3]) / 2) + Math.abs(y - r[6]) * 0.25;
+        if (d < bd) { best = r[0]; bd = d; }
+      }
+    }
+    if (best != null) return best;
+    for (const r of rows) {
+      const d = Math.hypot(x - r[5], y - r[6]);
+      if (d < Math.min(bd, 40)) { best = r[0]; bd = d; }
+    }
+    return best;
+  }
+  function toVideo(ev) {
+    const rect = overlay.getBoundingClientRect();
+    return [((ev.clientX - rect.left) / rect.width) * W, ((ev.clientY - rect.top) / rect.height) * H];
+  }
+  overlay.addEventListener('click', (ev) => {
+    stopPlay();
+    const [x, y] = toVideo(ev);
+    const tid = hitTest(x, y);
+    if (tid == null) { msg.textContent = 'No player there: click on a box or near the feet.'; return; }
+    edit(st.relink ? 'relink' : 'cycle', st.cur, tid);
+  });
+  overlay.addEventListener('contextmenu', (ev) => {
+    ev.preventDefault();
+    stopPlay();
+    const [x, y] = toVideo(ev);
+    const tid = hitTest(x, y);
+    if (tid != null) edit('relink', st.cur, tid);
+  });
+  const stripSeek = (ev) => {
+    const rect = strip.getBoundingClientRect();
+    const x0 = 18, x1 = rect.width - 4;
+    const frac = Math.max(0, Math.min(1, (ev.clientX - rect.left - x0) / (x1 - x0)));
+    stopPlay();
+    seek(st.phase.start + frac * (st.phase.end - st.phase.start));
+  };
+  strip.addEventListener('pointerdown', (ev) => { stripSeek(ev); strip.setPointerCapture(ev.pointerId); });
+  strip.addEventListener('pointermove', (ev) => { if (ev.buttons) stripSeek(ev); });
+
+  const onKey = (ev) => {
+    const tag = ev.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || ev.target.isContentEditable) return;
+    if ((tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY') && (ev.key === 'Enter' || ev.key === ' ')) return;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey || !st.phase) return;
+    const k = ev.key;
+    const steps = { a: -FPS / 2, d: FPS / 2, A: -2 * FPS, D: 2 * FPS, ',': -1, '.': 1 };
+    if (k in steps) step(Math.round(steps[k]));
+    else if (k === 'Enter') save(false);
+    else if (k === 's') save(true);
+    else if (k === 'r') edit('auto');
+    else if (k === 'c') edit('clear');
+    else if (k === 'p') gotoIndex(idx() - 1);
+    else if (k === 'k') togglePlay();
+    else return;
+    ev.preventDefault();
+  };
+  document.addEventListener('keydown', onKey);
+  const onResize = () => { if (st.phase) drawStrip(); };
+  window.addEventListener('resize', onResize);
+  const onBeforeUnload = (ev) => { if (st.dirty) { ev.preventDefault(); ev.returnValue = ''; } };
+  window.addEventListener('beforeunload', onBeforeUnload);
+  onLeave(() => {
+    stopPlay();
+    document.removeEventListener('keydown', onKey);
+    window.removeEventListener('resize', onResize);
+    window.removeEventListener('beforeunload', onBeforeUnload);
+  });
+
+  drawList();
+  const want = Number(params.get('phase'));
+  const first = sum.phases.find((p) => p.start === want) || sum.phases.find((p) => p.status === 'todo') || sum.phases[0];
+  if (first) gotoStart(first.start);
+  else msg.textContent = 'No phases found for this team.';
+  every(30000, async () => { // pick up saves from another tab / the CLI picker
+    if (st.dirty || st.busy) return;
+    try { sum = await api(`/matches/${encodeURIComponent(matchId)}/lines?team=${team}`); drawList(); } catch { /* ignore */ }
+  });
+}
