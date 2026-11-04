@@ -41,6 +41,8 @@ def artifact_paths(root, match_id, team="team_a"):
         "phase_video": out / "videos" / f"{match_id}_{team}_{PHASE}.mp4",
         "shape_selection": cfg / f"{match_id}_{team}_{PHASE}_shape_selection.json",
         "shape_video": out / "videos" / f"{match_id}_{team}_{PHASE}_shape_selected.mp4",
+        "clip_export": cfg / f"{match_id}_{team}_{PHASE}_export.json",
+        "clips_zip": out / "videos" / f"{match_id}_{team}_{PHASE}_shape_selected_clips.zip",
         "stats": out / "stats" / f"{match_id}_stats.csv",
         "report": out / "reports" / f"{match_id}_report.pdf",
         "tracking_video": out / "videos" / f"{match_id}_tracking.mp4",
@@ -49,11 +51,11 @@ def artifact_paths(root, match_id, team="team_a"):
 
 # Outputs the browser may download, by artifact key (served read-only).
 DOWNLOADABLE = ("stats", "report", "tracking_video", "vs_reference", "phase_index",
-                "phase_video", "shape_video")
+                "phase_video", "shape_video", "clips_zip")
 
 # Artifacts that are inputs, never "produced" by a stage: committed configs
 # can be older than everything else without making stages stale.
-INPUTS = {"match_config", "reference", "calibration", "roster", "shape_selection"}
+INPUTS = {"match_config", "reference", "calibration", "roster", "shape_selection", "clip_export"}
 
 
 def _read_json(path):
