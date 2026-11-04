@@ -120,7 +120,8 @@ def match_summary(root, match_id):
     if meta is None:
         return None
     arts = _artifacts(root, match_id)
-    cfg = meta.get("config") or {}
+    # the live hand-checked match config wins over the copy frozen into meta.json
+    cfg = _read_json(paths["match_config"]) or meta.get("config") or {}
     pipeline = match_pipeline(arts)
     stages = stages_for(pipeline)
     return {
