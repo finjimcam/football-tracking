@@ -34,13 +34,23 @@ Pitch coordinate system: origin at the top-left corner as seen on a pitch
 map, x along the length (0..105 m), y along the width (0..68 m). Override
 dimensions with --pitch-length/--pitch-width if the pitch isn't full-size.
 
-Requires a desktop session (opens a GUI window).
+Front-ends:
+- OpenCV window (default on a desktop: Windows, macOS, Linux with a display).
+- Browser (`--web`, and automatic on Linux with no $DISPLAY/$WAYLAND_DISPLAY,
+  e.g. on the server over SSH): serves the frame on http://<host>:8790/ so
+  you can click from any laptop or phone on the network/Tailscale. Same
+  landmark flow, plus a mini pitch map, live fitted-line overlay with the
+  reprojection error, draggable points and zoom. See tools/_web_calibrate.py.
+Both write the identical calibration JSON.
 
 Usage:
     python tools/calibrate_pitch.py --match-id <match_id> --frame 100
     python tools/calibrate_pitch.py --match-id <match_id> --frames 0,900,1800
+    python tools/calibrate_pitch.py --match-id <match_id> --frame 100 --web --port 8790
 """
 import argparse
+import os
+import sys
 
 import cv2
 import numpy as np
@@ -219,7 +229,13 @@ def main():
     parser.add_argument("--output", default=None, help="Default: config/<match_id>_calibration.json")
     parser.add_argument("--config-dir", default="config")
     parser.add_argument("--tmp-dir", default=".tmp")
+    parser.add_argument("--web", action="store_true",
+                        help="Click in a browser instead of an OpenCV window (default when no display on Linux)")
+    parser.add_argument("--host", default="0.0.0.0", help="--web: address to listen on")
+    parser.add_argument("--port", type=int, default=8790, help="--web: port to listen on")
     args = parser.parse_args()
+    headless = sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    use_web = args.web or headless
 
     video = args.video or load_meta(args.match_id, args.tmp_dir)["video"]
     frame_indices = ([int(f) for f in args.frames.split(",")] if args.frames else [args.frame])
@@ -229,12 +245,24 @@ def main():
     if len(frame_indices) > 1:
         print(f"Moving-camera mode: you will calibrate {len(frame_indices)} keyframes: {frame_indices}\n")
 
+    if use_web:
+        from _web_calibrate import collect_points_web
+
+        print_menu(menu)
+        frames = [(f, read_frame(video, f)) for f in frame_indices]
+        web_points = collect_points_web(frames, menu, args.pitch_length, args.pitch_width,
+                                        host=args.host, port=args.port, title=f"calibrate {args.match_id}")
+        collected = list(zip(frame_indices, web_points))
+    else:
+        collected = []
+        for frame_idx in frame_indices:
+            if len(frame_indices) > 1:
+                print(f"--- Keyframe {frame_idx} ---")
+            frame = read_frame(video, frame_idx)
+            collected.append((frame_idx, collect_points(frame, frame_idx, menu)))
+
     keyframes = []
-    for frame_idx in frame_indices:
-        if len(frame_indices) > 1:
-            print(f"--- Keyframe {frame_idx} ---")
-        frame = read_frame(video, frame_idx)
-        points = collect_points(frame, frame_idx, menu)
+    for frame_idx, points in collected:
         H, err = solve_homography(points)
         keyframes.append({
             "frame": frame_idx,
