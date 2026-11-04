@@ -8,6 +8,8 @@
     POST /api/jobs                        {stage, match_id?, params{}, force?}
     GET  /api/jobs/{id}?offset=N          job record + log text from byte N
     POST /api/jobs/{id}/cancel | /force
+    PUT  /api/matches/{match_id}/lines/{start}/export   keep/drop + trim one phase clip
+    PUT  /api/matches/{match_id}/lines/export           keep/drop every phase
     GET  /api/system                      disk space + whether heavy jobs are held
 
 Everything else under / is the single-page app in app/static/.
@@ -41,6 +43,19 @@ class LinesSave(BaseModel):
     slots: list = Field(default_factory=list)
     keyframe: int | None = None
     skip: bool = False
+
+
+class ExportEdit(BaseModel):
+    team: str = "team_a"
+    keep: bool | None = None
+    trim_in: int | None = None
+    trim_out: int | None = None
+    reset_trim: bool = False
+
+
+class ExportAll(BaseModel):
+    team: str = "team_a"
+    keep: bool
 
 
 class JobRequest(BaseModel):
@@ -135,6 +150,15 @@ def create_app(root, runner=None, busy_check=None, warm=False):
     @app.get("/api/matches/{match_id}/lines")
     def lines_summary(match_id: str, team: str = "team_a"):
         return _lines(match_id, team).summary()
+
+    @app.put("/api/matches/{match_id}/lines/export")
+    def lines_export_all(match_id: str, req: ExportAll):
+        return _lines_call(_lines(match_id, req.team).set_export_all, req.keep)
+
+    @app.put("/api/matches/{match_id}/lines/{start}/export")
+    def lines_export(match_id: str, start: int, req: ExportEdit):
+        return _lines_call(_lines(match_id, req.team).set_export, start, req.keep, req.trim_in, req.trim_out,
+                           req.reset_trim)
 
     @app.get("/api/matches/{match_id}/lines/{start}")
     def lines_phase(match_id: str, start: int, team: str = "team_a"):

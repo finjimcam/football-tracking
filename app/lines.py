@@ -25,9 +25,9 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 from _common import clock_label, load_calibration, load_meta, match_config  # noqa: E402
-from cut_phase_clips import (build_chains, entry_slots, homography_lookup, index_rows,  # noqa: E402
-                             load_selection, load_team_rows, norm_anchors, phases, save_selection,
-                             selection_path)
+from cut_phase_clips import (build_chains, entry_slots, export_path, export_range,  # noqa: E402
+                             homography_lookup, index_rows, load_export, load_selection, load_team_rows,
+                             norm_anchors, phases, save_export, save_selection, selection_path)
 from select_shape_players import auto_slots, pick_keyframe, relink_target  # noqa: E402
 
 PHASE = "out_of_possession"
@@ -66,6 +66,7 @@ class MatchLines:
         self.rows_idx = index_rows(self.rows_by_frame)
         self.H_at = homography_lookup(load_calibration(match_id, self.config_dir))
         self.sel_path = selection_path(match_id, team, PHASE, self.config_dir)
+        self.exp_path = export_path(match_id, team, PHASE, self.config_dir)
         self.lock = threading.Lock()
 
     # ---- helpers ------------------------------------------------------
@@ -107,13 +108,20 @@ class MatchLines:
         return "picked" if entry_slots(entry) else "skipped"
 
     # ---- API ----------------------------------------------------------
+    def _export_json(self, seg, entry):
+        keep, a, b = export_range(seg, entry)
+        return {"keep": keep, "in": a, "out": b, "trimmed": (a, b) != (seg[0], seg[1]),
+                "clip_s": round((b - a + 1) / self.fps, 1)}
+
     def summary(self):
         sel = load_selection(self.sel_path)
+        exp = load_export(self.exp_path)
         out = []
         for k, (s, e, c0, c1) in enumerate(self.segs):
             entry = sel.get(s)
             slots = entry_slots(entry) if entry else []
             out.append({
+                "export": self._export_json((s, e), exp.get(s)),
                 "n": k + 1, "start": s, "end": e, "core_start": c0, "core_end": c1,
                 "clock": clock_label(c0, self.cfg, self.fps) or "",
                 "secs": round((c1 - c0 + 1) / self.fps, 1),
@@ -127,7 +135,8 @@ class MatchLines:
                 "opponent_name": names["team_b" if self.team == "team_a" else "team_a"],
                 "color": colors.get(self.team) or ("#6CABDD" if self.team == "team_a" else "#F0F0F0"),
                 "fps": self.fps, "width": self.meta["width"], "height": self.meta["height"],
-                "calibrated": self.H_at is not None, "selection_file": self.sel_path.name, "phases": out}
+                "calibrated": self.H_at is not None, "selection_file": self.sel_path.name,
+                "export_file": self.exp_path.name, "phases": out}
 
     def phase(self, start):
         k, (s, e, c0, c1) = self._seg(start)
@@ -283,6 +292,46 @@ class MatchLines:
             sel[s] = {"keyframe": kf, "slots": slots}
             save_selection(self.sel_path, sel)
         return {"status": self._status(sel[s]), "start": s}
+
+
+    def set_export(self, start, keep=None, trim_in=None, trim_out=None, reset_trim=False):
+        """Issue #37: keep/drop one phase for the clip export and/or trim its
+        start/end (frames inside the phase). Saved straight away to
+        config/<id>_<team>_<phase>_export.json, which cut_phase_clips.py
+        --export-selection reads."""
+        _, (s, e, _c0, _c1) = self._seg(start)
+        for v in (trim_in, trim_out):
+            if v is not None and not s <= int(v) <= e:
+                raise LinesError("Trim points must be inside the phase")
+        with self.lock:
+            exp = load_export(self.exp_path)
+            cur = dict(exp.get(s) or {"keep": True, "in": None, "out": None})
+            if keep is not None:
+                cur["keep"] = bool(keep)
+            if reset_trim:
+                cur["in"] = cur["out"] = None
+            if trim_in is not None:
+                cur["in"] = None if int(trim_in) == s else int(trim_in)
+            if trim_out is not None:
+                cur["out"] = None if int(trim_out) == e else int(trim_out)
+            a = cur["in"] if cur["in"] is not None else s
+            b = cur["out"] if cur["out"] is not None else e
+            if b - a < self.fps:  # at least a second
+                raise LinesError("The clip's end must be at least 1 s after its start")
+            exp[s] = cur
+            save_export(self.exp_path, exp)
+        return {"start": s, "export": self._export_json((s, e), cur)}
+
+    def set_export_all(self, keep):
+        """Keep or drop every phase (trims are kept)."""
+        with self.lock:
+            exp = load_export(self.exp_path)
+            for s, *_ in self.segs:
+                cur = dict(exp.get(s) or {"in": None, "out": None})
+                cur["keep"] = bool(keep)
+                exp[s] = cur
+            save_export(self.exp_path, exp)
+        return {"kept": len(self.segs) if keep else 0}
 
 
 class LinesCache:
