@@ -90,3 +90,25 @@ def test_contact_swap_proxy_flags_a_swap():
     tracks = pd.DataFrame(rows)
     res = evaluate(tracks, FPS)
     assert res["team_a"]["contacts"] >= 1 and res["team_a"]["suspected_swaps"] == 1
+
+
+def test_reference_scoring_matches_own_scoring():
+    """Scoring a run against its own contact set gives the same numbers."""
+    from contact_swaps import reference_contacts
+    rows = []
+    for f in range(400):
+        for tid, (x, y) in {2: (20, 10), 3: (20, 30), 4: (40, 20), 5: (40, 50)}.items():
+            if tid in (2, 3):
+                u = 1 - min(abs(f - 200) / 50, 1)
+                y = 10 + 10 * u if tid == 2 else 30 - 10 * u
+            t = (3 if tid == 2 else 2) if (f >= 200 and tid in (2, 3)) else tid
+            rows.append({"frame": f, "track_id": t, "class": "player", "pitch_x": float(x), "pitch_y": float(y)})
+    tracks = pd.DataFrame(rows)
+    own = evaluate(tracks, FPS)["team_a"]
+    ref = evaluate(tracks, FPS, reference=reference_contacts(tracks))["team_a"]
+    assert (ref["contacts"], ref["evaluated"], ref["suspected_swaps"], ref["unlinked"]) == \
+        (own["contacts"], own["evaluated"], own["suspected_swaps"], 0)
+    # an unidentified variant: ids 2/3 replaced by fragments -> unlinked, not evaluated
+    frag = tracks.assign(track_id=tracks["track_id"].where(~tracks["track_id"].isin([2, 3]), 10001))
+    r = evaluate(frag, FPS, reference=reference_contacts(tracks))["team_a"]
+    assert r["unlinked"] == own["contacts"] and r["evaluated"] == 0
