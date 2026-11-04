@@ -174,6 +174,13 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection
   The cuts keep at least `--contact-min-side` detections in *every* piece.
   Before 2026-11-04 only the two ends of the whole tracklet were checked,
   and repeated contacts left tiny middle pieces that skipped the linker.
+  `--kit-split-other` (off by default) also cuts a tracklet at a sustained
+  flip to official or keeper kit. Without it, the frame-to-frame tracker
+  can slide from a player onto the referee and stay there as one team
+  tracklet. On Man City v Spurs H1 one City chain followed the ref for
+  about 28 s that way. The cut fixes that (official-kit detections on
+  outfield identities 0.6% -> 0.1%), but it doesn't win on the #35 scores
+  yet.
 - **Verification** (`verify_tracking.py`): see "Reading the verification".
 
 ## Reading the verification ("does it match?")

@@ -153,3 +153,19 @@ def test_kit_contact_set_counts_unidentified_contacts():
     assert len(neutral["team_a"]) == 2 and neutral["team_b"] == []
     r = evaluate(tracks, FPS, reference=neutral)["team_a"]
     assert r["contacts"] == 2 and r["unlinked"] == 1
+
+
+def test_kit_split_cuts_a_slide_onto_the_referee():
+    """Issue #35: a tracklet that follows a City player, then the referee
+    (official / keeper-like kit), is cut only with other=True."""
+    from track_identities import split_by_kit
+    kit = ["team_a"] * 60 + ["official", "gk_a", "official", "unknown"] * 15
+    p = pd.DataFrame({"frame": range(120), "tracklet": 0, "kit": kit})
+    p2, _, n = split_by_kit(p, 1, other=True)
+    assert n == 1 and p2["tracklet"].nunique() == 2
+    assert abs(int(p2.loc[p2["tracklet"] == 1, "frame"].min()) - 60) <= 8
+    _, _, n0 = split_by_kit(p, 1, other=False)
+    assert n0 == 0
+    # a keeper whose kit reads gk_a / official throughout is never cut
+    _, _, nk = split_by_kit(p.assign(kit=["gk_a", "official"] * 60), 1, other=True)
+    assert nk == 0
