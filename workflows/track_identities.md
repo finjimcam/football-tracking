@@ -38,7 +38,7 @@ out-of-possession phases) from it.
 |---|---|---|---|
 | 1 | `tools/detect_frames.py` | **~55 min on the iGPU** (OpenVINO, 21 fps) - the only expensive step | `detections.parquet` (+ resumable chunks) |
 | 2 | `tools/calibrate_auto.py` | ~55 min CPU, runs *concurrently* with step 1 (it waits for detection chunks) | `frame_homographies.npz`, calibration -> `"dynamic"` |
-| 3 | `tools/track_identities.py` | a few min | `tracks.parquet`, `player_map.json`, `team_map.json`, `identity_links.parquet` |
+| 3 | `tools/track_identities.py` | ~10 min (two tracking passes + 8 flow solves); `--reuse-tracklets` re-links from its cache in ~3 min | `tracks.parquet`, `player_map.json`, `team_map.json`, `identity_links.parquet`, `tracklets_cache.parquet` |
 | 4 | `tools/track_ball.py` | < 1 min | cleaned ball rows in `tracks.parquet`, `ball_track.parquet` |
 | 5 | `tools/compute_possession.py --include-unidentified` | < 1 min | `possession.json`, `possession_timeline.parquet` |
 | 6 | `tools/compute_physical.py --smooth-s 1.0`, `tools/compute_positions.py` | < 1 min | `physical.json`, `positions.json` + figures |
@@ -91,8 +91,27 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape
   disjoint outfield chains per team, rewarded per second of play covered,
   edges only where the gap is physically runnable, cost = distance from the
   predicted position + (for long gaps) change of place in the team shape.
-  Keepers by kit colour + position. Names: identities matched to the official
-  formation lines by average depth/width (**role-inferred**).
+  Keepers by kit colour + position, inside their own goal zone (<= 22 m from
+  the line; the referee's kit reads the same as Ederson's). Names:
+  identities matched to the official formation lines by average depth/width
+  (**role-inferred**).
+- **Ball** (`track_ball.py`): drops detections projecting > 1 m off the pitch
+  (spare balls), links the rest into ball tracklets, keeps the strongest
+  per frame, interpolates gaps <= 12 frames.
+- **Possession** (`compute_possession.py`): nearest player within 2.5 m of the
+  ball, 0.4 s hysteresis before switching, possession held through ball
+  dropouts for up to 8 s -> per-frame `possession_timeline.parquet`.
+  Turnovers shorter than the hysteresis are absorbed into longer phases.
+- **Physical** (`compute_physical.py`): 1 s smoothing; reports the raw max
+  speed AND `top_speed_p99` - on broadcast footage the raw max sits at the
+  12 m/s glitch cap (tracking jumps), the 99th percentile gives realistic
+  21-37 km/h.
+- **Phase clips** (`cut_phase_clips.py`): runs of the opponent's possession,
+  merged across gaps < 2 s, dropped if < 3 s, padded 1.5 s / 1 s. `--shape`
+  draws the back line (4 deepest visible outfielders) and midfield line (next
+  3) per frame by depth from their own goal - deliberately NOT from
+  identities, which swap among rotating players - and only when the line is
+  coherent (<= 12 m deep) with >= 7 outfielders on screen.
 - **Verification** (`verify_tracking.py`): see "Reading the verification".
 
 ## Reading the verification ("does it match?")
@@ -103,17 +122,41 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape
   `uncertain_moments.csv` with video time + match clock.
 - **kit consistency** - share of an identity's readable detections in its own
   team's colours (keepers excluded). Low = the chain picked up opponents.
-- **Opta events** - possession at the 23 timestamped first-half events, and
-  whether the named player (Cancelo's shots, Rodri's fouls won...) is our
-  identity nearest the ball. This tests identity persistence AND the name
-  mapping at once.
+- **role separability** - how distinct each identity's place in the team
+  shape is (mean distance between identities' average offsets / their
+  spread). Below 1 = identities are mixing; it catches swaps that no single
+  link check can see.
+- **Opta events** (`event_checks.csv`) - possession at the moment of each of
+  the 23 timestamped first-half events, and whether the named player
+  (Cancelo's shots, Rodri's fouls won...) is the event team's player on the
+  ball at the last ball sighting before the event (offsides skipped). This
+  tests identity persistence AND the name mapping at once.
 - **contact sheets** - one row per player, crops spread through the half in
   time order. An identity swap shows as a different-looking person mid-row.
 - **the tracking video** - `--minimap` keeps off-screen players as hollow
   markers at their last known spot; watch a player leave and re-enter.
 To fix a bad stretch: scrub to the moments in `uncertain_moments.csv`; tune
-`track_identities.py` (e.g. `--w-role`, `--vmax`, `--max-gap-s`) and re-run
-steps 3-10, or add manual roster anchors (curate_and_identify_players.md).
+`track_identities.py` (e.g. `--w-role`, `--role-frame lane`, `--vmax`,
+`--max-gap-s`, with `--reuse-tracklets --no-stability` for quick
+experiments) and re-run steps 3-10, or add manual roster anchors
+(curate_and_identify_players.md - not yet wired into the global linker).
+
+## Outputs
+Committed (the repo is public; nothing cut from footage):
+- `outputs/reports/<id>_report.pdf` - possession, positions, shape in/out of
+  possession, physical, identity verification, Opta event checks, comparison
+  with published data, data-quality appendix.
+- `outputs/stats/<id>_stats.csv` (tidy metrics with confidence flags),
+  `<id>_vs_reference.csv`, `<id>_team_a_out_of_possession_phases.csv`.
+- `outputs/verification/<id>/` - `identity_report.csv`, `event_checks.csv`,
+  `uncertain_moments.csv`.
+Local only (`.gitignore`: footage and anything cut from it):
+- `outputs/videos/<id>_team_a_out_of_possession.mp4` and `..._shape.mp4`.
+- `outputs/videos/<id>_tracking_match00-10min.mp4` (verification sample; the
+  full-half render was deferred for disk space - see learnings).
+- `outputs/verification/<id>/contact_sheet_team_*.jpg`.
+- `.tmp/<id>/` - all intermediates (disposable; `detections.parquet` is the
+  one expensive to regenerate, ~55 min).
 
 ## Edge cases & learnings (2026-11-03 run)
 - **Disk**: the machine's C: was at 99%; background app updates filled it
