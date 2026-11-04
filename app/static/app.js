@@ -1,6 +1,7 @@
 // Stopframe front end: plain ES module, no build step. Talks to app/server.py.
 import { viewLines } from './lines.js';
 import { viewPlayers } from './players.js';
+import { viewLibrary } from './library.js';
 const REPO = 'https://github.com/finjimcam/football-tracking/issues/';
 const WORKFLOW = 'https://github.com/finjimcam/football-tracking/blob/master/workflows/';
 const TABS = [
@@ -8,6 +9,7 @@ const TABS = [
   { id: 'jobs', name: 'Jobs' },
   { id: 'lines', name: 'Lines' },
   { id: 'players', name: 'Players' },
+  { id: 'library', name: 'Library' },
   { id: 'code', name: 'Code', issue: 3, blurb: 'Configurable code buttons for tagging instances while the video plays.' },
   { id: 'review', name: 'Review', issue: 1, blurb: 'Frame-accurate video player with the tagged timeline underneath.' },
   { id: 'sorter', name: 'Sorter', issue: 4, blurb: 'Every tagged instance in one list: edit, relabel, trim and delete.' },
@@ -542,6 +544,7 @@ async function route() {
     });
   }
   else if (parts[0] === 'players') await viewPlayers(view, parts, params, { h, api, toast, renderTabs, setCrumb, pill });
+  else if (parts[0] === 'library') await viewLibrary(view, parts, params, { h, api, toast, renderTabs, setCrumb, pill });
   else if (parts[0] === 'jobs') await viewJobs(view, parts[1]);
   else if (tab && tab.issue) viewPlaceholder(view, tab);
   else await viewMatches(view);

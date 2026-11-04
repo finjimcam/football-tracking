@@ -14,6 +14,11 @@
     DELETE /api/matches/{match_id}/lines/identify/{id}  remove an anchor
     GET  /api/matches/{match_id}/players                every player's full-match stats (issue #16)
     GET  /api/matches/{match_id}/players/{pid}          one player's path, heatmap and stats (?start=&end= frames)
+    GET  /api/library                                   teams, players, competitions, seasons, squads, matches
+    POST/PUT/DELETE /api/library/{kind}[/{id}]          edit teams / players / competitions / seasons
+    PUT  /api/library/squads/{season}/{team}            replace a squad (numbers per team and season)
+    PUT  /api/library/matches/{match_id}                link a match to a season, teams and data
+    POST /api/library/import/{match_id}                 fill the library from the match's config files
     GET  /api/system                      disk space + whether heavy jobs are held
 
 Everything else under / is the single-page app in app/static/.
@@ -21,7 +26,7 @@ Everything else under / is the single-page app in app/static/.
 import shutil
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -30,6 +35,7 @@ from app import catalog, matches
 from app.jobs import JobRunner
 from app.lines import FrameSource, LinesCache, LinesError
 from app.players import PlayersCache, PlayersError
+from app import library as libapi
 
 STATIC = Path(__file__).parent / "static"
 
@@ -158,6 +164,42 @@ def create_app(root, runner=None, busy_check=None, warm=False):
             return fn(*a, **kw)
         except LinesError as e:
             raise HTTPException(400, str(e)) from None
+
+    def _lib(fn, *a):
+        try:
+            return fn(root, *a)
+        except libapi.LibraryError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.get("/api/library")
+    def library_get():
+        return libapi.summary(root, matches.list_matches(root))
+
+    @app.post("/api/library/import/{match_id}")
+    def library_import(match_id: str):
+        _match_or_404(match_id)
+        return _lib(libapi.import_match, match_id)
+
+    @app.put("/api/library/squads/{season}/{team}")
+    def library_squad(season: str, team: str, body: dict = Body(...)):
+        return _lib(libapi.set_squad, season, team, body.get("entries") or [])
+
+    @app.put("/api/library/matches/{match_id}")
+    def library_match(match_id: str, body: dict = Body(...)):
+        _match_or_404(match_id)
+        return _lib(libapi.link_match, match_id, body)
+
+    @app.post("/api/library/{kind}", status_code=201)
+    def library_create(kind: str, body: dict = Body(...)):
+        return _lib(libapi.upsert, kind, body, None)
+
+    @app.put("/api/library/{kind}/{item_id}")
+    def library_update(kind: str, item_id: str, body: dict = Body(...)):
+        return _lib(libapi.upsert, kind, body, item_id)
+
+    @app.delete("/api/library/{kind}/{item_id}")
+    def library_delete(kind: str, item_id: str):
+        return _lib(libapi.delete, kind, item_id)
 
     players_cache = PlayersCache(root)
 

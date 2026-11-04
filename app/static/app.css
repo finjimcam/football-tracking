@@ -291,6 +291,53 @@ button.job-row { font: inherit; cursor: pointer; }
 .pl-src { font-size: 11px; line-height: 1.5; margin-top: 12px; }
 @media (max-width: 1100px) { .pl-body { grid-template-columns: minmax(0, 1fr); } }
 
+/* ---------- Library tab (issue #16) ---------- */
+.lib-layout { display: grid; grid-template-columns: minmax(200px, 250px) minmax(0, 1fr); gap: 12px; align-items: start; }
+.lib-nav { display: flex; flex-direction: column; padding: 6px 0 10px; }
+.lib-nav-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 4px 14px; color: var(--text); text-decoration: none; }
+.lib-nav-item:hover { background: var(--raised-2); color: var(--text); }
+.lib-nav-item.sel { background: var(--hover); box-shadow: inset 3px 0 0 var(--accent); }
+.lib-nav-head { padding: 12px 14px 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.lib-team-name { display: inline-flex; align-items: center; gap: 8px; }
+.lib-swatch { width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(255,255,255,.25); }
+.lib-add { margin: 8px 14px 0; align-self: flex-start; }
+.lib-main { display: flex; flex-direction: column; gap: 10px; }
+.lib-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.lib-title h2, .lib-title h3 { margin: 0; font-size: 15px; }
+.lib-title h3 { font-size: 13px; }
+.lib-matches { display: flex; flex-direction: column; gap: 8px; }
+.lib-match { border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); overflow: hidden; }
+.lib-match.open { border-color: var(--line-2); }
+.lib-match-head {
+  width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px;
+  padding: 10px 12px; background: transparent; border: 0; color: var(--text); text-align: left; font: inherit; cursor: pointer;
+}
+.lib-match-head:hover { background: var(--raised-2); }
+.lib-match-head .pill { grid-row: 1 / span 2; grid-column: 2; }
+.lib-match-title { font-weight: 600; }
+.lib-match-sub { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-match-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 12px 12px; border-top: 1px solid var(--line); }
+.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 12px; }
+.lib-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); min-width: 0; }
+.lib-input { height: 32px; min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; color: var(--text); padding: 0 8px; font: inherit; }
+.lib-num { width: 64px; font-family: var(--mono); }
+.lib-files { display: flex; flex-direction: column; gap: 2px; font-size: 11px; overflow-wrap: anywhere; }
+.lib-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.lib-chip { padding: 3px 8px; border-radius: 5px; background: var(--raised); border: 1px solid var(--line); font-size: 12px; }
+.lib-chip.sub { opacity: .7; border-style: dashed; }
+.lib-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.lib-comp { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; background: var(--panel-2); }
+.lib-comp-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.lib-seasons { display: flex; flex-direction: column; margin-top: 6px; }
+.lib-season { display: flex; align-items: center; gap: 10px; min-height: 34px; border-top: 1px solid var(--row-line); font-size: 12px; }
+.lib-table-wrap { overflow-x: auto; }
+.lib-table { border-collapse: collapse; width: 100%; max-width: 640px; }
+.lib-table th { text-align: left; font-size: 11px; color: var(--muted); font-weight: 500; padding: 4px 6px; }
+.lib-table td { padding: 3px 6px; border-top: 1px solid var(--row-line); }
+.lib-table td:nth-child(2) { width: 100%; }
+.lib-table select.lib-input { width: 84px; }
+.lib-title select.lib-input { width: auto; max-width: 320px; }
+
 @media (max-width: 640px) {
   .topbar { padding: 8px 12px; gap: 8px 10px; }
   .tabs { order: 10; width: 100%; overflow-x: auto; flex-wrap: nowrap; }
@@ -301,6 +348,7 @@ button.job-row { font: inherit; cursor: pointer; }
   .lines-side { max-width: none; }
   .lines-list { max-height: 30vh; }
   .pl-layout { grid-template-columns: minmax(0, 1fr); }
+  .lib-layout { grid-template-columns: minmax(0, 1fr); }
   .pl-list { max-height: 34vh; }
   .pl-sliders input[type=range] { width: 120px; }
 }

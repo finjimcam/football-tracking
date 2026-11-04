@@ -30,6 +30,8 @@ import uuid  # noqa: E402
 
 from _common import clock_label, load_calibration, load_meta, load_player_map, match_config  # noqa: E402
 from identity_anchors import anchors_path, iou, load_anchors, save_anchors  # noqa: E402
+from library import LibraryError, library_path, match_lineup  # noqa: E402
+from library import load as load_library  # noqa: E402
 from cut_phase_clips import (build_chains, entry_slots, export_path, export_range,  # noqa: E402
                              homography_lookup, index_rows, load_export, load_selection, load_team_rows,
                              norm_anchors, phases, save_export, save_selection, selection_path)
@@ -75,7 +77,6 @@ class MatchLines:
         self.exp_path = export_path(match_id, team, PHASE, self.config_dir)
         self.anchor_path = anchors_path(match_id, self.config_dir)
         self.tracks_path = mdir / "tracks.parquet"
-        self.lineup = self._lineup()
         self.names = self._names(load_player_map(match_id, self.tmp_dir) or {})
         self.lock = threading.Lock()
 
@@ -124,7 +125,20 @@ class MatchLines:
                 "clip_s": round((b - a + 1) / self.fps, 1)}
 
     # ---- identify (issue #16) ------------------------------------------
+    @property
+    def lineup(self):
+        """Read on every use (a small file), so library edits show without reloading the tracks."""
+        return self._lineup()
+
     def _lineup(self):
+        # the library (issue #16) knows the whole squad, so subs can be identified too
+        try:
+            lib = load_library(library_path(self.config_dir))
+            lu = match_lineup(lib, self.match_id, self.team)
+        except (OSError, LibraryError):
+            lu = []
+        if lu:
+            return lu
         try:
             ref = json.loads((self.config_dir / f"{self.match_id}_reference.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):

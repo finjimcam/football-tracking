@@ -84,6 +84,23 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   uncertain. A wide heatmap with many uncertain joins usually means the
   chain picks up a team-mate, so add anchors in the Lines tab and press
   *Apply to tracking*. The tab reloads the new identities by itself.
+- **Library** (issue #16): teams, players, competitions, seasons and
+  squads, plus which match video belongs to which season and teams. It all
+  lives in one hand-editable file, `config/library.json`
+  (`tools/library.py`, `app/library.py`). *Matches* lists every ingested
+  video. Open one to set its season, round, date, the two teams and home
+  side, and to see the video and data files linked to it. *Import from
+  match config* fills all of that, plus both lineups, from
+  `config/<id>_match.json` and `_reference.json`. Running it again only
+  fills gaps and never overwrites your edits. *Competitions & seasons*
+  adds and renames them. Each team page edits name, short name, colour and
+  kit, and the **squad** for a chosen season: shirt numbers belong to the
+  squad, not to the player, so a new number or a transfer next season
+  keeps history straight. A typed name that's already in the library links
+  to that player. Every change is checked before it's saved: no shirt
+  number twice in a squad, no deleting a team or season that's still
+  used. The Lines tab's Identify picker lists the match lineup, then the
+  rest of the squad as subs.
 - **Code / Review / Sorter / Matrix / Present** tabs are placeholders that
   link to the issues that will build them (#3, #1, #4, #11, #12).
 

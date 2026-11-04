@@ -32,6 +32,14 @@ out-of-possession phases) from it.
 - `config/<match_id>_calibration.json` - seed: >= 8 landmark clicks on ONE
   frame (calibrate_pitch.py keyframe format). Pick a frame with a penalty
   area + halfway line in view; landmarks can be read off a gridded zoom.
+- Optional: `config/library.json` (issue #16), the library of teams, players,
+  competitions, seasons and squads. Fill it with
+  `python tools/library.py import-match --match-id <id>` (or *Import from
+  match config* in Stopframe's Library tab) once the two files above exist,
+  then add the rest of each squad there. The Lines tab's Identify picker
+  then offers the whole squad, not only the starting XI, so substitutes can
+  be named. `track_identities.py` still takes lineups and role inference
+  from `_reference.json`.
 
 ## Tools (in order)
 | # | Tool | Cost (Core Ultra 5 135U, 47-min half) | Output |
