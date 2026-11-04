@@ -41,7 +41,7 @@ def main():
     busy = None
     if args.busy_check:
         busy = [os.path.expanduser(a) for a in shlex.split(args.busy_check)]
-    app = create_app(ROOT, busy_check=busy)
+    app = create_app(ROOT, busy_check=busy, warm=True)
     print(f"Stopframe on http://{args.host}:{args.port}/  (busy check: {busy or 'off'})")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 

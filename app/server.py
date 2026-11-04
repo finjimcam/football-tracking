@@ -57,7 +57,7 @@ def _disk(path):
     return {"path": str(path), "free": u.free, "total": u.total}
 
 
-def create_app(root, runner=None, busy_check=None):
+def create_app(root, runner=None, busy_check=None, warm=False):
     root = Path(root).resolve()
     runner = runner or JobRunner(root, busy_check=busy_check)
     app = FastAPI(title="Stopframe", docs_url="/api/docs", redoc_url=None)
@@ -103,6 +103,20 @@ def create_app(root, runner=None, busy_check=None):
 
     lines_cache = LinesCache(root)
     frames = FrameSource()
+
+    def _warm():
+        """Load line-picker data for broadcast matches in the background, so the
+        first visit to the Lines tab doesn't wait ~30 s reading a whole half."""
+        for m in matches.list_matches(root):
+            if m["pipeline"] == catalog.BROADCAST and m["artifacts"]["possession"]["exists"]:
+                try:
+                    lines_cache.get(m["match_id"], "team_a")
+                except Exception:  # noqa: BLE001 - warming is best-effort
+                    pass
+
+    if warm:
+        import threading
+        threading.Thread(target=_warm, daemon=True, name="lines-warm").start()
 
     def _lines(match_id, team):
         _match_or_404(match_id)
