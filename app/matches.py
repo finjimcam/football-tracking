@@ -33,6 +33,7 @@ def artifact_paths(root, match_id, team="team_a"):
         "player_map": tmp / "player_map.json",
         "ball_track": tmp / "ball_track.parquet",
         "possession": tmp / "possession.json",
+        "events": tmp / "events.json",
         "positions": tmp / "positions.json",
         "physical": tmp / "physical.json",
         "verification": tmp / "verification.json",

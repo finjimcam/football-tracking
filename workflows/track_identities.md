@@ -41,6 +41,7 @@ out-of-possession phases) from it.
 | 3 | `tools/track_identities.py` | ~10 min (two tracking passes + 8 flow solves); `--reuse-tracklets` re-links from its cache in ~3 min | `tracks.parquet`, `player_map.json`, `team_map.json`, `identity_links.parquet`, `tracklets_cache.parquet` |
 | 4 | `tools/track_ball.py` | < 1 min | cleaned ball rows in `tracks.parquet`, `ball_track.parquet` |
 | 5 | `tools/compute_possession.py --include-unidentified` | < 1 min | `possession.json`, `possession_timeline.parquet` |
+| 5b | `tools/detect_events.py [--instances]` | seconds | `events.parquet`, `events.json` (passes, turnovers, tackles, shots; scored vs Opta); `--instances` also puts them in the Code tab |
 | 6 | `tools/compute_physical.py --smooth-s 1.0`, `tools/compute_positions.py` | < 1 min | `physical.json`, `positions.json` + figures |
 | 7 | `tools/verify_tracking.py` | ~2 min (contact sheets read the video) | `verification.json`, `outputs/verification/<id>/` |
 | 8 | `tools/compare_reference_stats.py` | seconds | `outputs/stats/<id>_vs_reference.csv` |
@@ -60,6 +61,7 @@ python tools/calibrate_auto.py --match-id <id> --check-frames 5000,30000,60000  
 python tools/track_identities.py --match-id <id>
 python tools/track_ball.py --match-id <id>
 python tools/compute_possession.py --match-id <id> --include-unidentified
+python tools/detect_events.py --match-id <id>            # add --instances to see them in the Code tab
 python tools/compute_physical.py --match-id <id> --smooth-s 1.0
 python tools/compute_positions.py --match-id <id>
 python tools/verify_tracking.py --match-id <id>
@@ -101,8 +103,74 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   identities matched to the official formation lines by average depth/width
   (**role-inferred**).
 - **Ball** (`track_ball.py`): drops detections projecting > 1 m off the pitch
-  (spare balls), links the rest into ball tracklets, keeps the strongest
-  per frame, interpolates gaps <= 12 frames.
+  (spare balls), links the rest into ball tracklets, drops **static
+  clutter**, keeps the strongest per frame, and interpolates gaps <= 12
+  frames. Static clutter (issue #7) means still "balls" that keep coming back
+  to one spot: at least 30 s in total, across at least 3 different minutes.
+  On Man City v Spurs H1 that found 7 spots:
+  - the two painted **penalty spots** (94,34) and (12,34);
+  - a spare ball by the goal line at (105,58);
+  - objects on the far touchline at (80,0) and (78,0).
+
+  Near goal these used to beat the real ball: in 878 frames the pick moved
+  to the real ball (6/6 random frames checked by eye). 4409 frames that had
+  only clutter now have no ball, which is right. "Ball located" drops from
+  48% to 42% of frames, but ball-near-player frames rise from 16447 to
+  16914. Real set pieces don't trip the filter: a corner rests seconds, in
+  one or two minutes. `--clutter-min-s 0` turns it off.
+- **Events** (`detect_events.py`, issue #7, first step): control spells =
+  runs of the possession holder, flicker shorter than 5 frames dropped.
+  Consecutive spells give pass (same team, ball moved >= 4 m), pass_lost
+  (other team, >= 4 m), tackle (other team, < 4 m). A shot is the ball
+  leaving a spell <= 35 m from the attacked goal at >= 8 m/s towards it,
+  reaching the goal line between ±16 m of the centre or vanishing on the way.
+  Man City v Spurs H1 against Opta:
+  - shots: 4 of 13 Opta shots and goals found within 5 s;
+  - passes: 185 City / 109 Spurs, so 63% City (Opta full match 71%, 755/308
+    over 90 min);
+  - turnovers: 72/76 (Opta full match 133/104).
+
+  Passes are undercounted because the ball is seen in only ~42% of frames.
+  Shots are the weak spot: near goal the ball is in the air or blurred and
+  the detector misses it.
+- **Fine-tuned ball detector** (issue #7, no hand labels): the cleaned track
+  teaches the detector.
+  1. `tools/make_ball_dataset.py` writes a person+ball YOLO dataset:
+     - person boxes are detections with conf >= 0.4;
+     - ball boxes come from `ball_track.parquet` (clutter already dropped),
+       plus interpolated balls in gaps of up to 4 frames;
+     - training and validation windows are kept apart.
+  2. Fine-tune `yolo26n.pt` at imgsz 1280.
+  3. Run `detect_frames.py --weights <best.pt>`. It finds the person and
+     ball classes by name, so both COCO and fine-tuned weights work.
+
+  Man City v Spurs, trained on minutes 0-32 of H1 (1695 frames), 8 epochs,
+  batch 4 (3.6 GB VRAM on the GTX 1060, 41 min). Evaluated on the held-out
+  minutes 35-47, same identities, with `track_ball.py` and
+  `compute_possession.py` re-run:
+
+  | | yolo26n | fine-tuned |
+  |---|---|---|
+  | raw ball detections | 40958 | 19946 (less junk) |
+  | ball located (detected) | 44.6% | 48.1% |
+  | ball-near-player frames | 4658 | **5441** (+17%) |
+  | City possession (Opta 71% full match) | 58% | **65%** |
+  | City pass share (Opta 71%) | 58% | 63% |
+
+  Spot-check of picks where the two disagree: the fine-tuned picks were the
+  ball (5/5 zoomed). The base picks were grass, a coach's hand, and a ball
+  on the touchline. Shots near goal are still missed by both.
+
+  The weights are not in the repo (`*.pt` is gitignored). On pphub they are
+  at `runs/ballft/v1/weights/best.pt`. Commands:
+  ```
+  python tools/make_ball_dataset.py --match-id <id> --out <dir> --train 1151:52000 --val 53000:71434
+  python tools/train_yolo.py --data <dir>/dataset.yaml --model yolo26n.pt --epochs 8 --imgsz 1280 --batch 4
+  python tools/detect_frames.py --match-id <id> --weights runs/detect/train/weights/best.pt
+  ```
+  On pphub, batch 8 at 1280 needs 5.9 GB of VRAM, which leaves Kodi nothing.
+  Use batch 4, and stop training if Jellyfin/Kodi starts playing (it resumes
+  from `last.pt`).
 - **Possession** (`compute_possession.py`): nearest player within 2.5 m of the
   ball, 0.4 s hysteresis before switching, possession held through ball
   dropouts for up to 8 s -> per-frame `possession_timeline.parquet`.

@@ -160,6 +160,11 @@ STAGES = (
           pipelines=(BROADCAST,), fixed_args=("--include-unidentified",),
           produces=("possession",), needs=("tracks", "team_map"),
           params=(_f("radius_m", "Radius (m)"), _f("switch_s", "Switch delay (s)"))),
+    Stage("b_events", "Detect events", "detect_events.py", 5,
+          "Passes, turnovers, tackles and shots from the ball track and identities, scored against Opta "
+          "(issue #7). Tick the box to see them in the Code tab.",
+          pipelines=(BROADCAST,), produces=("events",), needs=("possession", "ball_track"),
+          params=(Param("instances", "flag", "Add to the Code tab", "replaces earlier auto instances only"),)),
     Stage("positions", "Compute positions", "compute_positions.py", 9,
           "Average positions and heatmap figures.",
           pipelines=BOTH, produces=("positions",), needs=("tracks", "team_map")),
