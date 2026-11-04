@@ -456,7 +456,7 @@ async function viewMatch(view, matchId, params) {
     const outs = [
       ['report', 'Report PDF'], ['stats', 'Stats CSV'], ['tracking_video', 'Tracking video'],
       ['vs_reference', 'Vs published stats'], ['phase_index', 'Phase index CSV'],
-      ['phase_video', 'Phase compilation'], ['shape_video', 'Picked-lines video'],
+      ['phase_video', 'Phase compilation'], ['shape_video', 'Picked-lines video'], ['clips_zip', 'Phase clips (zip)'],
     ].filter(([k]) => m.artifacts[k].exists);
     outputs.replaceChildren(outs.length
       ? h('div', { class: 'outputs' }, outs.map(([k, label]) => h('a', {

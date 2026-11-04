@@ -10,6 +10,7 @@ const KEYS_HELP = [
   ['a / d', '−/+ 0.5 s'], ['A / D', '−/+ 2 s'], [', / .', '−/+ 1 frame'], ['k', 'play / pause'],
   ['Enter', 'save + next phase'], ['s', 'skip phase (no lines)'], ['r', 'reset to auto guess here'],
   ['c', 'clear picks'], ['p', 'previous phase'],
+  ['[ / ]', 'clip export: start / end the clip here'], ['e', 'clip export: keep / drop this phase'],
 ];
 const STRIP_ROW = 12;
 const COL = { seen: '#5DBB63', filled: '#E8A33A', lost: '#7A2E2E', link: '#FFFFFF', head: '#FFD84D' };
@@ -116,6 +117,59 @@ export async function viewLines(view, parts, params, ui) {
     btn('Previous phase', 'Previous phase (p)', () => gotoIndex(idx() - 1)),
     h('div', { class: 'spacer' }), counts);
 
+  // ---------- clip export (issue #37) ----------
+  const exportInfo = h('span', { class: 'mono', style: 'font-size:12px' });
+  const keepBox = h('input', { type: 'checkbox', id: 'keep-cur', style: 'width:18px;height:18px;accent-color:var(--accent)',
+    onchange: () => setExport(st.phase.start, { keep: keepBox.checked }) });
+  const clipTools = h('div', { class: 'lines-tools', role: 'group', 'aria-label': 'Clip export for this phase' },
+    h('label', { for: 'keep-cur', style: 'display:inline-flex;align-items:center;gap:6px;font-size:13px' }, keepBox, 'Export this phase'),
+    btn('Start here [', 'Start the exported clip at this frame ([)', () => setExport(st.phase.start, { trim_in: st.cur })),
+    btn('End here ]', 'End the exported clip at this frame (])', () => setExport(st.phase.start, { trim_out: st.cur })),
+    btn('Full phase', 'Undo the trim: export the whole phase', () => setExport(st.phase.start, { reset_trim: true })),
+    h('div', { class: 'spacer' }), exportInfo);
+  const exportSummary = h('span', { class: 'muted mono', style: 'font-size:11px' });
+  const exportBtn = h('button', { type: 'button', class: 'btn small primary', onclick: async () => {
+    const kept = sum.phases.filter((p) => p.export.keep).length;
+    if (!kept) { toast('Every phase is dropped: tick at least one to export', true); return; }
+    try {
+      const job = await api('/jobs', { method: 'POST', body: { stage: 'b_clip_export', match_id: matchId, params: { team } } });
+      toast(`Export of ${kept} clip${kept === 1 ? '' : 's'} queued: the zip appears on the match page when it's done`);
+      location.hash = `#/match/${encodeURIComponent(matchId)}?job=${job.id}`;
+    } catch (e) { toast(e.message, true); }
+  } }, 'Export clips (zip)');
+  async function setExportAll(keep) {
+    if (!keep && !confirm('Drop every phase from the export? Trims are kept.')) return;
+    try {
+      await api(`/matches/${encodeURIComponent(matchId)}/lines/export`, { method: 'PUT', body: { team, keep } });
+      sum = await api(`/matches/${encodeURIComponent(matchId)}/lines?team=${team}`);
+      drawList();
+      if (st.phase) draw();
+    } catch (e) { toast(e.message, true); }
+  }
+  async function setExport(start, body) {
+    try {
+      const r = await api(`/matches/${encodeURIComponent(matchId)}/lines/${start}/export`, { method: 'PUT', body: { team, ...body } });
+      const p = sum.phases.find((q) => q.start === start);
+      if (p) p.export = r.export;
+      drawList();
+      if (st.phase) draw();
+    } catch (e) { toast(e.message, true); if (st.phase) draw(); }
+  }
+  const curExport = () => (st.phase && (sum.phases.find((p) => p.start === st.phase.start) || {}).export) || null;
+  function drawClipInfo() {
+    const ex = curExport();
+    if (!ex) return;
+    keepBox.checked = ex.keep;
+    const ph = st.phase;
+    const t = (f) => ((f - ph.start) / FPS).toFixed(1);
+    exportInfo.textContent = ex.keep
+      ? `clip ${t(ex.in)}–${t(ex.out)} s (${ex.clip_s} s)${ex.trimmed ? ' · trimmed' : ''}`
+      : 'not exported';
+    const kept = sum.phases.filter((p) => p.export.keep);
+    const secs = kept.reduce((a, p) => a + p.export.clip_s, 0);
+    exportSummary.textContent = `${kept.length}/${sum.phases.length} kept · ${Math.floor(secs / 60)}:${String(Math.round(secs % 60)).padStart(2, '0')}`;
+  }
+
   const renderBtn = h('button', { type: 'button', class: 'btn small primary', onclick: async () => {
     try {
       const job = await api('/jobs', { method: 'POST', body: { stage: 'b_shape_render', match_id: matchId, params: { team } } });
@@ -133,6 +187,15 @@ export async function viewLines(view, parts, params, ui) {
         h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap' }, renderBtn,
           match.artifacts.shape_video && match.artifacts.shape_video.exists
             ? h('a', { class: 'btn small', href: `/api/matches/${encodeURIComponent(matchId)}/files/shape_video`, target: '_blank', rel: 'noopener' }, 'Last render') : null),
+        h('div', { style: 'display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--line);padding-top:10px' },
+          h('div', { style: 'display:flex;align-items:center;gap:8px' }, h('span', { class: 'section-label' }, 'Clip export'), exportSummary),
+          h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap' }, exportBtn,
+            btn('Keep all', 'Export every phase', () => setExportAll(true)),
+            btn('Drop all', 'Export no phase (then tick the ones you want)', () => setExportAll(false)),
+            match.artifacts.clips_zip && match.artifacts.clips_zip.exists
+              ? h('a', { class: 'btn small', href: `/api/matches/${encodeURIComponent(matchId)}/files/clips_zip`, download: '' }, 'Download last zip') : null),
+          h('div', { class: 'muted', style: 'font-size:12px;line-height:1.4' },
+            'Tick the phases to export and trim each one with Start here / End here. You get one MP4 per phase, with your picked lines, in a zip you can drop into PowerPoint.')),
         h('details', {}, h('summary', { class: 'muted', style: 'cursor:pointer' }, 'Controls'),
           h('dl', { class: 'kv', style: 'margin-top:8px' }, KEYS_HELP.flatMap(([k, v]) => [h('dt', {}, k), h('dd', { style: 'font-family:var(--sans)' }, v)]))),
         h('div', { class: 'legend' },
@@ -147,20 +210,27 @@ export async function viewLines(view, parts, params, ui) {
       h('section', { class: 'panel' },
         h('div', { class: 'panel-head' }, title, sub, dirtyChip),
         h('div', { class: 'panel-body', style: 'display:flex;flex-direction:column;gap:8px' },
-          stage, strip, transport, actions, msg)))));
+          stage, strip, transport, actions, clipTools, msg)))));
 
   // ---------- phase list ----------
   function drawList() {
     const done = sum.phases.filter((p) => p.status !== 'todo').length;
     progress.textContent = `${done}/${sum.phases.length} done`;
-    list.replaceChildren(...sum.phases.map((p) => h('button', {
-      type: 'button', class: 'job-row', 'aria-current': st.phase && p.start === st.phase.start ? 'true' : null,
-      onclick: () => gotoStart(p.start),
-    },
-    h('span', { style: 'font-weight:600' }, `${p.n}. `, h('span', { class: 'mono', style: 'font-weight:500' }, p.clock || ''),
-      h('span', { class: 'dim', style: 'font-weight:400;margin-left:6px' }, `${p.secs}s`)),
-    pill(p.status === 'picked' ? 'done' : p.status === 'skipped' ? 'skip' : 'ready', p.status === 'todo' ? 'to do' : p.status),
-    p.status === 'picked' ? h('span', { class: 'sub' }, `back ${p.n_back} · mid ${p.n_mid}`) : null)));
+    list.replaceChildren(...sum.phases.map((p) => h('div', { class: 'lines-row' + (p.export.keep ? '' : ' dropped') },
+      h('input', { type: 'checkbox', checked: p.export.keep, 'aria-label': `Export phase ${p.n}`,
+        title: p.export.keep ? 'Exported: untick to drop it' : 'Dropped: tick to export it',
+        onchange: (ev) => setExport(p.start, { keep: ev.target.checked }) }),
+      h('button', {
+        type: 'button', class: 'job-row', 'aria-current': st.phase && p.start === st.phase.start ? 'true' : null,
+        onclick: () => gotoStart(p.start),
+      },
+      h('span', { style: 'font-weight:600' }, `${p.n}. `, h('span', { class: 'mono', style: 'font-weight:500' }, p.clock || ''),
+        h('span', { class: 'dim', style: 'font-weight:400;margin-left:6px' }, `${p.secs}s`)),
+      pill(p.status === 'picked' ? 'done' : p.status === 'skipped' ? 'skip' : 'ready', p.status === 'todo' ? 'to do' : p.status),
+      p.status === 'picked' || p.export.trimmed
+        ? h('span', { class: 'sub' }, [p.status === 'picked' ? `back ${p.n_back} · mid ${p.n_mid}` : null,
+          p.export.trimmed ? `clip ${p.export.clip_s}s (trimmed)` : null].filter(Boolean).join(' · ')) : null))));
+    drawClipInfo();
     const cur = list.querySelector('[aria-current="true"]');
     if (cur) cur.scrollIntoView({ block: 'nearest' });
   }
@@ -254,6 +324,7 @@ export async function viewLines(view, parts, params, ui) {
     dirtyChip.hidden = !st.dirty;
     const nb = st.slots.filter((s) => s.line === 'back').length;
     counts.textContent = `BACK ${nb} · MID ${st.slots.length - nb}`;
+    drawClipInfo();
     loadFrame(f);
 
     // overlay
@@ -320,6 +391,18 @@ export async function viewLines(view, parts, params, ui) {
       g.fillStyle = COL.link;
       for (const [f, p] of Object.entries(ch.pts)) if (p[4] === 'l') g.fillRect(fx(+f) - 1, y, 2, STRIP_ROW - 3);
     });
+    const ex = curExport();
+    if (ex) { // clip export: shade what's trimmed off (or the whole phase if dropped)
+      g.fillStyle = 'rgba(11,13,16,0.72)';
+      if (!ex.keep) g.fillRect(x0, 0, x1 - x0, cssH);
+      else {
+        if (ex.in > ph.start) g.fillRect(x0, 0, fx(ex.in) - x0, cssH);
+        if (ex.out < ph.end) g.fillRect(fx(ex.out), 0, x1 - fx(ex.out), cssH);
+        g.fillStyle = COL.head;
+        if (ex.in > ph.start) g.fillRect(fx(ex.in) - 1, 0, 2, cssH);
+        if (ex.out < ph.end) g.fillRect(fx(ex.out) - 1, 0, 2, cssH);
+      }
+    }
     g.fillStyle = COL.head;
     g.fillRect(fx(st.cur) - 1, 0, 2, cssH);
     strip.setAttribute('aria-label', `Chain timeline, frame ${st.cur} of ${ph.start}–${ph.end}: click to seek`);
@@ -448,6 +531,9 @@ export async function viewLines(view, parts, params, ui) {
     else if (k === 'p') gotoIndex(idx() - 1);
     else if (k === 'k') togglePlay();
     else if (k === 'x') setMode(st.mode === 'swap' ? 'pick' : 'swap');
+    else if (k === '[') setExport(st.phase.start, { trim_in: st.cur });
+    else if (k === ']') setExport(st.phase.start, { trim_out: st.cur });
+    else if (k === 'e') { const ex = curExport(); if (ex) setExport(st.phase.start, { keep: !ex.keep }); }
     else if (k === 'Escape') setMode('pick');
     else return;
     ev.preventDefault();

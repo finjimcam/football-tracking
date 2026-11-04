@@ -199,6 +199,12 @@ STAGES = (
           produces=("shape_video",), needs=("possession", "shape_selection"),
           params=(TEAM, Param("unselected", "choice", "Unpicked phases", default="none",
                               options=("none", "auto")))),
+    Stage("b_clip_export", "Export phase clips (zip)", "cut_phase_clips.py", 12,
+          "The phases you kept in the Lines tab, trimmed, with your picked lines: one MP4 per phase, "
+          "zipped for PowerPoint.",
+          cpu_heavy=True, pipelines=(BROADCAST,),
+          fixed_args=("--shape-selection", "--export-selection", "--separate"),
+          produces=("clips_zip",), needs=("possession",), params=(TEAM,)),
     Stage("export", "Export stats CSV", "export_stats.py", 12,
           "outputs/stats/<match_id>_stats.csv", pipelines=BOTH, produces=("stats",), needs=("meta",)),
     Stage("report", "Build PDF report", "build_report.py", 12,

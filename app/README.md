@@ -40,6 +40,14 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   the same `config/<id>_<team>_out_of_possession_shape_selection.json` the
   CLI picker uses, so either one can carry on from the other.
   **Render picked lines** queues `cut_phase_clips.py --shape-selection`.
+  **Clip export** (issue #37): tick the phases you want in the list (or use
+  Keep all / Drop all) and trim each one with *Start here* `[` and *End
+  here* `]`. `e` toggles the current phase, and *Full phase* undoes a trim.
+  The strip greys out what's trimmed off. Choices save as you go to
+  `config/<id>_<team>_out_of_possession_export.json`. **Export clips (zip)**
+  queues `cut_phase_clips.py --shape-selection --export-selection --separate`:
+  one MP4 per kept phase, with your lines, zipped for PowerPoint. Download it
+  from the match page or from *Download last zip*.
   The chain, gap-filling and re-link logic runs on the server
   (`app/lines.py` calls the same functions), so the page shows exactly what
   the render will draw. Keys: a/d ±0.5 s, A/D ±2 s, ,/. ±1 frame, k

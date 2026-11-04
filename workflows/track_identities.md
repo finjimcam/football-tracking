@@ -70,6 +70,8 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape
 # steadier lines through hand-picked players:
 python tools/select_shape_players.py --match-id <id> --team team_a
 python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection
+# only the phases you kept in the Lines tab, trimmed, one MP4 each, zipped for PowerPoint:
+python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection --export-selection --separate
 ```
 
 ## How each stage works (and why)
@@ -134,6 +136,20 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection
   Output: `<id>_<team>_<phase>_shape_selected.mp4`. `--auto-fill` writes the
   guess for every phase without a window (smoke test; membership changed on
   ~4% of frames instead of ~23%).
+  **Clip export for PowerPoint (2026-11-04, #37):** in the Lines tab, tick
+  the phases to export (Keep all / Drop all to start) and trim each with
+  *Start here* `[` / *End here* `]`. Trims and keep/drop choices are saved as
+  you go to `config/<id>_<team>_<phase>_export.json`, keyed by phase start
+  frame like the picks. A phase missing from the file is kept untrimmed.
+  *Export clips (zip)* runs `--shape-selection --export-selection
+  --separate`: one H.264 MP4 per kept phase (`phase_NN_MMmSSs.mp4`, where NN is
+  the picker's phase number), plus `phases.csv`, in
+  `outputs/videos/<id>_<team>_<phase>_shape_selected_clips.zip`. The match
+  page offers the zip for download. Each export replaces the last one, so
+  dropped phases disappear. The per-clip folder is deleted once zipped, to
+  stay inside the 15 GB data disk. Trims only change what is rendered: chains
+  are still followed over the whole phase, so a pick anchored outside the
+  trim still draws inside it. On pphub a 2-clip, 18 s export took 7.5 s.
   **Web picker (2026-11-04):** the Stopframe app's Lines tab
   (`tools/serve_app.py`, see `app/README.md`) does the same job in a browser,
   so no desktop window is needed. It reads and writes the same selection
@@ -202,6 +218,8 @@ Committed (the repo is public; nothing cut from footage):
   `uncertain_moments.csv`.
 Local only (`.gitignore`: footage and anything cut from it):
 - `outputs/videos/<id>_team_a_out_of_possession.mp4` and `..._shape.mp4`.
+- `outputs/videos/<id>_team_a_out_of_possession_shape_selected_clips.zip`
+  (clip export for PowerPoint, see Phase clips).
 - `outputs/videos/<id>_tracking_match00-10min.mp4` (verification sample; the
   full-half render was deferred for disk space - see learnings).
 - `outputs/verification/<id>/contact_sheet_team_*.jpg`.
