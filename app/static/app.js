@@ -1,12 +1,13 @@
 // Stopframe front end: plain ES module, no build step. Talks to app/server.py.
 import { viewLines } from './lines.js';
+import { viewCode } from './code.js';
 const REPO = 'https://github.com/finjimcam/football-tracking/issues/';
 const WORKFLOW = 'https://github.com/finjimcam/football-tracking/blob/master/workflows/';
 const TABS = [
   { id: 'matches', name: 'Matches' },
   { id: 'jobs', name: 'Jobs' },
   { id: 'lines', name: 'Lines' },
-  { id: 'code', name: 'Code', issue: 3, blurb: 'Configurable code buttons for tagging instances while the video plays.' },
+  { id: 'code', name: 'Code' },
   { id: 'review', name: 'Review', issue: 1, blurb: 'Frame-accurate video player with the tagged timeline underneath.' },
   { id: 'sorter', name: 'Sorter', issue: 4, blurb: 'Every tagged instance in one list: edit, relabel, trim and delete.' },
   { id: 'matrix', name: 'Matrix', issue: 11, blurb: 'Filter and cross-tabulate instances by code and label.' },
@@ -536,6 +537,11 @@ async function route() {
   else if (parts[0] === 'lines') {
     await viewLines(view, parts, params, {
       h, api, toast, every, renderTabs, setCrumb, pill, onLeave: (fn) => leaveHooks.push(fn),
+    });
+  }
+  else if (parts[0] === 'code') {
+    await viewCode(view, parts, params, {
+      h, api, toast, renderTabs, setCrumb, pill, onLeave: (fn) => leaveHooks.push(fn),
     });
   }
   else if (parts[0] === 'jobs') await viewJobs(view, parts[1]);
