@@ -12,6 +12,7 @@
     PUT  /api/matches/{match_id}/lines/export           keep/drop every phase
     POST /api/matches/{match_id}/lines/identify         anchor "this box is No. N" (issue #16)
     DELETE /api/matches/{match_id}/lines/identify/{id}  remove an anchor
+    GET  /api/matches/{match_id}/lines/others?frame=     other detected players at a frame (Identify mode)
     GET  /api/matches/{match_id}/players                every player's full-match stats (issue #16)
     GET  /api/matches/{match_id}/players/{pid}          one player's path, heatmap and stats (?start=&end= frames)
     GET  /api/library                                   teams, players, competitions, seasons, squads, matches
@@ -230,6 +231,10 @@ def create_app(root, runner=None, busy_check=None, warm=False):
     def lines_identify(match_id: str, req: Identify):
         return _lines_call(_lines(match_id, req.team).identify, req.frame, req.box, req.number)
 
+    @app.get("/api/matches/{match_id}/lines/others")
+    def lines_others(match_id: str, frame: int, team: str = "team_a"):
+        return _lines_call(_lines(match_id, team).others, frame)
+
     @app.delete("/api/matches/{match_id}/lines/identify/{anchor_id}")
     def lines_unidentify(match_id: str, anchor_id: str, team: str = "team_a"):
         return _lines_call(_lines(match_id, team).unidentify, anchor_id)
@@ -313,6 +318,15 @@ def create_app(root, runner=None, busy_check=None, warm=False):
         data_dir = (root / ".tmp").resolve()
         return {"disk": [d for d in (_disk(data_dir), _disk("/")) if d],
                 "busy_check": bool(runner.busy_check)}
+
+    @app.middleware("http")
+    async def revalidate_static(request, call_next):
+        # the UI is plain ES modules with no build step or file hashes: make browsers
+        # check for a newer copy (a cheap 304 when unchanged) instead of running stale code
+        resp = await call_next(request)
+        if not request.url.path.startswith("/api/"):
+            resp.headers.setdefault("Cache-Control", "no-cache")
+        return resp
 
     app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")
     return app

@@ -125,6 +125,26 @@ def test_identify_api_click_drag_and_delete(tmp_path):
     assert anchors[0]["span"] == [int(seen.min()), int(seen.max())]
     stored = json.loads((root / "config" / f"{MID}_identity_anchors.json").read_text())["anchors"]
     assert stored[0]["box"] == [round(v, 1) for v in box]   # the detection's own box is what's kept
+    # a box round a player the detector missed on this frame is anchored at the nearest frame they were seen
+    gone = tracks[~((tracks["frame"] == 121) & (tracks["track_id"] == 4))]
+    gone.to_parquet(root / ".tmp" / MID / "tracks.parquet", index=False)
+    r2 = tracks[(tracks["frame"] == 121) & (tracks["track_id"] == 4)].iloc[0]
+    res = c.post(f"{base}/identify", json={"team": "team_a", "frame": 121, "number": 2,
+                                          "box": [float(r2.x1), float(r2.y1), float(r2.x2), float(r2.y2)]})
+    assert res.status_code == 200, res.text
+    assert res.json()["anchor"]["frame"] in (120, 122) and res.json()["anchor"]["track_id"] == 4
+    c.delete(f"{base}/identify/{res.json()['anchor']['id']}?team=team_a")
+    tracks.to_parquet(root / ".tmp" / MID / "tracks.parquet", index=False)
+    # Identify mode can list the detections the team picker leaves out (here: the other team)
+    oth = c.get(f"{base}/others?team=team_a&frame=120").json()["rows"]
+    at = tracks[(tracks["frame"] == 120) & (tracks["class"] == "player")]
+    assert len(oth) >= 1 and {o[0] for o in oth} <= set(at["track_id"].astype(int))
+    ph = next((q for q in s["phases"] if q["start"] <= 120 <= q["end"]), None)
+    if ph is not None:   # never the boxes the picker already shows
+        shown = {row[0] for row in c.get(f"{base}/{ph['start']}?team=team_a").json()["rows"].get("120", [])}
+        assert not shown & {o[0] for o in oth}
+    # static files are revalidated, so a restarted preview never runs stale JS
+    assert c.get("/lines.js").headers.get("cache-control") == "no-cache"
     # empty box / unknown number -> 400
     assert c.post(f"{base}/identify", json={"team": "team_a", "frame": 120, "box": [0, 0, 5, 5], "number": 2}).status_code == 400
     assert c.post(f"{base}/identify", json={"team": "team_a", "frame": 120, "box": box, "number": 99}).status_code == 400

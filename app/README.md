@@ -58,9 +58,15 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   shirt number of the player it's on (gold if you set it), and unpicked
   players show a small number (red **?** if unidentified). Each pick is an
   *anchor*, saved to `config/<id>_identity_anchors.json` (frame plus the
-  detection's box). Until you apply it, the box shows your pick at once as
-  **27•** for the stretch of track it was made on, and any other box the
-  last run called 27 shows **27?**. **Apply to tracking** queues *Track identities* with
+  detection's box). Identify mode also draws every other detection at the
+  frame as a dashed grey box (the other team, keepers, and fragments the
+  tracker never put on a team), so they can be named too. A box dragged
+  round a player the detector missed on that frame is anchored at the
+  nearest frame within 1 s where their feet are in or just around the box.
+  Until you apply it, the box shows your pick at once as **27•** for the
+  stretch of track it was made on, and the box the last run called 27
+  swaps to the picked box's old number (also with a •), or shows **27?**
+  if that can't be worked out. **Apply to tracking** queues *Track identities* with
   cached tracklets (about 3 min). That run names each identity chain after
   the player its anchors point at, and moves anchored fragments onto the
   right player (`tools/identity_anchors.py`). Re-run *Track ball*, *Compute

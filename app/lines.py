@@ -155,15 +155,42 @@ class MatchLines:
                 out.append({"number": int(person["number"]), "name": person.get("name"), "gk": False, "sub": True})
         return out
 
-    def _names(self, pm):
+    def _names(self, pm, team=None):
+        """{track_id: {number, name, manual}} for one team (default: this picker's),
+        or for both teams with a "team" key when team="all"."""
         out = {}
         for pl in pm.get("players", {}).values():
-            if pl.get("team") != self.team:
+            if team != "all" and pl.get("team") != (team or self.team):
                 continue
             for t in pl.get("track_ids", []):
                 out[int(t)] = {"number": pl.get("number"), "name": pl.get("name"),
                                "manual": str(pl.get("name_source", "")).startswith("manual")}
+                if team == "all":
+                    out[int(t)]["team"] = pl.get("team")
         return out
+
+    def _players_near(self, frame, half):
+        """Every player detection within `half` frames of `frame` (any team, or none)."""
+        rows = pd.read_parquet(self.tracks_path, filters=[("frame", ">=", int(frame) - half), ("frame", "<=", int(frame) + half)],
+                               columns=["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y",
+                                        "tracklet"])
+        return rows[rows["class"] == "player"]
+
+    def others(self, frame):
+        """Detected players at `frame` the picker doesn't show for this team: the
+        other team, goalkeepers, and fragments the tracker never put on a team.
+        Identify mode draws them so any detection can be named."""
+        mine = self.rows_by_frame.get(int(frame))
+        shown = set(int(t) for t in mine["track_id"]) if mine is not None else set()
+        allnames = self._names(load_player_map(self.match_id, self.tmp_dir) or {}, "all")
+        out = []
+        for r in self._players_near(frame, 0).itertuples():
+            if int(r.track_id) in shown:
+                continue
+            nm = allnames.get(int(r.track_id))
+            out.append([int(r.track_id), round(r.x1), round(r.y1), round(r.x2), round(r.y2), round(r.foot_x, 1),
+                        round(r.foot_y, 1), (nm or {}).get("team"), (nm or {}).get("number")])
+        return {"frame": int(frame), "rows": out}
 
     def _spans(self, tracklets):
         """First and last frame of each tracklet (cached; tracklet ids are global)."""
@@ -205,20 +232,28 @@ class MatchLines:
             raise LinesError("box must be [x1, y1, x2, y2]")
         x1, y1, x2, y2 = (float(v) for v in box)
         box = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
-        rows = pd.read_parquet(self.tracks_path, filters=[("frame", "==", int(frame))],
-                               columns=["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y",
-                                        "tracklet"])
-        rows = rows[rows["class"] == "player"]
+        half = max(1, int(round(self.fps)))  # look up to 1 s either side if the detector missed them here
+        near = self._players_near(frame, half)
         best, score = None, 0.0
-        for r in rows.itertuples():
+        for r in near[near["frame"] == int(frame)].itertuples():
             v = iou([r.x1, r.y1, r.x2, r.y2], box)
             inside = box[0] <= r.foot_x <= box[2] and box[1] <= r.foot_y <= box[3]
             sc = v + (1.0 if inside else 0.0)
             if (inside or v >= 0.3) and sc > score:
                 best, score = r, sc
         if best is None:
-            raise LinesError("No detected player in that box at this frame. Try a frame where the player "
-                             "is visible and has a box (the detector missed them here)")
+            # nearest frame where a player's feet are in (or just around) the box
+            pad = max(25.0, 0.5 * max(box[2] - box[0], box[3] - box[1]))
+            cx, cy = (box[0] + box[2]) / 2, box[3]
+            cand = near[(near["foot_x"] >= box[0] - pad) & (near["foot_x"] <= box[2] + pad)
+                        & (near["foot_y"] >= box[1] - pad) & (near["foot_y"] <= box[3] + pad)]
+            if len(cand):
+                d = (cand["frame"] - int(frame)).abs() * 1000 + ((cand["foot_x"] - cx) ** 2 + (cand["foot_y"] - cy) ** 2) ** 0.5
+                best = next(cand.loc[[d.idxmin()]].itertuples())
+        if best is None:
+            raise LinesError("The detector didn't find anyone in that box within a second either side, so "
+                             "there's no track to name. Try a moment where the player is in the open")
+        frame = int(best.frame)
         anchor = {"id": uuid.uuid4().hex[:10], "team": self.team, "number": person["number"],
                   "name": person["name"], "frame": int(frame),
                   "box": [round(float(v), 1) for v in (best.x1, best.y1, best.x2, best.y2)],

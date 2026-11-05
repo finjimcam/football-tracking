@@ -87,7 +87,7 @@ export async function viewLines(view, parts, params, ui) {
     pick: 'Shift-click (or long-press) a player to change who they are.',
     relink: 'Re-link: tap the player a lost (red/amber) chain should continue on.',
     swap: 'Fix swap: tap the chain that jumped to the wrong player (or its B/M row in the strip), then tap the right player.',
-    identify: 'Identify: click a player, or drag a box round one with no number (?), then pick who it is. 27• = your pick, not applied to tracking yet; 27? = the old tracking guess for a number now given to someone else.',
+    identify: 'Identify: click a player, or drag a box round one with no number (?), then pick who it is. Dashed grey boxes are other detections (other team, keepers, players the tracker never put on a team): you can name them too. 27• = changed by you (or swapped by your pick), not applied to tracking yet; 27? = an old guess for a number you gave someone else.',
   };
   const modeBtns = {};
   function setMode(mode) {
@@ -198,11 +198,39 @@ export async function viewLines(view, parts, params, ui) {
     if (mine) return { label: `${mine.number}•`, full: `${mine.number} ${mine.name || ''}`.trim(), manual: true, pending: true, number: mine.number };
     const n = sum.names[String(tid)];
     if (!n) return null;
-    if (here.some((a) => a.number === n.number && a.track_id !== tid)) {
+    const took = here.find((a) => a.number === n.number && a.track_id !== tid);
+    if (took) {
+      // your pick took this box's number: it most likely swaps to the number the picked box had
+      const old = sum.names[String(took.track_id)];
+      if (old && old.number !== n.number && !here.some((a) => a.number === old.number)) {
+        return { label: `${old.number}•`, full: `${old.number} ${old.name || ''}`.trim(), manual: true, pending: true, swapped: true, number: old.number };
+      }
       return { label: `${n.number}?`, full: `${n.number} ${n.name || ''}`.trim(), manual: false, doubt: true, number: n.number };
     }
     return { label: String(n.number), full: `${n.number} ${n.name || ''}`.trim(), manual: n.manual, number: n.number };
   };
+  // Identify mode also shows the detections the picker leaves out (the other team,
+  // goalkeepers, fragments never put on a team), fetched per frame when paused
+  const others = new Map();
+  let othersTimer = null;
+  function othersAt(f) {
+    if (st.mode !== 'identify') return [];
+    if (others.has(f)) return others.get(f) || [];
+    if (!st.playing) {
+      clearTimeout(othersTimer);
+      othersTimer = setTimeout(async () => {
+        if (others.has(f)) return;
+        others.set(f, null);
+        try {
+          const res = await api(`/matches/${encodeURIComponent(matchId)}/lines/others?team=${team}&frame=${f}`);
+          others.set(f, res.rows);
+          if (others.size > 400) others.delete(others.keys().next().value);
+          if (st.cur === f) draw();
+        } catch (e) { others.delete(f); }
+      }, 120);
+    }
+    return [];
+  }
   const nameFill = (nm) => (!nm || nm.doubt ? '#EF5B5B' : nm.manual ? '#FFD84D' : '#FFFFFF');
   function drawIdPanel() {
     idPanel.hidden = !st.idBox || st.idBox.dragging;
@@ -228,7 +256,10 @@ export async function viewLines(view, parts, params, ui) {
       const a = res.anchor;
       st.idBox = null;
       drawIdPanel(); drawAnchors(); draw();
-      msg.textContent = `No. ${a.number} ${a.name || ''} saved: the box shows ${a.number}• until you press Apply to tracking, which updates the whole match.`;
+      const moved = a.frame !== st.cur;
+      if (moved && st.phase && a.frame >= st.phase.start && a.frame <= st.phase.end) seek(a.frame);
+      msg.textContent = (moved ? `They weren't detected on that frame, so No. ${a.number} ${a.name || ''} was anchored ${Math.abs((a.frame - st.cur) / sum.fps).toFixed(1)} s ${a.frame > st.cur ? 'later' : 'earlier'}, where they were. `
+        : `No. ${a.number} ${a.name || ''} saved. `) + `The box shows ${a.number}• until you press Apply to tracking, which updates the whole match.`;
     } catch (e) { toast(e.message, true); }
   }
   async function unidentify(id) {
@@ -428,6 +459,13 @@ export async function viewLines(view, parts, params, ui) {
         t.textContent = nm ? nm.label : '?';
         overlay.append(t);
       }
+      for (const r of othersAt(f)) {
+        const nm = nameOf(r[0], f);
+        overlay.append(svg('rect', { x: r[1], y: r[2], width: r[3] - r[1], height: r[4] - r[2], class: 'ov-box other' }));
+        const t = svg('text', { x: (r[1] + r[3]) / 2, y: r[2] - 6, class: 'ov-label other', fill: nm ? nameFill(nm) : '#9AA0A8' });
+        t.textContent = nm ? nm.label : r[8] != null ? (r[7] === team ? String(r[8]) : `${r[8]}·${r[7] === 'team_a' ? 'A' : 'B'}`) : '?';
+        overlay.append(t);
+      }
       for (const a of here) {
         overlay.append(svg('rect', { x: a.box[0] - 3, y: a.box[1] - 3, width: a.box[2] - a.box[0] + 6, height: a.box[3] - a.box[1] + 6,
           fill: 'none', stroke: '#FFD84D', 'stroke-width': 3 }));
@@ -555,7 +593,7 @@ export async function viewLines(view, parts, params, ui) {
   }
 
   function hitTest(x, y) {
-    const rows = (st.phase && st.phase.rows[st.cur]) || [];
+    const rows = ((st.phase && st.phase.rows[st.cur]) || []).concat(st.mode === 'identify' ? (others.get(st.cur) || []) : []);
     let best = null, bd = 1e9;
     for (const r of rows) {
       if (r[1] <= x && x <= r[3] && r[2] <= y && y <= r[4]) {
@@ -638,7 +676,7 @@ export async function viewLines(view, parts, params, ui) {
     if (st.mode === 'identify') {
       if (dragged) { dragged = false; return; }
       const tid = hitTest(x, y);
-      const r = ((st.phase && st.phase.rows[st.cur]) || []).find((row) => row[0] === tid);
+      const r = ((st.phase && st.phase.rows[st.cur]) || []).concat(others.get(st.cur) || []).find((row) => row[0] === tid);
       if (!r) { msg.textContent = 'No tracked box there: drag a box round the player instead.'; return; }
       st.idBox = { box: [r[1], r[2], r[3], r[4]], tid };
       drawIdPanel(); draw();

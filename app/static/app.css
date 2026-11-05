@@ -213,6 +213,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .ov-num { font: 600 15px var(--mono); text-anchor: middle; paint-order: stroke; stroke: rgba(0,0,0,.75); stroke-width: 3px; opacity: .8; pointer-events: none; }
 .ov-chain-num { font-size: .8em; }
 .ov-box.unid { stroke: #EF5B5B; stroke-opacity: 0.9; stroke-dasharray: 4 3; }
+.ov-box.other { stroke: #9AA0A8; stroke-opacity: 0.8; stroke-dasharray: 3 3; }
+.ov-label.other { font-size: 13px; }
 .id-panel { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--accent); border-radius: 6px; background: var(--raised); }
 .id-names { display: flex; flex-wrap: wrap; gap: 4px; }
 .id-anchors { display: flex; flex-direction: column; max-height: 30vh; overflow: auto; }
