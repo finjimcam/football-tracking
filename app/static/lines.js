@@ -236,7 +236,10 @@ export async function viewLines(view, parts, params, ui) {
     idPanel.hidden = !st.idBox || st.idBox.dragging;
     if (idPanel.hidden) return;
     const cur = st.idBox.tid != null ? nameOf(st.idBox.tid, st.cur) : null;
-    const says = !cur ? ' · unidentified' : cur.pending ? ` · you said ${cur.full} (not applied yet)` : ` · tracking says ${cur.full}`;
+    const oth = !cur && st.idBox.tid != null ? (others.get(st.cur) || []).find((r) => r[0] === st.idBox.tid) : null;
+    const says = oth ? (oth[7] && oth[7] !== team ? ` · tracking has them on ${sum.opponent_name}${oth[8] != null ? ` as No. ${oth[8]}` : ''}`
+      : oth[7] ? ` · tracking says ${oth[8]}` : ' · tracking never put them on a team')
+      : !cur ? ' · unidentified' : cur.pending ? ` · you said ${cur.full} (not applied yet)` : ` · tracking says ${cur.full}`;
     idPanel.replaceChildren(
       h('div', { class: 'section-label' }, 'Who is this?', h('span', { class: 'dim' }, says)),
       h('div', { class: 'id-names' }, sum.lineup.length ? sum.lineup.map((p) => h('button', {
@@ -462,8 +465,10 @@ export async function viewLines(view, parts, params, ui) {
       for (const r of othersAt(f)) {
         const nm = nameOf(r[0], f);
         overlay.append(svg('rect', { x: r[1], y: r[2], width: r[3] - r[1], height: r[4] - r[2], class: 'ov-box other' }));
+        // the other team's players stay unlabelled (less clutter); click one to see who tracking says
+        if (!nm && r[7] && r[7] !== team) continue;
         const t = svg('text', { x: (r[1] + r[3]) / 2, y: r[2] - 6, class: 'ov-label other', fill: nm ? nameFill(nm) : '#9AA0A8' });
-        t.textContent = nm ? nm.label : r[8] != null ? (r[7] === team ? String(r[8]) : `${r[8]}·${r[7] === 'team_a' ? 'A' : 'B'}`) : '?';
+        t.textContent = nm ? nm.label : r[8] != null ? String(r[8]) : '?';
         overlay.append(t);
       }
       for (const a of here) {
