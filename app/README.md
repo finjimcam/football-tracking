@@ -48,10 +48,67 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   queues `cut_phase_clips.py --shape-selection --export-selection --separate`:
   one MP4 per kept phase, with your lines, zipped for PowerPoint. Download it
   from the match page or from *Download last zip*.
+  **Identify** (`i`, issue #16): tell the tracker who players are. In
+  Identify mode every box shows its tracked shirt number: white is
+  role-inferred, gold is set by you, and a red **?** means unidentified.
+  Click a player, or drag a box round one the tracker missed, then pick a
+  name from the lineup (`config/<id>_reference.json`). You can also do it while
+  picking lines: Shift-click (or long-press on a phone) a player to open the same
+  name picker without leaving Pick mode. In Pick mode each B/M marker shows the
+  shirt number of the player it's on (gold if you set it), and unpicked
+  players show a small number (red **?** if unidentified). Each pick is an
+  *anchor*, saved to `config/<id>_identity_anchors.json` (frame plus the
+  detection's box). Identify mode also draws every other detection at the
+  frame as a dashed grey box (the other team, keepers, and fragments the
+  tracker never put on a team), so they can be named too. A box dragged
+  round a player the detector missed on that frame is anchored at the
+  nearest frame within 1 s where their feet are in or just around the box.
+  Until you apply it, the box shows your pick at once as **27•** for the
+  stretch of track it was made on, and the box the last run called 27
+  swaps to the picked box's old number (also with a •), or shows **27?**
+  if that can't be worked out. **Apply to tracking** queues *Track identities* with
+  cached tracklets (about 3 min). That run names each identity chain after
+  the player its anchors point at, and moves anchored fragments onto the
+  right player (`tools/identity_anchors.py`). Re-run *Track ball*, *Compute
+  possession* and the stats stages afterwards, so stats and paths for the
+  whole match use the corrected identities.
   The chain, gap-filling and re-link logic runs on the server
   (`app/lines.py` calls the same functions), so the page shows exactly what
   the render will draw. Keys: a/d ±0.5 s, A/D ±2 s, ,/. ±1 frame, k
   play, Enter save + next, s skip, r auto guess, c clear, p previous.
+- **Players** (issue #16, also *Players* on a broadcast match's page): every
+  player's whole-match path, heatmap and running stats, computed from
+  `tracks.parquet` by `tools/player_paths.py` (`app/players.py` wraps it).
+  Pick a player on the left. The pitch shows where they were (heatmap:
+  seconds per 2.5 m cell, square-root scale), their path at 2 Hz, the team's
+  average positions with them highlighted, and which way the team attacks.
+  The sliders and presets (0–15′, 15–30′, …) limit everything to part of
+  the match. Stats: distance, minutes tracked and coverage, per-90
+  distance, average and top speed (99th percentile), sprints (25 km/h or
+  faster held for at least 1 s) and distance per speed band. Gaps in the tracking
+  are left out, so distance is a lower bound. Names come from
+  `player_map.json`: a gold dot means anchors you set in Identify mode, and
+  the note under the stats says how many of a chain's joins were
+  uncertain. A wide heatmap with many uncertain joins usually means the
+  chain picks up a team-mate, so add anchors in the Lines tab and press
+  *Apply to tracking*. The tab reloads the new identities by itself.
+- **Library** (issue #16): teams, players, competitions, seasons and
+  squads, plus which match video belongs to which season and teams. It all
+  lives in one hand-editable file, `config/library.json`
+  (`tools/library.py`, `app/library.py`). *Matches* lists every ingested
+  video. Open one to set its season, round, date, the two teams and home
+  side, and to see the video and data files linked to it. *Import from
+  match config* fills all of that, plus both lineups, from
+  `config/<id>_match.json` and `_reference.json`. Running it again only
+  fills gaps and never overwrites your edits. *Competitions & seasons*
+  adds and renames them. Each team page edits name, short name, colour and
+  kit, and the **squad** for a chosen season: shirt numbers belong to the
+  squad, not to the player, so a new number or a transfer next season
+  keeps history straight. A typed name that's already in the library links
+  to that player. Every change is checked before it's saved: no shirt
+  number twice in a squad, no deleting a team or season that's still
+  used. The Lines tab's Identify picker lists the match lineup, then the
+  rest of the squad as subs.
 - **Code / Review / Sorter / Matrix / Present** tabs are placeholders that
   link to the issues that will build them (#3, #1, #4, #11, #12).
 

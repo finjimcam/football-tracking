@@ -10,6 +10,16 @@
     POST /api/jobs/{id}/cancel | /force
     PUT  /api/matches/{match_id}/lines/{start}/export   keep/drop + trim one phase clip
     PUT  /api/matches/{match_id}/lines/export           keep/drop every phase
+    POST /api/matches/{match_id}/lines/identify         anchor "this box is No. N" (issue #16)
+    DELETE /api/matches/{match_id}/lines/identify/{id}  remove an anchor
+    GET  /api/matches/{match_id}/lines/others?frame=     other detected players at a frame (Identify mode)
+    GET  /api/matches/{match_id}/players                every player's full-match stats (issue #16)
+    GET  /api/matches/{match_id}/players/{pid}          one player's path, heatmap and stats (?start=&end= frames)
+    GET  /api/library                                   teams, players, competitions, seasons, squads, matches
+    POST/PUT/DELETE /api/library/{kind}[/{id}]          edit teams / players / competitions / seasons
+    PUT  /api/library/squads/{season}/{team}            replace a squad (numbers per team and season)
+    PUT  /api/library/matches/{match_id}                link a match to a season, teams and data
+    POST /api/library/import/{match_id}                 fill the library from the match's config files
     GET  /api/system                      disk space + whether heavy jobs are held
 
 Everything else under / is the single-page app in app/static/.
@@ -17,7 +27,7 @@ Everything else under / is the single-page app in app/static/.
 import shutil
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -25,6 +35,8 @@ from pydantic import BaseModel, Field
 from app import catalog, matches
 from app.jobs import JobRunner
 from app.lines import FrameSource, LinesCache, LinesError
+from app.players import PlayersCache, PlayersError
+from app import library as libapi
 
 STATIC = Path(__file__).parent / "static"
 
@@ -51,6 +63,13 @@ class ExportEdit(BaseModel):
     trim_in: int | None = None
     trim_out: int | None = None
     reset_trim: bool = False
+
+
+class Identify(BaseModel):
+    team: str = "team_a"
+    frame: int
+    box: list
+    number: int
 
 
 class ExportAll(BaseModel):
@@ -147,9 +166,78 @@ def create_app(root, runner=None, busy_check=None, warm=False):
         except LinesError as e:
             raise HTTPException(400, str(e)) from None
 
+    def _lib(fn, *a):
+        try:
+            return fn(root, *a)
+        except libapi.LibraryError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.get("/api/library")
+    def library_get():
+        return libapi.summary(root, matches.list_matches(root))
+
+    @app.post("/api/library/import/{match_id}")
+    def library_import(match_id: str):
+        _match_or_404(match_id)
+        return _lib(libapi.import_match, match_id)
+
+    @app.put("/api/library/squads/{season}/{team}")
+    def library_squad(season: str, team: str, body: dict = Body(...)):
+        return _lib(libapi.set_squad, season, team, body.get("entries") or [])
+
+    @app.put("/api/library/matches/{match_id}")
+    def library_match(match_id: str, body: dict = Body(...)):
+        _match_or_404(match_id)
+        return _lib(libapi.link_match, match_id, body)
+
+    @app.post("/api/library/{kind}", status_code=201)
+    def library_create(kind: str, body: dict = Body(...)):
+        return _lib(libapi.upsert, kind, body, None)
+
+    @app.put("/api/library/{kind}/{item_id}")
+    def library_update(kind: str, item_id: str, body: dict = Body(...)):
+        return _lib(libapi.upsert, kind, body, item_id)
+
+    @app.delete("/api/library/{kind}/{item_id}")
+    def library_delete(kind: str, item_id: str):
+        return _lib(libapi.delete, kind, item_id)
+
+    players_cache = PlayersCache(root)
+
+    def _players(match_id):
+        _match_or_404(match_id)
+        try:
+            return players_cache.get(match_id)
+        except PlayersError as e:
+            raise HTTPException(409, str(e)) from None
+
+    @app.get("/api/matches/{match_id}/players")
+    def players_summary(match_id: str):
+        return _players(match_id).summary()
+
+    @app.get("/api/matches/{match_id}/players/{pid}")
+    def player_detail(match_id: str, pid: str, start: int | None = None, end: int | None = None):
+        mp = _players(match_id)
+        try:
+            return mp.player(pid, start, end)
+        except PlayersError as e:
+            raise HTTPException(404 if "Unknown" in str(e) else 400, str(e)) from None
+
     @app.get("/api/matches/{match_id}/lines")
     def lines_summary(match_id: str, team: str = "team_a"):
         return _lines(match_id, team).summary()
+
+    @app.post("/api/matches/{match_id}/lines/identify")
+    def lines_identify(match_id: str, req: Identify):
+        return _lines_call(_lines(match_id, req.team).identify, req.frame, req.box, req.number)
+
+    @app.get("/api/matches/{match_id}/lines/others")
+    def lines_others(match_id: str, frame: int, team: str = "team_a"):
+        return _lines_call(_lines(match_id, team).others, frame)
+
+    @app.delete("/api/matches/{match_id}/lines/identify/{anchor_id}")
+    def lines_unidentify(match_id: str, anchor_id: str, team: str = "team_a"):
+        return _lines_call(_lines(match_id, team).unidentify, anchor_id)
 
     @app.put("/api/matches/{match_id}/lines/export")
     def lines_export_all(match_id: str, req: ExportAll):
@@ -230,6 +318,15 @@ def create_app(root, runner=None, busy_check=None, warm=False):
         data_dir = (root / ".tmp").resolve()
         return {"disk": [d for d in (_disk(data_dir), _disk("/")) if d],
                 "busy_check": bool(runner.busy_check)}
+
+    @app.middleware("http")
+    async def revalidate_static(request, call_next):
+        # the UI is plain ES modules with no build step or file hashes: make browsers
+        # check for a newer copy (a cheap 304 when unchanged) instead of running stale code
+        resp = await call_next(request)
+        if not request.url.path.startswith("/api/"):
+            resp.headers.setdefault("Cache-Control", "no-cache")
+        return resp
 
     app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")
     return app

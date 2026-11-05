@@ -32,6 +32,14 @@ out-of-possession phases) from it.
 - `config/<match_id>_calibration.json` - seed: >= 8 landmark clicks on ONE
   frame (calibrate_pitch.py keyframe format). Pick a frame with a penalty
   area + halfway line in view; landmarks can be read off a gridded zoom.
+- Optional: `config/library.json` (issue #16), the library of teams, players,
+  competitions, seasons and squads. Fill it with
+  `python tools/library.py import-match --match-id <id>` (or *Import from
+  match config* in Stopframe's Library tab) once the two files above exist,
+  then add the rest of each squad there. The Lines tab's Identify picker
+  then offers the whole squad, not only the starting XI, so substitutes can
+  be named. `track_identities.py` still takes lineups and role inference
+  from `_reference.json`.
 
 ## Tools (in order)
 | # | Tool | Cost (Core Ultra 5 135U, 47-min half) | Output |
@@ -103,6 +111,23 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
 - **Ball** (`track_ball.py`): drops detections projecting > 1 m off the pitch
   (spare balls), links the rest into ball tracklets, keeps the strongest
   per frame, interpolates gaps <= 12 frames.
+- **Manual anchors** (issue #16): `track_identities.py` applies
+  `config/<id>_identity_anchors.json` (made in the Lines tab's Identify
+  mode) after gap-filling. An anchor is a frame plus a detection box plus a
+  shirt number, and is re-found by box IoU, so it survives a tracklet
+  rebuild. The run then does two things:
+  - Each chain is named after the player most of its anchors point at; the
+    chain that had that name takes the displaced name.
+  - Anchored tracklets are moved into their player's chain, and that
+    chain's tracklets overlapping them in time are dropped from it.
+
+  `player_map.json` marks those names `name_source: manual (Lines tab
+  anchors)` and reports `manual_anchors` (unresolved anchors and
+  conflicting votes included). Re-run steps 4-10 afterwards.
+  Check the result in Stopframe's **Players** tab (`tools/player_paths.py`,
+  which also prints the same stats table from the CLI). It shows each player's
+  whole-match path and heatmap. A full-back whose heatmap covers the whole
+  pitch, or a chain with many `fragile_links`, is where anchors help most.
 - **Possession** (`compute_possession.py`): nearest player within 2.5 m of the
   ball, 0.4 s hysteresis before switching, possession held through ball
   dropouts for up to 8 s -> per-frame `possession_timeline.parquet`.
