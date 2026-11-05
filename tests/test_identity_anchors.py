@@ -120,6 +120,9 @@ def test_identify_api_click_drag_and_delete(tmp_path):
     assert res.status_code == 200, res.text
     anchors = res.json()["anchors"]
     assert len(anchors) == 1 and anchors[0]["number"] == 3 and anchors[0]["pending"] is True
+    # the picker shows the pending pick over the anchored tracklet's frames straight away
+    seen = tracks.loc[tracks["tracklet"] == 503, "frame"]
+    assert anchors[0]["span"] == [int(seen.min()), int(seen.max())]
     stored = json.loads((root / "config" / f"{MID}_identity_anchors.json").read_text())["anchors"]
     assert stored[0]["box"] == [round(v, 1) for v in box]   # the detection's own box is what's kept
     # empty box / unknown number -> 400

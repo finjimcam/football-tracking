@@ -79,6 +79,7 @@ class MatchLines:
         self.tracks_path = mdir / "tracks.parquet"
         self.names = self._names(load_player_map(match_id, self.tmp_dir) or {})
         self.lock = threading.Lock()
+        self._span_cache = {}
 
     # ---- helpers ------------------------------------------------------
     def _seg(self, start):
@@ -164,11 +165,30 @@ class MatchLines:
                                "manual": str(pl.get("name_source", "")).startswith("manual")}
         return out
 
+    def _spans(self, tracklets):
+        """First and last frame of each tracklet (cached; tracklet ids are global)."""
+        want = [int(t) for t in tracklets if t is not None and int(t) not in self._span_cache]
+        if want:
+            try:
+                d = pd.read_parquet(self.tracks_path, filters=[("tracklet", "in", want)], columns=["frame", "tracklet"])
+                for t, g in d.groupby("tracklet"):
+                    self._span_cache[int(t)] = [int(g["frame"].min()), int(g["frame"].max())]
+            except (OSError, ValueError, KeyError):
+                pass
+            for t in want:
+                self._span_cache.setdefault(t, None)
+        return self._span_cache
+
     def _anchors_json(self):
         stamp = self.tracks_path.stat().st_mtime if self.tracks_path.exists() else 0
         mine = [a for a in load_anchors(self.anchor_path) if a.get("team") == self.team]
+        spans = self._spans(a.get("tracklet") for a in mine)
         for a in mine:
             a["pending"] = a.get("created", 0) > stamp
+            # until "Apply to tracking" runs, the picker shows the anchored number on
+            # this stretch of the track (the anchored tracklet, or just the frame)
+            t = a.get("tracklet")
+            a["span"] = (spans.get(int(t)) if t is not None else None) or [int(a["frame"]), int(a["frame"])]
             a["phase"] = next((sg[0] for sg in self.segs if sg[0] <= a["frame"] <= sg[1]), None)
             a["clock"] = clock_label(int(a["frame"]), self.cfg, self.fps) or ""
         return sorted(mine, key=lambda a: a["frame"])

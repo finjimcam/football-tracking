@@ -87,7 +87,7 @@ export async function viewLines(view, parts, params, ui) {
     pick: 'Shift-click (or long-press) a player to change who they are.',
     relink: 'Re-link: tap the player a lost (red/amber) chain should continue on.',
     swap: 'Fix swap: tap the chain that jumped to the wrong player (or its B/M row in the strip), then tap the right player.',
-    identify: 'Identify: click a player, or drag a box round one with no number (?), then pick who it is.',
+    identify: 'Identify: click a player, or drag a box round one with no number (?), then pick who it is. 27• = your pick, not applied to tracking yet; 27? = the old tracking guess for a number now given to someone else.',
   };
   const modeBtns = {};
   function setMode(mode) {
@@ -188,18 +188,31 @@ export async function viewLines(view, parts, params, ui) {
   const idPanel = h('div', { class: 'id-panel', hidden: true, role: 'group', 'aria-label': 'Who is this player?' });
   const anchorList = h('div', { class: 'id-anchors' });
   const anchorInfo = h('span', { class: 'muted mono', style: 'font-size:11px' });
-  const nameOf = (tid) => {
+  // Who a box is: your not-yet-applied anchors win over the last tracking run, on
+  // the stretch of track (tracklet) each one was made on. A box the tracker still
+  // calls by an anchored number gets a "?" since that number is now someone else.
+  const pendingAt = (f) => sum.anchors.filter((a) => a.pending && a.span && a.span[0] <= f && f <= a.span[1]);
+  const nameOf = (tid, f) => {
+    const here = f == null ? [] : pendingAt(f);
+    const mine = here.filter((a) => a.track_id === tid).sort((a, b) => (b.created || 0) - (a.created || 0))[0];
+    if (mine) return { label: `${mine.number}•`, full: `${mine.number} ${mine.name || ''}`.trim(), manual: true, pending: true, number: mine.number };
     const n = sum.names[String(tid)];
-    return n ? { label: String(n.number), full: `${n.number} ${n.name || ''}`.trim(), manual: n.manual } : null;
+    if (!n) return null;
+    if (here.some((a) => a.number === n.number && a.track_id !== tid)) {
+      return { label: `${n.number}?`, full: `${n.number} ${n.name || ''}`.trim(), manual: false, doubt: true, number: n.number };
+    }
+    return { label: String(n.number), full: `${n.number} ${n.name || ''}`.trim(), manual: n.manual, number: n.number };
   };
+  const nameFill = (nm) => (!nm || nm.doubt ? '#EF5B5B' : nm.manual ? '#FFD84D' : '#FFFFFF');
   function drawIdPanel() {
     idPanel.hidden = !st.idBox || st.idBox.dragging;
     if (idPanel.hidden) return;
-    const cur = st.idBox.tid != null ? nameOf(st.idBox.tid) : null;
+    const cur = st.idBox.tid != null ? nameOf(st.idBox.tid, st.cur) : null;
+    const says = !cur ? ' · unidentified' : cur.pending ? ` · you said ${cur.full} (not applied yet)` : ` · tracking says ${cur.full}`;
     idPanel.replaceChildren(
-      h('div', { class: 'section-label' }, 'Who is this?', cur ? h('span', { class: 'dim' }, ` · tracking says ${cur.full}`) : h('span', { class: 'dim' }, ' · unidentified')),
+      h('div', { class: 'section-label' }, 'Who is this?', h('span', { class: 'dim' }, says)),
       h('div', { class: 'id-names' }, sum.lineup.length ? sum.lineup.map((p) => h('button', {
-        type: 'button', class: 'id-name' + (cur && +cur.label === p.number ? ' on' : ''),
+        type: 'button', class: 'id-name' + (cur && cur.number === p.number ? ' on' : ''),
         onclick: () => identify(p.number),
       }, `${p.number} ${p.name || ''}`, p.gk ? h('span', { class: 'dim' }, ' GK') : null, p.sub ? h('span', { class: 'dim' }, ' sub') : null))
         : h('span', { class: 'muted' }, 'No lineup for this team in config/<id>_reference.json')),
@@ -215,7 +228,7 @@ export async function viewLines(view, parts, params, ui) {
       const a = res.anchor;
       st.idBox = null;
       drawIdPanel(); drawAnchors(); draw();
-      msg.textContent = `Anchored No. ${a.number} ${a.name || ''} here. Add more, then Apply to tracking.`;
+      msg.textContent = `No. ${a.number} ${a.name || ''} saved: the box shows ${a.number}• until you press Apply to tracking, which updates the whole match.`;
     } catch (e) { toast(e.message, true); }
   }
   async function unidentify(id) {
@@ -409,9 +422,9 @@ export async function viewLines(view, parts, params, ui) {
     if (st.mode === 'identify') {
       const here = sum.anchors.filter((a) => a.frame === f);
       for (const r of rows) {
-        const nm = nameOf(r[0]);
-        overlay.append(svg('rect', { x: r[1], y: r[2], width: r[3] - r[1], height: r[4] - r[2], class: 'ov-box' + (nm ? '' : ' unid') }));
-        const t = svg('text', { x: (r[1] + r[3]) / 2, y: r[2] - 6, class: 'ov-label', fill: nm ? (nm.manual ? '#FFD84D' : '#FFFFFF') : '#EF5B5B' });
+        const nm = nameOf(r[0], f);
+        overlay.append(svg('rect', { x: r[1], y: r[2], width: r[3] - r[1], height: r[4] - r[2], class: 'ov-box' + (nm && !nm.doubt ? '' : ' unid') }));
+        const t = svg('text', { x: (r[1] + r[3]) / 2, y: r[2] - 6, class: 'ov-label', fill: nameFill(nm) });
         t.textContent = nm ? nm.label : '?';
         overlay.append(t);
       }
@@ -423,8 +436,8 @@ export async function viewLines(view, parts, params, ui) {
       for (const r of rows) {
         if (taken.has(r[0])) continue;
         overlay.append(svg('rect', { x: r[1], y: r[2], width: r[3] - r[1], height: r[4] - r[2], class: 'ov-box' }));
-        const nm = nameOf(r[0]); // who the tracker thinks this is, small and dim
-        const t = svg('text', { x: (r[1] + r[3]) / 2, y: r[2] - 5, class: 'ov-num', fill: nm ? (nm.manual ? '#FFD84D' : '#FFFFFF') : '#EF5B5B' });
+        const nm = nameOf(r[0], f); // who the tracker (or your pending anchor) says this is, small and dim
+        const t = svg('text', { x: (r[1] + r[3]) / 2, y: r[2] - 5, class: 'ov-num', fill: nameFill(nm) });
         t.textContent = nm ? nm.label : '?';
         overlay.append(t);
       }
@@ -447,9 +460,9 @@ export async function viewLines(view, parts, params, ui) {
           'stroke-width': s === 'f' ? 1.5 : 2.5, 'stroke-dasharray': s === 'f' ? '4 4' : null }));
         const t = svg('text', { x: fx, y: fy - 22, class: 'ov-label', fill: color });
         t.textContent = (ch.line === 'back' ? 'B' : 'M') + (s === 'f' ? '~' : s === 'l' ? '*' : '');
-        const nm = s !== 'f' ? nameOf(p[0]) : null; // the shirt number of the player the chain is on
+        const nm = s !== 'f' ? nameOf(p[0], f) : null; // the shirt number of the player the chain is on
         if (nm) {
-          const n = svg('tspan', { dx: 4, fill: nm.manual ? '#FFD84D' : '#FFFFFF', class: 'ov-chain-num' });
+          const n = svg('tspan', { dx: 4, fill: nameFill(nm), class: 'ov-chain-num' });
           n.textContent = nm.label;
           t.append(n);
         }
