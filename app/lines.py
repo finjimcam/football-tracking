@@ -346,6 +346,7 @@ class LinesCache:
         paths = [self.root / ".tmp" / match_id / n for n in
                  ("tracks.parquet", "possession_timeline.parquet", "player_map.json")]
         paths.append(self.root / "config" / f"{match_id}_calibration.json")
+        paths.append(self.root / "config" / f"{match_id}_track_edits.json")  # Tracking-tab fixes (#42)
         return tuple(p.stat().st_mtime if p.exists() else 0 for p in paths)
 
     def get(self, match_id, team):
