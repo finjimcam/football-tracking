@@ -52,6 +52,33 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   (`app/lines.py` calls the same functions), so the page shows exactly what
   the render will draw. Keys: a/d ±0.5 s, A/D ±2 s, ,/. ±1 frame, k
   play, Enter save + next, s skip, r auto guess, c clear, p previous.
+- **Tracking** (broadcast matches, issue #42): follow every player's track
+  and fix it by hand. The video has a box and a name on every identified
+  player: solid when tracked, dashed amber when predicted across a gap of
+  1 s or less, dashed yellow for your hand-drawn boxes. Unlabelled boxes are
+  grey and dashed. A **top-down pitch** beside it shows the same frame: every
+  player, the ball and the camera's view from the calibration. Lost players
+  sit at their last-seen spot as a dashed red ring, and players off camera
+  are faded. **Tracks** has one lane per player over a 1-15 min window:
+  tracked / predicted / lost (no box while the last spot is in view) / off
+  camera / your box. Diamonds above the lanes mark problems: possible swaps
+  from `contact_swaps.json`, and losses of 3 s or more. When the playhead is
+  on one, a banner offers the fix: *Swap them from here*, *Draw box for #N*,
+  or *Not a swap* / *Ignore*. Other fixes:
+  - **Swap with… from this frame on**: pick a teammate.
+  - **Not him from here**: splits the track.
+  - **Delete box**: on this frame only.
+  - **Not a player**: the piece of track is a referee, coach or fan.
+  - **Draw box**: drag round the player. Your box is interpolated to the
+    player's nearest boxes up to 5 s away.
+  - Click a grey box to say who it is.
+
+  Fixes save as you go to `config/<id>_track_edits.json`. They are never
+  baked into `tracks.parquet`: `tools/track_edits.py` applies them whenever a
+  tool loads tracks (`_common.load_tracks`). The Lines tab picks them up
+  straight away. Possession, positions, physical and the tracking render
+  show as *stale* until you re-run them. Keys: k play, ,/. ±1 frame,
+  a/d ±2 s, n/p next/previous problem, b draw, Esc cancel.
 - **Code / Review / Sorter / Matrix / Present** tabs are placeholders that
   link to the issues that will build them (#3, #1, #4, #11, #12).
 

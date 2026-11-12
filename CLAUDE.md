@@ -101,7 +101,9 @@ tool scripts:
 
 **Web front end (Stopframe):** `tools/serve_app.py` serves a browser UI
 (`app/`) that runs the match-report stages as background jobs with logs and
-progress. See [app/README.md](app/README.md). Long loops in tools print
+progress. Its Tracking tab saves hand fixes to `config/<id>_track_edits.json`,
+which `_common.load_tracks()` applies for every tool (`tools/track_edits.py`).
+See [app/README.md](app/README.md). Long loops in tools print
 `PROGRESS done/total` lines via `_common.Progress` for its progress bars.
 
 **Notes that apply across all of them:**

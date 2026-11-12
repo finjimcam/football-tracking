@@ -207,6 +207,35 @@ To fix a bad stretch: scrub to the moments in `uncertain_moments.csv`; tune
 experiments) and re-run steps 3-10, or add manual roster anchors
 (curate_and_identify_players.md - not yet wired into the global linker).
 
+## Fixing tracking by hand (Stopframe Tracking tab, issue #42)
+Use this when the automatic identities are wrong in places you care about. The
+tab lists every possible swap (`contact_swaps.json`) and every loss of 3 s or
+more in view. Step through them with n/p. Each fix is one line in
+`config/<id>_track_edits.json`:
+- `swap`: ids trade from a frame on.
+- `assign`: an unlabelled fragment becomes a player, and trades with whoever
+  had that player on those frames.
+- `box`: a hand-drawn box, interpolated up to 5 s to the player's nearest
+  boxes.
+- `split`, `delete`, `not_player`.
+- `ok`: the problem was checked and is fine.
+
+The fixes are applied in order on top of `tracks.parquet` by
+`tools/track_edits.py` whenever a tool loads tracks. That covers
+`_common.load_tracks`, the Lines picker, phase clips, contact swaps and the
+reference comparison. Tools that rewrite tracks (`track_ball.py`) and the
+tracker's own checks (`verify_tracking.py`) still see the raw output, so the
+fixes are never baked in. After fixing, re-run possession → positions /
+physical → phase clips (the match page marks them stale).
+- The file stores a fingerprint of the player rows it was made against. If
+  `track_identities.py` is re-run and the ids move, the fixes are **not
+  applied**. Both the CLI (`python tools/track_edits.py --match-id <id>`) and
+  the tab warn about it. Check them again rather than trusting old ids. A
+  re-run with `--reuse-tracklets` and the same settings keeps the
+  fingerprint.
+- A Lines-tab *Fix swap* and a Tracking-tab swap at the same collision undo
+  each other. Fix identities in the Tracking tab first, then pick lines.
+
 ## Outputs
 Committed (the repo is public; nothing cut from footage):
 - `outputs/reports/<id>_report.pdf` - possession, positions, shape in/out of

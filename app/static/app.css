@@ -213,6 +213,35 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .mini-select { height: 30px; background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; color: var(--text); padding: 0 6px; }
 button.job-row { font: inherit; cursor: pointer; }
 
+/* tracking tab (#42) */
+.trk-svg.drawing { cursor: crosshair; }
+.trk-svg { cursor: pointer; }
+.trk-other { fill: none; stroke: #E6E8EB; stroke-opacity: 0.8; stroke-width: 1.6; stroke-dasharray: 4 3; }
+.trk-other.ref { stroke-opacity: 0.3; }
+.trk-label { font: 700 14px var(--sans); text-anchor: middle; paint-order: stroke; stroke: #0E1013; stroke-width: 3px; pointer-events: none; }
+.trk-num { font: 700 1.9px var(--mono); text-anchor: middle; pointer-events: none; }
+.trk-dot-g { cursor: pointer; }
+.trk-dot-g:focus-visible circle { stroke: var(--accent); stroke-width: 0.8; }
+.trk-pitch { width: 100%; display: block; border-radius: 4px; aspect-ratio: 111 / 74; }
+.trk-lanes { width: 100%; display: block; border-radius: 4px; cursor: pointer; }
+.trk-toggles { position: absolute; left: 8px; top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+.trk-toggle { height: 28px; padding: 0 9px; border-radius: 5px; font-size: 12px; font-weight: 600; border: 1px solid var(--line-2);
+  background: rgba(14,16,19,0.85); color: var(--text-2); }
+.trk-toggle[aria-pressed="true"] { background: rgba(230,232,235,0.92); color: var(--bg); border-color: #E6E8EB; }
+.trk-chip { position: absolute; right: 8px; top: 8px; background: rgba(14,16,19,0.88); border: 1px solid var(--line-2);
+  padding: 4px 8px; border-radius: 4px; font-size: 11px; color: var(--text-2); pointer-events: none; }
+.trk-clock { position: absolute; left: 8px; bottom: 8px; background: rgba(14,16,19,0.88); border: 1px solid var(--line-2);
+  padding: 4px 9px; border-radius: 4px; font-size: 18px; pointer-events: none; }
+.trk-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: var(--raised);
+  border: 1px solid var(--accent); border-radius: 6px; padding: 6px 6px 6px 10px; }
+.trk-dot { width: 9px; height: 9px; border-radius: 2px; transform: rotate(45deg); flex: none; display: inline-block; }
+.trk-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.trk-list { max-height: 320px; overflow: auto; }
+.trk-prob.here { background: #20242A; }
+.trk-edit { display: flex; align-items: center; gap: 8px; padding-right: 10px; border-bottom: 1px solid var(--row-line); }
+.trk-edit .job-row { flex: 1 1 0; min-width: 0; }
+.trk-pending { border-color: var(--accent); }
+
 @media (max-width: 640px) {
   .topbar { padding: 8px 12px; gap: 8px 10px; }
   .tabs { order: 10; width: 100%; overflow-x: auto; flex-wrap: nowrap; }
@@ -221,5 +250,8 @@ button.job-row { font: inherit; cursor: pointer; }
   .stage-actions { grid-column: 2; justify-content: flex-start; }
   .stage-form { padding-left: 14px; }
   .lines-side { max-width: none; }
+  .trk-chip { display: none; }
+  .trk-toggle { height: 26px; padding: 0 7px; font-size: 11px; }
+  .trk-clock { font-size: 13px; }
   .lines-list { max-height: 30vh; }
 }
