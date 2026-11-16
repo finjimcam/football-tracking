@@ -207,8 +207,16 @@ def build_tracklets(frames, xs, ys, conf, kit, world_to_img, img_wh, ok_frames, 
                     continue
             survivors.append(t)
         active = survivors
+        dup_m = getattr(a, "dup_m", 0.0)
+        taken = [rows[j] for j in matched_r] if dup_m > 0 else []
         for j, r in enumerate(rows):
             if j in matched_r or conf[r] < a.new_conf:
+                continue
+            # issue #46: a second box on a player who's already tracked this
+            # frame (a duplicate the IoU filter missed) used to start a new
+            # tracklet; the two then shared the player, and the old one
+            # drifted onto a neighbour. Not a new person: leave it untracked.
+            if taken and np.min(np.hypot(xs[taken] - xs[r], ys[taken] - ys[r])) < dup_m:
                 continue
             t = Track(next_id, f, xs[r], ys[r], kit[r])
             assign[r] = next_id
@@ -420,6 +428,70 @@ def split_at_contacts(p, tl, next_id, contact_m, min_side=15):
         flags[t] = (True, flags.get(t, (False, False))[1])
     p = p.assign(tracklet=new_ids)
     return p, next_id, n_cuts, flags
+
+
+def split_at_handovers(p, tl, next_id, fps, handover_m=1.5, dup_m=0.8, coast_max=12, min_head=3):
+    """Issue #46: cut tracklet i where another same-team tracklet j starts on
+    i's player - i is coasting there (its last box, <= coast_max frames
+    ago, is within handover_m + 5 m/s * gap of j's first box) or i's box on
+    that frame is a duplicate of j's (< dup_m). The tracker often starts the
+    new tracklet while the old one coasts, and the old one then grabs a
+    neighbour's box, so the two overlap and the linker (which allows only a
+    few frames of overlap) can't chain them: the player's label waits and
+    then jumps to someone far away. After the cut the flow can chain i's
+    head -> j, and i's tail links on its own merits (it can still re-join i's
+    head if that's cheaper). Returns (p, next_id, n_cuts, {tail tracklet: the
+    tracklet it was cut from})."""
+    team_of = dict(zip(tl["tracklet"], tl["cls"]))
+    q = p[p["tracklet"] >= 0]
+    q = q[q["tracklet"].map(team_of).isin(TEAMS)]
+    fr_of, xy_of = {}, {}
+    for t, g in q.groupby("tracklet"):
+        g = g.sort_values("frame")
+        fr_of[t], xy_of[t] = g["frame"].to_numpy(), g[["pitch_x", "pitch_y"]].to_numpy()
+    T = tl[tl["tracklet"].isin(fr_of.keys())].sort_values("start")
+    starts, ends, ids = T["start"].to_numpy(), T["end"].to_numpy(), T["tracklet"].to_numpy()
+    cls = T["cls"].to_numpy()
+    cuts = {}
+    for k in range(len(T)):
+        j, s_j = ids[k], starts[k]
+        e_j = xy_of[j][0]
+        alive = np.flatnonzero((starts < s_j) & (ends >= s_j) & (cls == cls[k]))
+        best, bd = None, np.inf
+        for m in alive:
+            i = ids[m]
+            fr = fr_of[i]
+            n_head = np.searchsorted(fr, s_j, side="left")  # boxes before s_j
+            if n_head < min_head:
+                continue
+            fa = fr[n_head - 1]
+            gap = s_j - fa
+            if gap > coast_max:
+                continue
+            d = float(np.hypot(*(xy_of[i][n_head - 1] - e_j)))
+            if d > handover_m + 5.0 * gap / fps:
+                continue
+            if n_head < len(fr) and fr[n_head] == s_j:  # i has a box on s_j too: only a duplicate counts
+                if float(np.hypot(*(xy_of[i][n_head] - e_j))) >= dup_m:
+                    continue
+            if d < bd:
+                best, bd = i, d
+        if best is not None:
+            cuts.setdefault(int(best), set()).add(int(s_j))
+    new_ids = p["tracklet"].to_numpy().copy()
+    frames = p["frame"].to_numpy()
+    tails, n_cuts = {}, 0
+    for t, cs in cuts.items():
+        rows = np.flatnonzero(new_ids == t)
+        for c in sorted(cs, reverse=True):  # last cut first: each tail is [c, next cut)
+            sel = rows[(frames[rows] >= c) & (new_ids[rows] == t)]
+            if not len(sel):
+                continue
+            new_ids[sel] = next_id
+            tails[next_id] = t
+            next_id += 1
+            n_cuts += 1
+    return p.assign(tracklet=new_ids), next_id, n_cuts, tails
 
 
 def role_vectors(p, tl, team, min_visible=4, frame="centroid"):
@@ -659,6 +731,12 @@ def main():
                              "ball-following camera for minutes during a long attacking spell)")
     parser.add_argument("--max-succ", type=int, default=12, help="Long-gap successor candidates kept per tracklet")
     parser.add_argument("--overlap-frames", type=int, default=3)
+    parser.add_argument("--dup-m", type=float, default=0.8,
+                        help="An unmatched box this close (m) to one already tracked on the frame is a duplicate: "
+                             "it doesn't start a tracklet (issue #46). 0 = off")
+    parser.add_argument("--handover-m", type=float, default=1.5,
+                        help="Cut a coasting tracklet where another starts on its player within this distance "
+                             "(issue #46). 0 = off")
     parser.add_argument("--min-len", type=int, default=8, help="Shorter tracklets skip the flow (gap-filled later)")
     parser.add_argument("--contact-m", type=float, default=0.0,
                         help="Cut same-team tracklets where two come within this many metres, so the "
@@ -739,6 +817,14 @@ def main():
               f"{flicker0:.0%} -> {_flicker(tl):.0%}; {n_cuts} tracklet(s) cut at a team flip")
         p.to_parquet(cache_p, index=False)
         tl.to_parquet(cache_tl, index=False)
+    if a.handover_m > 0:
+        ended = dict(zip(tl["tracklet"], tl["ended"]))
+        p, _, n_ho, tails = split_at_handovers(p, tl, int(p["tracklet"].max()) + 1, fps, a.handover_m, a.dup_m)
+        cut = set(tails.values())
+        tl = summarize(p, fps, L, W)
+        # a cut tracklet's head now ends at the handover; its tail keeps the old end reason
+        tl["ended"] = ["handover" if t in cut else ended.get(tails.get(t, t), "handover") for t in tl["tracklet"]]
+        print(f"  cut {n_ho} tracklet(s) where another tracklet took over their player (frame context, issue #46)")
     if a.contact_m > 0:
         ended = dict(zip(tl["tracklet"], tl["ended"]))
         p, _, n_cc, flags = split_at_contacts(p, tl, int(p["tracklet"].max()) + 1, a.contact_m,

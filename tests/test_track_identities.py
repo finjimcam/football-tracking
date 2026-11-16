@@ -77,3 +77,61 @@ def test_mostly_unreadable_referee_is_not_a_team_player():
     r = next(pd.DataFrame([dict(offpitch=0.0, v_team_a=7, v_team_b=52, v_gk_b=0, v_official=7,
                                 v_gk_a=320, v_unknown=13, n=399)]).itertuples())
     assert T.decide_class(r) not in ("team_a", "team_b")
+
+
+# ---- issue #46: frame context around handovers --------------------------------
+def test_duplicate_box_on_a_tracked_player_does_not_start_a_tracklet():
+    rows = []
+    for f in range(100):  # one player jogging; frames 40-47 carry a second box 0.3 m off him
+        x = 30 + 3 * f / 25
+        rows.append((f, x, 30.0))
+        if 40 <= f < 48:
+            rows.append((f, x + 0.3, 30.1))
+    frames = np.array([r[0] for r in rows])
+    xs, ys = np.array([r[1] for r in rows]), np.array([r[2] for r in rows])
+    kit = np.full(len(rows), "team_a", dtype=object)
+    run = lambda a: T.build_tracklets(frames, xs, ys, np.full(len(rows), 0.9), kit, lambda f: np.eye(3),
+                                      (1000, 1000), lambda f: True, 25.0, a)[0]
+    assert len(set(run(args())) - {-1}) == 2               # old behaviour: the duplicate spawns a tracklet
+    assert set(run(args(dup_m=0.8))) - {-1} == {0}           # now: one player, one tracklet
+
+
+def _handover_world():
+    """Royal at 26:58 in miniature. Player P jogs along y=30. Tracklet 0
+    follows him to frame 49, coasts (no boxes) 50-53, and then grabs
+    neighbour N's box 1.3 m away from frame 54 on. Tracklet 1 starts on P at
+    frame 52 and follows him from there."""
+    rows = []
+    for f in range(0, 120):
+        x = 30 + 3 * f / 25
+        if f < 50:
+            rows.append((f, 0, x, 30.0))
+        if f >= 52:
+            rows.append((f, 1, x, 30.0))
+        if f >= 54:
+            rows.append((f, 0, x + 1.0, 30.8))  # N, picked up by the coasting tracklet 0
+    p = pd.DataFrame(rows, columns=["frame", "tracklet", "pitch_x", "pitch_y"])
+    tl = pd.DataFrame({"tracklet": [0, 1], "start": [0, 52], "end": [119, 119], "cls": ["team_a", "team_a"]})
+    return p, tl
+
+
+def test_split_at_handovers_cuts_the_coasting_tracklet_where_the_new_one_takes_over():
+    p, tl = _handover_world()
+    out, next_id, n, tails = T.split_at_handovers(p, tl, 2, 25.0)
+    assert n == 1 and tails == {2: 0}
+    head = out[out.tracklet == 0]
+    assert head.frame.max() == 49                     # tracklet 0 is P up to where it lost him
+    assert set(out[out.frame >= 54][lambda d: d.pitch_y == 30.8].tracklet) == {2}  # its tail (N) is separate
+    assert (out[out.tracklet == 1].pitch_y == 30.0).all()                           # tracklet 1 untouched
+
+
+def test_split_at_handovers_leaves_a_different_player_alone():
+    p, tl = _handover_world()
+    p.loc[p.tracklet == 1, "pitch_y"] = 34.0          # the new tracklet starts 4 m away: someone else
+    _, _, n, _ = T.split_at_handovers(p, tl, 2, 25.0)
+    assert n == 0
+    p, tl = _handover_world()
+    extra = pd.DataFrame({"frame": [52], "tracklet": [0], "pitch_x": [30 + 3 * 52 / 25], "pitch_y": [31.5]})
+    p = pd.concat([p, extra])                         # tracklet 0 has its own box 1.5 m away on frame 52
+    _, _, n, _ = T.split_at_handovers(p, tl, 2, 25.0)
+    assert n == 0                                     # both detected, not a duplicate: two players
