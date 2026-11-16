@@ -8,6 +8,11 @@
     POST /api/jobs                        {stage, match_id?, params{}, force?}
     GET  /api/jobs/{id}?offset=N          job record + log text from byte N
     POST /api/jobs/{id}/cancel | /force
+    GET  /api/matches/{match_id}/calibration            calibration clips + lineups + run state (issue #46)
+    GET  /api/matches/{match_id}/calibration/{clip}     a clip's boxes per frame, with the tracker's guesses
+    POST /api/matches/{match_id}/calibration/{clip}/names   name players: {items: [{frame, box, team, number}]}
+    DELETE /api/matches/{match_id}/calibration/{clip}/names/{id}
+    POST /api/matches/{match_id}/calibration-run        re-run identities and every stage after it, chained
     PUT  /api/matches/{match_id}/lines/{start}/export   keep/drop + trim one phase clip
     PUT  /api/matches/{match_id}/lines/export           keep/drop every phase
     POST /api/matches/{match_id}/lines/identify         anchor "this box is No. N" (issue #16)
@@ -43,6 +48,7 @@ from app.lines import FrameSource, LinesCache, LinesError
 from app.players import PlayersCache, PlayersError
 from app import library as libapi
 from app.tracking import TrackingCache, TrackingError
+from app.calibration import RUN_CHAIN, CalibrationCache, CalibrationError
 
 STATIC = Path(__file__).parent / "static"
 
@@ -87,6 +93,14 @@ class TrackEdit(BaseModel):
     edit: dict
 
 
+class CalibName(BaseModel):
+    items: list
+
+
+class CalibRun(BaseModel):
+    force: bool = False
+
+
 class JobRequest(BaseModel):
     stage: str
     match_id: str | None = None
@@ -104,7 +118,9 @@ def _disk(path):
 
 def create_app(root, runner=None, busy_check=None, warm=False):
     root = Path(root).resolve()
-    runner = runner or JobRunner(root, busy_check=busy_check)
+    runner = runner or JobRunner(root, busy_check=busy_check, stage_lookup=catalog.get_stage)
+    if getattr(runner, "stage_lookup", None) is None:
+        runner.stage_lookup = catalog.get_stage
     app = FastAPI(title="Stopframe", docs_url="/api/docs", redoc_url=None)
     app.state.runner = runner
     app.state.root = root
@@ -309,6 +325,55 @@ def create_app(root, runner=None, busy_check=None, warm=False):
     @app.delete("/api/matches/{match_id}/tracking/edits/{edit_id}")
     def tracking_remove(match_id: str, edit_id: int):
         return _tracking_call(_tracking(match_id).remove_edit, edit_id)
+
+    # ---- calibration clips (issue #46) ----
+    calib_cache = CalibrationCache(root)
+
+    def _calib(match_id):
+        _match_or_404(match_id)
+        try:
+            return calib_cache.get(match_id)
+        except CalibrationError as e:
+            raise HTTPException(409, str(e)) from None
+
+    def _calib_call(fn, *a):
+        try:
+            return fn(*a)
+        except CalibrationError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.get("/api/matches/{match_id}/calibration")
+    def calib_summary(match_id: str):
+        out = _calib(match_id).summary()
+        jobs = [j for j in runner.list(match_id=match_id, limit=50) if j["stage"] in RUN_CHAIN]
+        out["jobs"] = jobs[:len(RUN_CHAIN)]
+        return out
+
+    @app.get("/api/matches/{match_id}/calibration/{clip_id}")
+    def calib_clip(match_id: str, clip_id: str):
+        return _calib_call(_calib(match_id).clip, clip_id)
+
+    @app.post("/api/matches/{match_id}/calibration/{clip_id}/names")
+    def calib_name(match_id: str, clip_id: str, req: CalibName):
+        return _calib_call(_calib(match_id).name, clip_id, req.items)
+
+    @app.delete("/api/matches/{match_id}/calibration/{clip_id}/names/{anchor_id}")
+    def calib_unname(match_id: str, clip_id: str, anchor_id: str):
+        return _calib_call(_calib(match_id).unname, clip_id, anchor_id)
+
+    @app.post("/api/matches/{match_id}/calibration-run", status_code=201)
+    def calib_run(match_id: str, req: CalibRun):
+        """Re-run identities with the clip names, then everything after it, in order."""
+        m = _match_or_404(match_id)
+        steps = []
+        for sid in RUN_CHAIN:
+            stage = catalog.get_stage(sid)
+            args = catalog.build_args(stage, {}, match_id=match_id, videos_dir=root / "videos",
+                                      meta_video=m.get("video"), config_dir=root / "config")
+            steps.append({"stage": sid, "args": args, "obj": stage})
+        first = steps[0]
+        return runner.submit(first["obj"], first["args"], match_id=match_id, force=req.force,
+                             then=[{"stage": s["stage"], "args": s["args"]} for s in steps[1:]])
 
     @app.get("/api/matches/{match_id}/frame/{frame}.jpg")
     def frame_jpg(match_id: str, frame: int, w: int | None = None):

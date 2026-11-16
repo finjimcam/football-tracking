@@ -3,6 +3,7 @@ import { viewLines } from './lines.js';
 import { viewPlayers } from './players.js';
 import { viewLibrary } from './library.js';
 import { viewTracking } from './tracking.js';
+import { viewCalibrate } from './calibrate.js';
 const REPO = 'https://github.com/finjimcam/football-tracking/issues/';
 const WORKFLOW = 'https://github.com/finjimcam/football-tracking/blob/master/workflows/';
 const TABS = [
@@ -548,6 +549,11 @@ async function route() {
   }
   else if (parts[0] === 'players') await viewPlayers(view, parts, params, { h, api, toast, renderTabs, setCrumb, pill });
   else if (parts[0] === 'library') await viewLibrary(view, parts, params, { h, api, toast, renderTabs, setCrumb, pill });
+  else if (parts[0] === 'calibrate') {
+    await viewCalibrate(view, parts, params, {
+      h, api, toast, every, renderTabs, setCrumb, pill, onLeave: (fn) => leaveHooks.push(fn),
+    });
+  }
   else if (parts[0] === 'tracking') {
     await viewTracking(view, parts, params, {
       h, api, toast, every, renderTabs, setCrumb, pill, onLeave: (fn) => leaveHooks.push(fn),

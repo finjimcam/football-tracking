@@ -50,8 +50,9 @@ def parse_progress(line):
 
 class JobRunner:
     def __init__(self, root, python=sys.executable, busy_check=None, heavy_workers=1,
-                 light_workers=2, nice_heavy=True, cpu_workers=1):
+                 light_workers=2, nice_heavy=True, cpu_workers=1, stage_lookup=None):
         self.root = Path(root).resolve()
+        self.stage_lookup = stage_lookup  # stage id -> Stage, for chained jobs (job["then"])
         self.dir = self.root / ".tmp" / "jobs"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.python = python
@@ -98,7 +99,10 @@ class JobRunner:
             self.jobs[job["id"]] = job
 
     # ---- public API --------------------------------------------------
-    def submit(self, stage, args, match_id=None, force=False):
+    def submit(self, stage, args, match_id=None, force=False, then=None):
+        """Queue one job. `then` = [{"stage": id, "args": [...]}, ...]: run those
+        one after another once this one succeeds (each when the previous one
+        finishes OK; a failure or cancel stops the chain)."""
         job_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
         job = {
             "id": job_id, "stage": stage.id, "title": stage.title, "tool": stage.tool,
@@ -107,6 +111,8 @@ class JobRunner:
             "status": "queued", "note": None, "progress": None, "returncode": None,
             "created": time.time(), "started": None, "finished": None,
         }
+        if then:
+            job["then"] = [{"stage": t["stage"], "args": list(t["args"])} for t in then]
         with self.lock:
             self.jobs[job_id] = job
             self._save(job)
@@ -258,3 +264,16 @@ class JobRunner:
             self._finish(job, "cancelled", rc)
         else:
             self._finish(job, "done" if rc == 0 else "failed", rc)
+        self._chain(job)
+
+    def _chain(self, job):
+        nxt = job.get("then") or []
+        if not nxt:
+            return
+        if job["status"] != "done" or not self.stage_lookup:
+            self._update(job, note=f"Stopped here: {len(nxt)} chained step(s) not run")
+            return
+        stage = self.stage_lookup(nxt[0]["stage"])
+        child = self.submit(stage, nxt[0]["args"], match_id=job.get("match_id"), force=job.get("force", False),
+                            then=nxt[1:])
+        self._update(job, next_job=child["id"])

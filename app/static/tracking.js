@@ -185,7 +185,12 @@ export async function viewTracking(view, parts, params, ui) {
   const keysHelp = h('details', { class: 'panel', style: 'padding:10px 14px' }, h('summary', {}, 'Keys'),
     h('dl', { class: 'kv', style: 'margin-top:8px' }, KEYS_HELP.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])));
 
-  const right = h('div', { class: 'col-side' }, topPanel, pendingPanel, selPanel, probPanel, editPanel, keysHelp);
+  const calibPanel = h('section', { class: 'panel', style: 'padding:12px 14px;display:flex;flex-direction:column;gap:8px' },
+    h('div', { style: 'display:flex;align-items:center;gap:8px' }, h('h2', { style: 'margin:0;font-size:13px' }, 'Calibration clips'),
+      h('div', { class: 'spacer' }), h('a', { class: 'btn small primary', href: '#/calibrate/' + mid }, 'Name players')),
+    h('div', { class: 'muted', style: 'font-size:12px;line-height:1.5' },
+      'Name the players in three 5-second clips per half. Tracking re-runs with those names, and everything after it runs automatically.'));
+  const right = h('div', { class: 'col-side' }, calibPanel, topPanel, pendingPanel, selPanel, probPanel, editPanel, keysHelp);
   view.replaceChildren(h('div', { class: 'cols' }, left, right));
 
   // ---------- data ----------
