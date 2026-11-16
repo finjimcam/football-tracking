@@ -39,6 +39,18 @@ re-runs in minutes - tune and re-run freely.
    tools/identity_anchors.py, issue #16) override them: a chain is named
    after the player its anchors point at, and an anchored tracklet is moved
    into that player's chain.
+7. With names (calibration clips / anchors, issue #46) the linking itself is
+   different: one chain per PLAYER, solved together as an integer programme
+   (link_anchored) in which each player's chain must pass through every
+   tracklet named as him, and pays for straying from his place in the team
+   shape as read off those named tracklets. The plain flow keeps a player
+   right for seconds but, over the minutes between two named clips, swaps
+   most of them (0-3 of 10 kept the same chain clip to clip); voting names
+   onto its chains afterwards couldn't fix that. Then: a tracklet named as two
+   players is cut between the names; loose team tracklets go to the one
+   off-screen player who can reach them and fits the shape
+   (assign_by_elimination); and the part of a duplicate/neighbour tracklet
+   that bridges a player's gap becomes his (fill_partial).
 
 Output track_id scheme: team_a players 1-11 (1 = GK), team_b 101-111
 (101 = GK), everything else 10000 + tracklet. Officials and people living
@@ -60,6 +72,7 @@ from _common import (apply_calibration, load_calibration, load_meta, match_confi
 from identity_anchors import anchors_path, load_anchors  # noqa: E402
 from identity_anchors import apply as apply_anchors  # noqa: E402
 from identity_anchors import resolve as resolve_anchors  # noqa: E402
+from identity_anchors import split_conflicts, team_pins  # noqa: E402
 
 TEAMS = ("team_a", "team_b")
 KIT_LABELS = ("team_a", "team_b", "gk_a", "gk_b", "official")
@@ -514,41 +527,23 @@ def role_vectors(p, tl, team, min_visible=4, frame="centroid"):
 # --------------------------------------------------------------------------
 # 4. Global identity linking (min-cost flow)
 # --------------------------------------------------------------------------
-def link_flow(T, fps, a, window, n_paths=10, vmax=None, w_role=None, c_link=None):
-    """Exactly n_paths disjoint tracklet chains of minimum total cost.
-    Returns ({tracklet: path index}, [(from, to, cost, gap_s, dist_m)])."""
-    import networkx as nx
-
+def link_edges(T, fps, a, window, vmax=None, w_role=None, c_link=None):
+    """The linking graph shared by link_flow and link_anchored. T must be
+    sorted by start. Returns (I, J, cost, gap_s, dist_m) over candidate links
+    i -> j plus per-node reward, start cost and end cost."""
     vmax = a.vmax if vmax is None else vmax
     w_role = a.w_role if w_role is None else w_role
     c_link = a.c_link if c_link is None else c_link
-    T = T.sort_values("start").reset_index(drop=True)
     n = len(T)
     st, en = T["start"].to_numpy(), T["end"].to_numpy()
     ent, ext = T[["entry_x", "entry_y"]].to_numpy(), T[["exit_x", "exit_y"]].to_numpy()
     vout = T[["vout_x", "vout_y"]].to_numpy()
     vin = T[["vin_x", "vin_y"]].to_numpy()
-    sc = T["start_contact"].to_numpy(bool) if "start_contact" in T else np.zeros(len(T), bool)
-    ec = T["end_contact"].to_numpy(bool) if "end_contact" in T else np.zeros(len(T), bool)
+    sc = T["start_contact"].to_numpy(bool) if "start_contact" in T else np.zeros(n, bool)
+    ec = T["end_contact"].to_numpy(bool) if "end_contact" in T else np.zeros(n, bool)
     role = T[["role_x", "role_y"]].to_numpy()
     has_role = np.isfinite(role).all(axis=1)
-    scale = 100
-    G = nx.DiGraph()
-    G.add_node("S", demand=-n_paths)
-    G.add_node("T", demand=n_paths)
-    n_det = T["n"].to_numpy()
-    for i in range(n):
-        # Reward = seconds of detected play covered (+ a small constant). An
-        # earlier count-based reward (3 + 0.1/s, capped) made the flow prefer
-        # chaining several short, sometimes wrong pieces over one long pure
-        # tracklet (a 2.8-minute Spurs tracklet was dropped that way).
-        G.add_edge(("i", i), ("o", i), capacity=1,
-                   weight=-int(round(scale * (a.reward + a.reward_per_s * n_det[i] / fps))))
-        c_in = 0 if st[i] - window[0] <= a.edge_s * fps else int(scale * a.cost_late)
-        c_out = 0 if window[1] - en[i] <= a.edge_s * fps else int(scale * a.cost_late)
-        G.add_edge("S", ("i", i), capacity=1, weight=c_in)
-        G.add_edge(("o", i), "T", capacity=1, weight=c_out)
-    meta = {}
+    I, J, C, G, D = [], [], [], [], []
     for i in range(n):
         lo = np.searchsorted(st, en[i] - a.overlap_frames, side="left")
         hi = np.searchsorted(st, en[i] + a.max_gap_s * fps, side="right")
@@ -579,9 +574,41 @@ def link_flow(T, fps, a, window, n_paths=10, vmax=None, w_role=None, c_link=None
         long_idx = np.flatnonzero(~short)
         if len(long_idx):
             keep[long_idx[np.argsort(cost[long_idx])[:a.max_succ]]] = True
-        for jj, cc, gg, dd in zip(j[keep], cost[keep], gap[keep], disp[keep]):
-            G.add_edge(("o", i), ("i", int(jj)), capacity=1, weight=int(round(scale * cc)))
-            meta[(i, int(jj))] = (float(cc), float(gg), float(dd))
+        I.append(np.full(int(keep.sum()), i))
+        J.append(j[keep])
+        C.append(cost[keep])
+        G.append(gap[keep])
+        D.append(disp[keep])
+    cat = (lambda xs, dt: np.concatenate(xs).astype(dt) if xs else np.zeros(0, dt))
+    # Reward = seconds of detected play covered (+ a small constant). An
+    # earlier count-based reward (3 + 0.1/s, capped) made the flow prefer
+    # chaining several short, sometimes wrong pieces over one long pure
+    # tracklet (a 2.8-minute Spurs tracklet was dropped that way).
+    reward = a.reward + a.reward_per_s * T["n"].to_numpy() / fps
+    c_in = np.where(st - window[0] <= a.edge_s * fps, 0.0, a.cost_late)
+    c_out = np.where(window[1] - en <= a.edge_s * fps, 0.0, a.cost_late)
+    return (cat(I, int), cat(J, int), cat(C, float), cat(G, float), cat(D, float), reward, c_in, c_out)
+
+
+def link_flow(T, fps, a, window, n_paths=10, vmax=None, w_role=None, c_link=None):
+    """Exactly n_paths disjoint tracklet chains of minimum total cost.
+    Returns ({tracklet: path index}, [(from, to, cost, gap_s, dist_m)])."""
+    import networkx as nx
+
+    T = T.sort_values("start").reset_index(drop=True)
+    I, J, C, Gs, Ds, reward, c_in, c_out = link_edges(T, fps, a, window, vmax, w_role, c_link)
+    scale = 100
+    G = nx.DiGraph()
+    G.add_node("S", demand=-n_paths)
+    G.add_node("T", demand=n_paths)
+    for i in range(len(T)):
+        G.add_edge(("i", i), ("o", i), capacity=1, weight=-int(round(scale * reward[i])))
+        G.add_edge("S", ("i", i), capacity=1, weight=int(scale * c_in[i]))
+        G.add_edge(("o", i), "T", capacity=1, weight=int(scale * c_out[i]))
+    meta = {}
+    for i, j, cc, gg, dd in zip(I, J, C, Gs, Ds):
+        G.add_edge(("o", int(i)), ("i", int(j)), capacity=1, weight=int(round(scale * cc)))
+        meta[(int(i), int(j))] = (float(cc), float(gg), float(dd))
     flow = nx.min_cost_flow(G)
     assign, links = {}, []
     k = 0
@@ -598,6 +625,134 @@ def link_flow(T, fps, a, window, n_paths=10, vmax=None, w_role=None, c_link=None
                 links.append((int(T["tracklet"].iat[i]), int(T["tracklet"].iat[nxt[1]]), c, g_, d_))
             cur = nxt
         k += 1
+    return assign, links
+
+
+def shape_costs(T, pins, K, fps, w_shape=1.0, sigma_m=6.0, cap_s=20.0):
+    """(n, K) cost of giving each tracklet to each player, from the team shape
+    (issue #46). A player's place in the shape (role_x/role_y: offset from the
+    visible teammates' centroid) is read off the tracklets the analyst named
+    and interpolated in time between them; a tracklet far from a player's
+    place costs more the longer it is. Shifted so each tracklet's best player
+    costs 0 (the cover reward is untouched). Zero for players with no pins."""
+    n = len(T)
+    role = T[["role_x", "role_y"]].to_numpy(float)
+    mid = ((T["start"] + T["end"]) / 2).to_numpy(float)
+    dur = np.minimum(T["n"].to_numpy(float) / fps, cap_s)
+    nc = np.zeros((n, K))
+    pts = {}
+    for i, k in pins.items():
+        if np.isfinite(role[i]).all():
+            pts.setdefault(k, []).append((mid[i], role[i]))
+    for k, P in pts.items():
+        P.sort(key=lambda z: z[0])
+        tt = np.array([z[0] for z in P])
+        rr = np.array([z[1] for z in P])
+        dd = np.hypot(role[:, 0] - np.interp(mid, tt, rr[:, 0]), role[:, 1] - np.interp(mid, tt, rr[:, 1])) / sigma_m
+        nc[:, k] = np.where(np.isfinite(dd), w_shape * dur * np.minimum(dd, 3.0) ** 2, 0.0)
+    return nc - nc.min(axis=1, keepdims=True)
+
+
+def link_anchored(T, fps, a, window, pins, K, time_limit=900.0):
+    """K disjoint chains, one per PLAYER, through the tracklets the analyst
+    named (issue #46). pins = {tracklet: player index}. A multi-commodity
+    flow solved as an integer programme: each player's chain must pass
+    through every tracklet named as him, and pays the shape cost
+    (shape_costs) for every tracklet it takes, on top of link_flow's link
+    costs and rewards. Names therefore steer the linking itself, instead of
+    being voted onto chains afterwards - a chain the plain flow swaps midway
+    between two named clips comes out the right way round.
+    Returns ({tracklet: player index}, [(from, to, cost, gap_s, dist_m)]),
+    or None when the solver finds no solution."""
+    from scipy.optimize import Bounds, LinearConstraint, milp
+    from scipy.sparse import coo_matrix
+
+    T = T.sort_values("start").reset_index(drop=True)
+    node_of = {int(t): i for i, t in enumerate(T["tracklet"])}
+    pin_ix = {node_of[int(t)]: int(k) for t, k in pins.items() if int(t) in node_of}
+    I, J, C, Gs, Ds, reward, c_in, c_out = link_edges(T, fps, a, window)
+    # make sure consecutive tracklets named as one player can always be joined
+    st, en = T["start"].to_numpy(), T["end"].to_numpy()
+    by_k = {}
+    for i, k in pin_ix.items():
+        by_k.setdefault(k, []).append(i)
+    have = set(zip(I.tolist(), J.tolist()))
+    extra = []
+    for k, ii in by_k.items():
+        ii.sort(key=lambda i: st[i])
+        for u, v in zip(ii, ii[1:]):
+            if st[v] > en[u] - a.overlap_frames and (u, v) not in have:
+                extra.append((u, v))
+    if extra:
+        I = np.r_[I, [u for u, v in extra]]
+        J = np.r_[J, [v for u, v in extra]]
+        C = np.r_[C, np.full(len(extra), 2 * a.cost_late)]
+        Gs = np.r_[Gs, [(st[v] - en[u]) / fps for u, v in extra]]
+        Ds = np.r_[Ds, np.full(len(extra), np.nan)]
+    n, E = len(T), len(I)
+    nc = shape_costs(T, pin_ix, K, fps, a.w_shape, a.shape_sigma_m) if a.w_shape > 0 else np.zeros((n, K))
+    nv = E + 2 * n  # per player: links, starts, ends
+    c = np.zeros(K * nv)
+    for k in range(K):
+        c[k * nv:k * nv + E] = C - reward[J] + nc[J, k]
+        c[k * nv + E:k * nv + E + n] = c_in - reward + nc[:, k]
+        c[k * nv + E + n:(k + 1) * nv] = c_out
+    ub = np.ones(K * nv)
+    for i, k in pin_ix.items():  # a named tracklet is closed to everyone else
+        for kk in range(K):
+            if kk != k:
+                ub[kk * nv + E + i] = 0
+                ub[kk * nv + np.flatnonzero(J == i)] = 0
+    rows, cols, vals, lo, hi = [], [], [], [], []
+    r = 0
+    e = np.arange(E)
+    nn = np.arange(n)
+    for k in range(K):
+        b = k * nv
+        rows += [r + J, r + I, r + nn, r + nn]
+        cols += [b + e, b + e, b + E + nn, b + E + n + nn]
+        vals += [np.ones(E), -np.ones(E), np.ones(n), -np.ones(n)]
+        lo.append(np.zeros(n))
+        hi.append(np.zeros(n))
+        r += n
+        rows.append(np.full(n, r))
+        cols.append(b + E + nn)
+        vals.append(np.ones(n))
+        lo.append([1.0])
+        hi.append([1.0])
+        r += 1
+    for k in range(K):  # each tracklet is one player at most
+        b = k * nv
+        rows += [r + J, r + nn]
+        cols += [b + e, b + E + nn]
+        vals += [np.ones(E), np.ones(n)]
+    lo.append(np.zeros(n))
+    hi.append(np.ones(n))
+    r += n
+    for i, k in pin_ix.items():
+        m = np.flatnonzero(J == i)
+        rows.append(np.full(len(m) + 1, r))
+        cols.append(np.r_[k * nv + m, k * nv + E + i])
+        vals.append(np.ones(len(m) + 1))
+        lo.append([1.0])
+        hi.append([1.0])
+        r += 1
+    A = coo_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(r, K * nv)).tocsr()
+    res = milp(c, constraints=LinearConstraint(A, np.concatenate(lo), np.concatenate(hi)),
+               integrality=np.ones(K * nv), bounds=Bounds(0, ub),
+               options={"time_limit": time_limit, "disp": False, "mip_rel_gap": 1e-3})
+    if res.x is None:
+        return None
+    x = res.x.reshape(K, nv)
+    assign, links = {}, []
+    tid = T["tracklet"].to_numpy()
+    for k in range(K):
+        for i in np.flatnonzero(x[k, E:E + n] > 0.5):
+            assign[int(tid[i])] = k
+        for q in np.flatnonzero(x[k, :E] > 0.5):
+            assign[int(tid[I[q]])] = k
+            assign[int(tid[J[q]])] = k
+            links.append((int(tid[I[q]]), int(tid[J[q]]), float(C[q]), float(Gs[q]), float(Ds[q])))
     return assign, links
 
 
@@ -619,43 +774,228 @@ def link_goalkeepers(tl, gk_cls, goal_x, W=68.0, depth_m=22.0):
     return chosen
 
 
-def fill_gaps(tl, fps, max_gap_s=3.0):
+def fill_gaps(tl, fps, max_gap_s=3.0, margin=0.5, rounds=6):
     """Give short / unreadable tracklets to the identity whose timeline has a
-    gap they fit into, continuous at BOTH ends (unique fit only). The
-    neighbours must be within max_gap_s on each side - this is a stitch for
-    blips inside a player's run, not a re-identification."""
-    seqs = {}
-    for k, g in tl[tl["identity"] >= 0].sort_values("start").groupby("identity"):
-        seqs[k] = (g["start"].to_numpy(), g["end"].to_numpy(),
-                   g[["entry_x", "entry_y"]].to_numpy(), g[["exit_x", "exit_y"]].to_numpy(),
-                   g["team"].iloc[0])
-    pending = tl[(tl["identity"] < 0) & tl["cls"].isin(["team_a", "team_b", "unknown", "gk_a?"])]
-    updates = {}
-    for r in pending.itertuples():
-        fits = []
-        for k, (st, en, ent, ext, team) in seqs.items():
-            if r.cls in TEAMS and team != r.cls:
+    gap they fit into, continuous at BOTH ends: "we know who it is before and
+    after, so it's him in between". The neighbours must be within max_gap_s
+    on each side - a stitch for blips inside a player's run, not a
+    re-identification. Repeats so a gap holding several short pieces fills
+    piece by piece. When two players fit, the closer fit wins if it is clearly
+    closer (by margin of the summed normalised distances), else neither."""
+    total = 0
+    for _ in range(rounds):
+        seqs = {}
+        for k, g in tl[tl["identity"] >= 0].sort_values("start").groupby("identity"):
+            seqs[k] = (g["start"].to_numpy(), g["end"].to_numpy(),
+                       g[["entry_x", "entry_y"]].to_numpy(), g[["exit_x", "exit_y"]].to_numpy(),
+                       g["team"].iloc[0])
+        pending = tl[(tl["identity"] < 0) & tl["cls"].isin(["team_a", "team_b", "unknown", "gk_a?", "mixed"])]
+        updates = {}
+        for r in pending.itertuples():
+            fits = []
+            for k, (st, en, ent, ext, team) in seqs.items():
+                if r.cls in TEAMS and team != r.cls:
+                    continue
+                i = np.searchsorted(st, r.start)
+                if (i > 0 and en[i - 1] >= r.start) or (i < len(st) and st[i] <= r.end):
+                    continue  # overlaps one of k's tracklets
+                if i == 0 or i == len(st):
+                    continue  # must sit between two of k's tracklets
+                g1, g2 = (r.start - en[i - 1]) / fps, (st[i] - r.end) / fps
+                if g1 > max_gap_s or g2 > max_gap_s:
+                    continue
+                d1 = np.hypot(r.entry_x - ext[i - 1, 0], r.entry_y - ext[i - 1, 1])
+                d2 = np.hypot(ent[i, 0] - r.exit_x, ent[i, 1] - r.exit_y)
+                t1, t2 = 1.5 + 4.0 * g1, 1.5 + 4.0 * g2
+                if d1 <= t1 and d2 <= t2:
+                    fits.append((d1 / t1 + d2 / t2, k, team))
+            fits.sort(key=lambda z: z[0])
+            if len(fits) == 1 or (len(fits) > 1 and fits[1][0] - fits[0][0] >= margin):
+                updates[r.tracklet] = fits[0][1:]
+        # one piece per identity gap per round (two pieces can't both fill the same blip)
+        seen, upd = set(), {}
+        for t, (k, team) in sorted(updates.items(), key=lambda kv: int(tl.loc[tl["tracklet"] == kv[0], "start"].iat[0])):
+            r0 = tl.loc[tl["tracklet"] == t].iloc[0]
+            key = (k, int(np.searchsorted(seqs[k][0], r0["start"])))
+            if key in seen:
                 continue
-            i = np.searchsorted(st, r.start)
-            if (i > 0 and en[i - 1] >= r.start) or (i < len(st) and st[i] <= r.end):
-                continue  # overlaps one of k's tracklets
-            if i == 0 or i == len(st):
-                continue  # must sit between two of k's tracklets
-            g1, g2 = (r.start - en[i - 1]) / fps, (st[i] - r.end) / fps
-            if g1 > max_gap_s or g2 > max_gap_s:
-                continue
-            d1 = np.hypot(r.entry_x - ext[i - 1, 0], r.entry_y - ext[i - 1, 1])
-            d2 = np.hypot(ent[i, 0] - r.exit_x, ent[i, 1] - r.exit_y)
-            if d1 <= 1.5 + 4.0 * g1 and d2 <= 1.5 + 4.0 * g2:
-                fits.append((k, team))
-        if len(fits) == 1:
-            updates[r.tracklet] = fits[0]
-    if updates:
-        m = tl["tracklet"].isin(list(updates))
-        tl.loc[m, "identity"] = tl.loc[m, "tracklet"].map(lambda t: updates[t][0])
-        tl.loc[m, "team"] = tl.loc[m, "tracklet"].map(lambda t: updates[t][1])
+            seen.add(key)
+            upd[t] = (k, team)
+        if not upd:
+            break
+        m = tl["tracklet"].isin(list(upd))
+        tl.loc[m, "identity"] = tl.loc[m, "tracklet"].map(lambda t: upd[t][0])
+        tl.loc[m, "team"] = tl.loc[m, "tracklet"].map(lambda t: upd[t][1])
         tl.loc[m, "link"] = "gap_fill"
-    return len(updates)
+        total += len(upd)
+    return total
+
+
+def assign_by_elimination(tl, roles, fps, a, ids, window_s=120.0, max_shape=1.5, margin=1.0):
+    """A team tracklet left out of every chain is one of the players who
+    are NOT on screen at that moment (issue #46): of those, the ones who can
+    reach it in time from where they were last seen and get to where they
+    are seen next, and whose place in the team shape (median role of their
+    own tracklets within +-window_s) matches it. Taken when one candidate
+    is left, or the best is clearly better (by margin, in shape sigmas).
+    Longest tracklets first, so each assignment narrows the next.
+    ids: identity numbers of the team's outfield chains. Returns the count."""
+    sig = a.shape_sigma_m
+    rx, ry = roles["rx"].to_dict(), roles["ry"].to_dict()
+    chains = {}
+    for k in ids:
+        g = tl[tl["identity"] == k].sort_values("start")
+        chains[k] = [list(g["start"]), list(g["end"]), list(zip(g["entry_x"], g["entry_y"])),
+                     list(zip(g["exit_x"], g["exit_y"])),
+                     [((s_ + e_) / 2, rx.get(t, np.nan), ry.get(t, np.nan))
+                      for t, s_, e_ in zip(g["tracklet"], g["start"], g["end"])]]
+    team = tl.loc[tl["identity"].isin(ids), "team"].iloc[0] if tl["identity"].isin(ids).any() else None
+    if team is None:
+        return 0
+    pend = tl[(tl["identity"] < 0) & (tl["cls"] == team)].sort_values("n", ascending=False)
+    done = 0
+    for r in pend.itertuples():
+        ru = np.array([rx.get(r.tracklet, np.nan), ry.get(r.tracklet, np.nan)])
+        mid = (r.start + r.end) / 2
+        cands = []
+        for k, (st, en, ent, ext, rl) in chains.items():
+            i = int(np.searchsorted(st, r.start))
+            if (i > 0 and en[i - 1] > r.start - a.overlap_frames) or (i < len(st) and st[i] < r.end + a.overlap_frames):
+                continue  # he's on screen then
+            ok = True
+            if i > 0:
+                gap = (r.start - en[i - 1]) / fps
+                ok &= np.hypot(r.entry_x - ext[i - 1][0], r.entry_y - ext[i - 1][1]) <= a.vmax * gap + a.reach_m
+            if i < len(st):
+                gap = (st[i] - r.end) / fps
+                ok &= np.hypot(ent[i][0] - r.exit_x, ent[i][1] - r.exit_y) <= a.vmax * gap + a.reach_m
+            if not ok:
+                continue
+            near = np.array([(x, y) for m_, x, y in rl if abs(m_ - mid) <= window_s * fps and np.isfinite(x)])
+            if np.isfinite(ru).all() and len(near):
+                d = float(np.hypot(*(ru - np.median(near, axis=0)))) / sig
+            else:
+                d = np.nan
+            cands.append((d, k, i))
+        if not cands:
+            continue
+        shaped = sorted((c for c in cands if np.isfinite(c[0])), key=lambda c: c[0])
+        if len(cands) == 1 and (not shaped or shaped[0][0] <= max_shape):
+            pick = cands[0]
+        elif shaped and shaped[0][0] <= max_shape and len(shaped) == len(cands) and (
+                len(shaped) == 1 or shaped[1][0] - shaped[0][0] >= margin):
+            pick = shaped[0]
+        else:
+            continue
+        _, k, i = pick
+        st, en, ent, ext, rl = chains[k]
+        st.insert(i, r.start)
+        en.insert(i, r.end)
+        ent.insert(i, (r.entry_x, r.entry_y))
+        ext.insert(i, (r.exit_x, r.exit_y))
+        rl.insert(i, (mid, ru[0], ru[1]))
+        tl.loc[tl["tracklet"] == r.tracklet, ["identity", "team", "link"]] = [k, team, "elimination"]
+        done += 1
+    return done
+
+
+def fill_partial(p, tl, fps, L, W, max_gap_s=10.0, v_m_s=7.0, slack_m=3.0, min_rows=5, rounds=3):
+    """"We know it's him before and after, so it's him in between" for a box
+    whose tracklet doesn't fit the gap whole (issue #46): a duplicate or
+    neighbour tracklet that started while his own was still running, or
+    runs on past his next one, leaves him unlabelled for seconds while an
+    unlabelled box sits on his path. The part of that tracklet INSIDE the gap
+    becomes a new tracklet of his, when its first box is within running
+    reach of where he was last seen and its last box within reach of where
+    he is seen next. Lowest-cost pieces first; a gap takes one piece per
+    round. Returns (p, tl, pieces)."""
+    pend_cls = {"team_a": ("team_a", "unknown", "mixed"), "team_b": ("team_b", "unknown", "mixed")}
+    total = 0
+    for _ in range(rounds):
+        free = tl[tl["identity"] < 0]
+        if free.empty:
+            break
+        fst, fen = free["start"].to_numpy(), free["end"].to_numpy()
+        fid, fcls = free["tracklet"].to_numpy(), free["cls"].to_numpy()
+        rows_of = {t: g for t, g in p[p["tracklet"].isin(set(fid))].groupby("tracklet")}
+        offers = []
+        for k, g in tl[tl["identity"] >= 0].sort_values("start").groupby("identity"):
+            team = g["team"].iloc[0]
+            ok_cls = pend_cls.get(team, ())
+            st, en = g["start"].to_numpy(), g["end"].to_numpy()
+            ext, ent = g[["exit_x", "exit_y"]].to_numpy(), g[["entry_x", "entry_y"]].to_numpy()
+            reach_end = np.maximum.accumulate(en)
+            for i in range(len(g) - 1):
+                a0, b0 = int(reach_end[i]), int(st[i + 1])
+                if b0 - a0 < 2 or (b0 - a0) > max_gap_s * fps:
+                    continue
+                cand = np.flatnonzero((fst < b0) & (fen > a0))
+                for c in cand:
+                    if fcls[c] not in ok_cls:
+                        continue
+                    r = rows_of.get(fid[c])
+                    if r is None:
+                        continue
+                    r = r[(r["frame"] > a0) & (r["frame"] < b0)]
+                    if len(r) < min_rows:
+                        continue
+                    r = r.sort_values("frame")
+                    f1, f2 = int(r["frame"].iat[0]), int(r["frame"].iat[-1])
+                    d1 = np.hypot(r["pitch_x"].iat[0] - ext[i, 0], r["pitch_y"].iat[0] - ext[i, 1])
+                    d2 = np.hypot(r["pitch_x"].iat[-1] - ent[i + 1, 0], r["pitch_y"].iat[-1] - ent[i + 1, 1])
+                    t1, t2 = slack_m + v_m_s * (f1 - a0) / fps, slack_m + v_m_s * (b0 - f2) / fps
+                    if d1 <= t1 and d2 <= t2:
+                        offers.append((d1 / t1 + d2 / t2, int(k), team, (int(k), i), int(fid[c]), f1, f2))
+        if not offers:
+            break
+        offers.sort(key=lambda o: o[0])
+        used_gap, used = set(), {}
+        take = []
+        for cost, k, team, gk, u, f1, f2 in offers:
+            if gk in used_gap or any(not (f2 < a_ or f1 > b_) for a_, b_ in used.get(u, [])):
+                continue
+            used_gap.add(gk)
+            used.setdefault(u, []).append((f1, f2))
+            take.append((k, team, u, f1, f2))
+        if not take:
+            break
+        nxt = int(max(p["tracklet"].max(), tl["tracklet"].max())) + 1
+        trk = p["tracklet"].to_numpy().copy()
+        fr = p["frame"].to_numpy()
+        new_ident, touched = {}, set()
+        for k, team, u, f1, f2 in take:
+            m = (trk == u) & (fr >= f1) & (fr <= f2)
+            trk[m] = nxt
+            new_ident[nxt] = (k, team)
+            touched.update((u, nxt))
+            nxt += 1
+        # the rest of a cut tracklet: split into its before / after parts
+        for u in {t[2] for t in take}:
+            rows = np.flatnonzero(trk == u)
+            if not len(rows):
+                continue
+            fu = fr[rows]
+            cuts = sorted(f1 for k, team, uu, f1, f2 in take if uu == u)
+            seg = np.searchsorted(cuts, fu, side="right")
+            for sgi in np.unique(seg)[1:]:
+                trk[rows[seg == sgi]] = nxt
+                touched.add(nxt)
+                nxt += 1
+        p = p.assign(tracklet=trk)
+        keep = tl[~tl["tracklet"].isin(touched)]
+        old = tl.set_index("tracklet")
+        fresh = summarize(p[p["tracklet"].isin(touched)], fps, L, W)
+        for col in tl.columns:
+            if col not in fresh.columns:
+                fresh[col] = np.nan if tl[col].dtype.kind == "f" else ("" if tl[col].dtype == object else -1)
+        fresh["identity"] = [new_ident.get(t, (-1, ""))[0] for t in fresh["tracklet"]]
+        fresh["team"] = [new_ident.get(t, (-1, ""))[1] for t in fresh["tracklet"]]
+        fresh["link"] = ["gap_piece" if t in new_ident else "" for t in fresh["tracklet"]]
+        if "ended" in tl.columns:
+            fresh["ended"] = [old["ended"].get(t, "gap_piece") for t in fresh["tracklet"]]
+        tl = pd.concat([keep, fresh[tl.columns]], ignore_index=True)
+        total += len(take)
+    return p, tl, total
 
 
 # --------------------------------------------------------------------------
@@ -749,6 +1089,13 @@ def main():
     parser.add_argument("--w-vel", type=float, default=0.0,
                         help="Cost per 3 m/s of velocity change across links with gaps < 1 s")
     parser.add_argument("--no-stability", action="store_true", help="Skip the perturbed re-solves")
+    parser.add_argument("--no-anchor-solve", dest="anchor_solve", action="store_false",
+                        help="Apply names after linking (majority vote per chain) instead of linking through them")
+    parser.add_argument("--w-shape", type=float, default=1.0,
+                        help="Anchored linking: weight of a tracklet's distance from a named player's place in "
+                             "the team shape (per second, capped at 20 s)")
+    parser.add_argument("--shape-sigma-m", type=float, default=6.0)
+    parser.add_argument("--anchor-time-limit", type=float, default=900.0, help="Seconds per team for the solver")
     parser.add_argument("--reuse-tracklets", action="store_true",
                         help="Reuse tracklets_cache.parquet from the last run: re-run only linking + outputs "
                              "(for tuning the linker in minutes instead of ~15)")
@@ -840,6 +1187,23 @@ def main():
     print(f"  team tracklets: median {team_tl['n'].median():.0f} frames; ended by "
           + ", ".join(f"{k} {v}" for k, v in team_tl["ended"].value_counts().items()))
 
+    # 3b. the analyst's names (calibration clips / Lines tab anchors): a tracklet
+    # named as two players is cut between the names, before any linking.
+    anchors = load_anchors(anchors_path(a.match_id, a.config_dir))
+    resolved = resolve_anchors(anchors, p, tl["tracklet"]) if anchors else []
+    if resolved:
+        p, n_ac, ac_tails = split_conflicts(p, resolved, int(p["tracklet"].max()) + 1)
+        if n_ac:
+            keep = tl.set_index("tracklet")
+            tl = summarize(p, fps, L, W)
+            for col in ("ended", "start_contact", "end_contact"):
+                if col in keep.columns:
+                    old = keep[col].to_dict()
+                    tl[col] = [old.get(ac_tails.get(t, t)) if t not in set(ac_tails.values()) or col != "ended"
+                               else "anchor_split" for t in tl["tracklet"]]
+            resolved = resolve_anchors(anchors, p, tl["tracklet"])
+            print(f"  cut {n_ac} tracklet(s) the analyst named as two different players")
+
     # 4. keepers, then global outfield linking per team
     tl["identity"], tl["team"], tl["link"] = -1, "", ""
     tl["link_cost"], tl["link_gap_s"], tl["link_dist_m"], tl["stability"] = np.nan, np.nan, np.nan, np.nan
@@ -852,32 +1216,91 @@ def main():
         print(f"  {team} keeper ({cls}, goal x={goal:.0f}): {len(ids)} tracklets, "
               f"{tl.loc[tl['tracklet'].isin(ids), 'n'].sum()} detections")
 
-    stability = {}
+    span = dict(zip(tl["tracklet"].astype(int), zip(tl["start"].astype(int), tl["end"].astype(int))))
+    lineup = {}
+    for team in TEAMS:
+        lines = ((ref.get("lineups") or {}).get(team) or {}).get("lines") or []
+        lineup[team] = ([q for q in lines[0]][:1] if lines else [],
+                        [q for line in lines[1:] for q in line][:10])
+    # keeper anchors join the keeper's chain directly
+    for team, gid in (("team_a", 1), ("team_b", 101)):
+        gk_nums = [q["number"] for q in lineup[team][0]]
+        gpins, _ = team_pins(resolved, team, gk_nums, span)
+        for t in gpins:
+            s0, e0 = span[t]
+            over = (tl["identity"] == gid) & (tl["start"] <= e0) & (tl["end"] >= s0) & (tl["tracklet"] != t)
+            tl.loc[over, ["identity", "link"]] = [-1, "evicted_by_anchor"]
+            tl.loc[tl["tracklet"] == t, ["identity", "team", "link"]] = [gid, team, "anchor"]
+
+    stability, anchored = {}, {}
+    jobs, team_roles = {}, {}
     for team, base in (("team_a", 2), ("team_b", 102)):
+        numbers = [q["number"] for q in lineup[team][1]]
+        pins, dropped = team_pins(resolved, team, numbers, span) if numbers else ({}, 0)
+        other = set(team_pins(resolved, "team_b" if team == "team_a" else "team_a",
+                              [q["number"] for q in lineup["team_b" if team == "team_a" else "team_a"][1]],
+                              span)[0])
+        pins = {t: k for t, k in pins.items() if tl.loc[tl["tracklet"] == t, "identity"].iat[0] < 0}
         roles = role_vectors(p, tl, team, frame=a.role_frame)
-        sel = tl[(tl["cls"] == team) & (tl["n"] >= a.min_len) & (tl["identity"] < 0)].copy()
+        sel = tl[(((tl["cls"] == team) & (tl["n"] >= a.min_len)) | tl["tracklet"].isin(list(pins)))
+                 & (tl["identity"] < 0) & ~tl["tracklet"].isin(list(other))].copy()
         sel["role_x"] = sel["tracklet"].map(roles["rx"])
         sel["role_y"] = sel["tracklet"].map(roles["ry"])
-        assign, links = link_flow(sel, fps, a, (f_lo, f_hi))
-        stab = {(i, j): 0 for i, j, *_ in links}
-        variants = [] if a.no_stability else [
-            {"vmax": a.vmax * 0.85}, {"w_role": a.w_role * 0.5},
-            {"w_role": a.w_role * 1.5, "c_link": a.c_link * 1.5}]
-        for v in variants:
-            alt, _ = link_flow(sel, fps, a, (f_lo, f_hi), **v)
-            for i, j in stab:
-                stab[(i, j)] += int(i in alt and alt.get(i) == alt.get(j))
+        jobs[team] = (base, sel, pins, dropped, numbers)
+        team_roles[team] = roles
+    solved = {}
+    todo = {t: j for t, j in jobs.items() if j[2] and a.anchor_solve}
+    if todo:
+        # one integer programme per team (~1-3 min each), both at once
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=len(todo)) as ex:
+            fut = {team: ex.submit(link_anchored, sel, fps, a, (f_lo, f_hi), pins, len(numbers),
+                                   a.anchor_time_limit)
+                   for team, (base, sel, pins, dropped, numbers) in todo.items()}
+            for team, fu in fut.items():
+                try:
+                    solved[team] = fu.result()
+                except Exception as exc:  # noqa: BLE001 - fall back to the plain flow
+                    print(f"  {team}: anchored solve failed ({exc}); falling back to plain linking")
+                    solved[team] = None
+    for team, (base, sel, pins, dropped, numbers) in jobs.items():
+        variants = []
+        if solved.get(team):
+            assign, links = solved[team]
+            stab = {}
+            anchored[team] = {"pins": len(pins), "dropped": dropped, "numbers": numbers,
+                              "named": sorted({numbers[k] for k in pins.values()})}
+            link_kind = "anchored"
+        else:
+            assign, links = link_flow(sel, fps, a, (f_lo, f_hi))
+            stab = {(i, j): 0 for i, j, *_ in links}
+            variants = [] if a.no_stability else [
+                {"vmax": a.vmax * 0.85}, {"w_role": a.w_role * 0.5},
+                {"w_role": a.w_role * 1.5, "c_link": a.c_link * 1.5}]
+            for v in variants:
+                alt, _ = link_flow(sel, fps, a, (f_lo, f_hi), **v)
+                for i, j in stab:
+                    stab[(i, j)] += int(i in alt and alt.get(i) == alt.get(j))
+            link_kind = "linked"
         incoming = {j: (i, c, g_, d_) for i, j, c, g_, d_ in links}
         upd = {}
         for t_id, k in assign.items():
             i, c, g_, d_ = incoming.get(t_id, (None, np.nan, np.nan, np.nan))
-            s = stab[(i, t_id)] / len(variants) if (i is not None and variants) else np.nan
-            upd[t_id] = (base + k, team, "linked", c, g_, d_, s)
+            s_ = stab[(i, t_id)] / len(variants) if (i is not None and variants) else np.nan
+            kind = "anchor" if t_id in pins and team in anchored else link_kind
+            upd[t_id] = (base + k, team, kind, c, g_, d_, s_)
         m = tl["tracklet"].isin(list(upd))
         for col, ix in (("identity", 0), ("team", 1), ("link", 2), ("link_cost", 3), ("link_gap_s", 4),
                         ("link_dist_m", 5), ("stability", 6)):
             tl.loc[m, col] = tl.loc[m, "tracklet"].map(lambda t, ix=ix: upd[t][ix])
         n_links = len(links)
+        if team in anchored:
+            stability[team] = None
+            r = anchored[team]
+            print(f"  {team}: {len(assign)}/{len(sel)} tracklets in {len(set(assign.values()))} player chains, "
+                  f"{n_links} links, solved through {r['pins']} named tracklet(s) of {len(r['named'])} players "
+                  f"+ team shape (issue #46)" + (f"; {dropped} conflicting name(s) ignored" if dropped else ""))
+            continue
         stable = sum(1 for v in stab.values() if variants and v == len(variants))
         stability[team] = round(stable / max(n_links, 1), 4) if variants else None
         print(f"  {team}: {len(assign)}/{len(sel)} tracklets in {len(set(assign.values()))} identity chains, "
@@ -886,19 +1309,59 @@ def main():
 
     filled = fill_gaps(tl, fps)
     print(f"  gap-filled {filled} short/unreadable tracklets")
+    for team in anchored:
+        base = jobs[team][0]
+        n_el = assign_by_elimination(tl, team_roles[team], fps, a, list(range(base, base + len(jobs[team][4]))))
+        print(f"  {team}: {n_el} unlinked tracklet(s) given to the one player who could be there (elimination + shape)")
+    if anchored:
+        filled = fill_gaps(tl, fps)
+        print(f"  gap-filled {filled} more")
+    p, tl, n_pc = fill_partial(p, tl, fps, L, W)
+    print(f"  {n_pc} piece(s) of other tracklets given to the player whose gap they bridge")
 
     # 4b. names (role-inferred), then the analyst's manual anchors (issue #16)
     prov = p.assign(track_id=p["tracklet"].map(dict(zip(tl["tracklet"], tl["identity"]))).fillna(-1).astype(int))
     names = infer_names(prov[prov["track_id"] >= 0], ref)
     anchor_report = None
-    anchors = load_anchors(anchors_path(a.match_id, a.config_dir))
-    if anchors:
-        resolved = resolve_anchors(anchors, p, tl["tracklet"])
-        anchor_report = apply_anchors(tl, names, resolved)
+    for team, r in anchored.items():
+        # chain k IS lineup player k for the players the analyst named; the
+        # unnamed chains take the role-inferred names left over
+        base = 2 if team == "team_a" else 102
+        outfield = lineup[team][1]
+        named = set(r["named"])
+        left = [q for q in outfield if q["number"] not in named]
+        guess = {tid: names.get(tid, {}) for tid in range(base, base + len(outfield))}
+        for k, q in enumerate(outfield):
+            tid = base + k
+            info = dict(guess[tid])
+            if q["number"] in named:
+                n_a = sum(1 for kk in jobs[team][2].values() if kk == k)
+                info.update(name=q["name"], number=q["number"], anchors=n_a,
+                            name_source="calibration names (anchored linking)")
+                names[tid] = info
+        free = [tid for k, tid in enumerate(range(base, base + len(outfield))) if outfield[k]["number"] not in named]
+        pool = list(left)
+        for tid in free:
+            g = guess[tid].get("number")
+            q = next((x for x in pool if x["number"] == g), None) or (pool[0] if pool else None)
+            if q is None:
+                continue
+            pool.remove(q)
+            info = dict(guess[tid])
+            info.update(name=q["name"], number=q["number"],
+                        name_source="official lineup, role-inferred (not named in calibration)")
+            names[tid] = info
+    rest = [(x, t) for x, t in resolved if x.get("team") not in anchored]
+    if rest:
+        anchor_report = apply_anchors(tl, names, rest)
         r = anchor_report
         print(f"  manual anchors: {r['anchors']} ({r['unresolved']} unresolved) -> {r['named_chains']} chains named, "
               f"{r['moved']} tracklets moved onto their player, {r['evicted']} overlapping ones dropped"
               + (f"; {len(r['conflicts'])} conflicting votes" if r["conflicts"] else ""))
+    if anchored:
+        anchor_report = {**(anchor_report or {}), "anchored_linking": {
+            t: {k: v for k, v in r.items() if k != "numbers"} for t, r in anchored.items()},
+            "anchors": len(anchors), "unresolved": sum(1 for _, t in resolved if t is None)}
 
     # 5. tracks.parquet in the pipeline schema
     ident = dict(zip(tl["tracklet"], tl["identity"]))

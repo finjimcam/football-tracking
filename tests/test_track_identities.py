@@ -11,7 +11,7 @@ def args(**overrides):
         gate=1.2, gate_step=0.3, gate_max=3.0, kit_penalty=2.5, max_miss=12, new_conf=0.35,
         vmax=8.5, reach_m=3.0, w_role=1.5, role_tau_s=5.0, role_sigma_m=8.0, c_link=0.5,
         reward=0.5, reward_per_s=1.0, edge_s=20.0, cost_late=8.0, max_gap_s=300.0, max_succ=12,
-        overlap_frames=3, w_vel=0.0, contact_role=0.6)
+        overlap_frames=3, w_vel=0.0, contact_role=0.6, w_shape=1.0, shape_sigma_m=6.0)
     for k, v in overrides.items():
         setattr(a, k, v)
     return a
@@ -135,3 +135,94 @@ def test_split_at_handovers_leaves_a_different_player_alone():
     p = pd.concat([p, extra])                         # tracklet 0 has its own box 1.5 m away on frame 52
     _, _, n, _ = T.split_at_handovers(p, tl, 2, 25.0)
     assert n == 0                                     # both detected, not a duplicate: two players
+
+
+# ---- issue #46: linking through the analyst's names ---------------------------
+def _two_players():
+    """Two players, each seen in 3 pieces: A along y=10 (tracklets 0-2), B along
+    y=50 (3-5). Plain motion links A-A-A and B-B-B."""
+    rows, tid = [], 0
+    for y, direction in ((10.0, 1), (50.0, -1)):
+        for s, e in ((0, 100), (150, 250), (300, 400)):
+            rows.append(dict(tracklet=tid, start=s, end=e, n=e - s + 1,
+                             entry_x=50 + direction * 0.08 * s, entry_y=y,
+                             exit_x=50 + direction * 0.08 * e, exit_y=y,
+                             vin_x=direction * 2.0, vin_y=0.0, vout_x=direction * 2.0, vout_y=0.0,
+                             role_x=0.0, role_y=y - 30.0))
+            tid += 1
+    return pd.DataFrame(rows)
+
+
+def test_link_anchored_follows_the_names_even_against_the_motion():
+    T_ = _two_players()
+    # the analyst says the first A piece and the LAST B piece are the same player
+    out = T.link_anchored(T_, 25.0, args(w_shape=0.0, max_gap_s=300.0), (0, 400), {0: 0, 5: 0, 3: 1}, 2)
+    assert out is not None
+    assign, links = out
+    assert assign[0] == assign[5] == 0 and assign[3] == 1
+
+
+def test_link_anchored_uses_the_team_shape_between_names():
+    T_ = _two_players()
+    assign, _ = T.link_anchored(T_, 25.0, args(), (0, 400), {0: 0, 3: 1}, 2)
+    assert {assign[t] for t in (0, 1, 2)} == {0} and {assign[t] for t in (3, 4, 5)} == {1}
+
+
+def test_split_conflicts_cuts_a_tracklet_named_as_two_players():
+    from identity_anchors import split_conflicts
+    p = pd.DataFrame({"frame": np.arange(100), "tracklet": np.zeros(100, int)})
+    res = [({"team": "team_a", "number": 7, "frame": 10}, 0), ({"team": "team_a", "number": 9, "frame": 60}, 0)]
+    p2, cuts, tails = split_conflicts(p, res, 5)
+    assert cuts == 1 and tails == {5: 0}
+    assert set(p2.loc[p2.frame <= 35, "tracklet"]) == {0} and set(p2.loc[p2.frame >= 36, "tracklet"]) == {5}
+
+
+def test_team_pins_keep_the_newest_name():
+    from identity_anchors import team_pins
+    span = {1: (0, 100), 2: (50, 150)}
+    res = [({"team": "team_a", "number": 7, "created": 1}, 1), ({"team": "team_a", "number": 7, "created": 2}, 2),
+           ({"team": "team_b", "number": 7, "created": 3}, 1)]
+    pins, dropped = team_pins(res, "team_a", [9, 7], span)
+    assert pins == {2: 1} and dropped == 1
+
+
+def _tl_row(t, s, e, ident, ex, ey, nx, ny, cls="team_a", team="team_a"):
+    return dict(tracklet=t, start=s, end=e, n=e - s + 1, identity=ident, team=team if ident >= 0 else "",
+                link="", cls=cls, entry_x=ex, entry_y=ey, exit_x=nx, exit_y=ny)
+
+
+def test_fill_partial_gives_the_gap_part_of_an_overlapping_tracklet_to_the_player():
+    # player 5 seen 0-49 and 150-199 along y=30; tracklet 9 (unlabelled) starts at 40 on him
+    # (a duplicate) and runs on to 170, so it never fits his gap whole
+    rows = []
+    for f in range(200):
+        x = 20 + 2 * f / 25
+        if f < 50:
+            rows.append((f, 0, x, 30.0))
+        if f >= 150:
+            rows.append((f, 1, x, 30.0))
+        if 40 <= f <= 170:
+            rows.append((f, 9, x + 0.4, 30.3))
+    p = pd.DataFrame(rows, columns=["frame", "tracklet", "pitch_x", "pitch_y"])
+    p = p.assign(kit="team_a", conf=0.9)
+    tl = T.summarize(p, 25.0, 105.0, 68.0)
+    tl["identity"] = tl["tracklet"].map({0: 5, 1: 5, 9: -1})
+    tl["team"] = np.where(tl["identity"] >= 0, "team_a", "")
+    tl["link"] = ""
+    p2, tl2, n = T.fill_partial(p, tl, 25.0, 105.0, 68.0)
+    assert n == 1
+    piece = tl2[tl2["link"] == "gap_piece"].iloc[0]
+    assert piece["identity"] == 5 and piece["start"] == 50 and piece["end"] == 149
+
+
+def test_assign_by_elimination_gives_a_loose_tracklet_to_the_only_player_off_screen():
+    a = args()
+    tl = pd.DataFrame([
+        _tl_row(0, 0, 400, 2, 10, 10, 20, 10),        # player 2: on screen throughout
+        _tl_row(1, 0, 100, 3, 40, 40, 42, 40),        # player 3: seen, then gone 101-299
+        _tl_row(2, 300, 400, 3, 46, 40, 50, 40),
+        _tl_row(3, 150, 250, -1, 43, 40, 45, 40),     # loose piece in 3's gap
+    ])
+    roles = pd.DataFrame({"rx": [0.0, 5.0, 5.0, 5.0], "ry": [-10.0, 10.0, 10.0, 10.0]}, index=[0, 1, 2, 3])
+    n = T.assign_by_elimination(tl, roles, 25.0, a, [2, 3])
+    assert n == 1 and tl.loc[tl.tracklet == 3, "identity"].iat[0] == 3
