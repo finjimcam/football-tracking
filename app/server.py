@@ -20,6 +20,11 @@
     PUT  /api/library/squads/{season}/{team}            replace a squad (numbers per team and season)
     PUT  /api/library/matches/{match_id}                link a match to a season, teams and data
     POST /api/library/import/{match_id}                 fill the library from the match's config files
+    GET  /api/matches/{match_id}/tracking               Tracking tab: players, problems, fixes
+    GET  /api/matches/{match_id}/tracking/lanes?start=&end=&bins=   status lanes per player
+    GET  /api/matches/{match_id}/tracking/frames?start=&end=        boxes + pitch spots per frame
+    POST /api/matches/{match_id}/tracking/edits         save one hand fix (config/<id>_track_edits.json)
+    DELETE /api/matches/{match_id}/tracking/edits/{id}  undo one fix
     GET  /api/system                      disk space + whether heavy jobs are held
 
 Everything else under / is the single-page app in app/static/.
@@ -37,6 +42,7 @@ from app.jobs import JobRunner
 from app.lines import FrameSource, LinesCache, LinesError
 from app.players import PlayersCache, PlayersError
 from app import library as libapi
+from app.tracking import TrackingCache, TrackingError
 
 STATIC = Path(__file__).parent / "static"
 
@@ -75,6 +81,10 @@ class Identify(BaseModel):
 class ExportAll(BaseModel):
     team: str = "team_a"
     keep: bool
+
+
+class TrackEdit(BaseModel):
+    edit: dict
 
 
 class JobRequest(BaseModel):
@@ -137,16 +147,22 @@ def create_app(root, runner=None, busy_check=None, warm=False):
         return FileResponse(path, filename=path.name)
 
     lines_cache = LinesCache(root)
+    tracking_cache = TrackingCache(root)
     frames = FrameSource()
 
     def _warm():
-        """Load line-picker data for broadcast matches in the background, so the
+        """Load line-picker and Tracking-tab data for broadcast matches in the background, so the
         first visit to the Lines tab doesn't wait ~30 s reading a whole half."""
         for m in matches.list_matches(root):
             if m["pipeline"] == catalog.BROADCAST and m["artifacts"]["possession"]["exists"]:
                 try:
                     lines_cache.get(m["match_id"], "team_a")
                 except Exception:  # noqa: BLE001 - warming is best-effort
+                    pass
+            if m["pipeline"] == catalog.BROADCAST and m["artifacts"]["player_map"]["exists"]:
+                try:
+                    tracking_cache.get(m["match_id"])
+                except Exception:  # noqa: BLE001
                     pass
 
     if warm:
@@ -260,6 +276,39 @@ def create_app(root, runner=None, busy_check=None, warm=False):
     @app.put("/api/matches/{match_id}/lines/{start}")
     def lines_save(match_id: str, start: int, req: LinesSave):
         return _lines_call(_lines(match_id, req.team).save, start, req.slots, req.keyframe, req.skip)
+
+    def _tracking(match_id):
+        _match_or_404(match_id)
+        try:
+            return tracking_cache.get(match_id)
+        except TrackingError as e:
+            raise HTTPException(409, str(e)) from None
+
+    def _tracking_call(fn, *a):
+        try:
+            return fn(*a)
+        except TrackingError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.get("/api/matches/{match_id}/tracking")
+    def tracking_summary(match_id: str):
+        return _tracking(match_id).summary()
+
+    @app.get("/api/matches/{match_id}/tracking/lanes")
+    def tracking_lanes(match_id: str, start: int, end: int, bins: int = 600):
+        return _tracking_call(_tracking(match_id).lanes, start, end, bins)
+
+    @app.get("/api/matches/{match_id}/tracking/frames")
+    def tracking_frames(match_id: str, start: int, end: int):
+        return _tracking_call(_tracking(match_id).frames, start, end)
+
+    @app.post("/api/matches/{match_id}/tracking/edits", status_code=201)
+    def tracking_add(match_id: str, req: TrackEdit):
+        return _tracking_call(_tracking(match_id).add_edit, req.edit)
+
+    @app.delete("/api/matches/{match_id}/tracking/edits/{edit_id}")
+    def tracking_remove(match_id: str, edit_id: int):
+        return _tracking_call(_tracking(match_id).remove_edit, edit_id)
 
     @app.get("/api/matches/{match_id}/frame/{frame}.jpg")
     def frame_jpg(match_id: str, frame: int, w: int | None = None):

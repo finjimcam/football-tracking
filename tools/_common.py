@@ -108,13 +108,27 @@ def load_meta(match_id, tmp_root=TMP_ROOT):
     return read_json(path)
 
 
-def load_tracks(match_id, tmp_root=TMP_ROOT):
+def load_tracks(match_id, tmp_root=TMP_ROOT, config_dir=CONFIG_DIR, edits=True, columns=None):
+    """tracks.parquet with the hand fixes from config/<id>_track_edits.json
+    applied (issue #42; see tools/track_edits.py). edits=False gives the raw
+    tracker output: use it in tools that REWRITE tracks.parquet, so fixes are
+    never baked into the file. `columns`: return only these."""
     import pandas as pd
+
+    from track_edits import apply_to, edits_path  # tools import each other as flat modules
 
     path = match_dir(match_id, tmp_root) / "tracks.parquet"
     if not path.exists():
         raise SystemExit(f"tracks.parquet not found at {path} — run tools/run_tracking.py first")
-    return pd.read_parquet(path)
+    if not edits or not edits_path(match_id, config_dir).exists():
+        return pd.read_parquet(path, columns=list(columns) if columns is not None else None)
+    tracks = pd.read_parquet(path)
+    fps = 25.0
+    meta_path = match_dir(match_id, tmp_root) / "meta.json"
+    if meta_path.exists():
+        fps = float(read_json(meta_path).get("fps") or fps)
+    out = apply_to(tracks, match_id, config_dir, fps)
+    return out[list(columns)] if columns is not None else out
 
 
 def load_team_map(match_id, tmp_root=TMP_ROOT):

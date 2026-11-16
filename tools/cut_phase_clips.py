@@ -51,7 +51,7 @@ import numpy as np
 import pandas as pd
 
 from _common import (CONFIG_DIR, OUTPUTS_DIR, Progress, VideoWriter, clock_label, load_calibration, load_meta,
-                     load_player_map, match_config, match_dir)
+                     load_player_map, load_tracks, match_config, match_dir)
 
 BAR_H = 30
 
@@ -210,9 +210,10 @@ def load_team_rows(mdir, tmp_dir, match_id, team, segs):
     gk_ids = {int(t) for v in pm["players"].values()
               if v["team"] == team and v.get("role") == "GK" for t in v["track_ids"]}
     ignored = {int(i["track_id"]) for i in pm.get("ignored_tracks", [])}
-    tracks = pd.read_parquet(Path(mdir) / "tracks.parquet",
-                             columns=["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y",
-                                      "pitch_x", "pitch_y", "kit"])
+    # with the hand fixes from the Tracking tab (config/<id>_track_edits.json, issue #42)
+    tracks = load_tracks(match_id, tmp_dir, Path(tmp_dir).parent / "config",
+                         columns=["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y",
+                                  "pitch_x", "pitch_y", "kit"])
     tracks = tracks[tracks["class"] == "player"]
     gk = tracks[tracks["track_id"].isin(list(gk_ids))]
     own_goal_x = 0.0 if (gk["pitch_x"].median() if len(gk) else 0.0) < 52.5 else 105.0
