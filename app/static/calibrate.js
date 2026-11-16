@@ -168,7 +168,7 @@ export async function viewCalibrate(view, parts, params, ui) {
         stroke: tid === st.sel ? '#FFD84D' : col, 'stroke-width': tid === st.sel ? 3 : a ? 2.2 : 1.4,
         'stroke-dasharray': a ? null : '5 3', 'stroke-opacity': a ? 1 : 0.85 }));
       const text = a ? `✓ ${a.number}` : guess != null ? `${guess}?` : '?';
-      const t = svg('text', { x: (x1 + x2) / 2, y: y1 - 5, class: 'trk-label', fill: a ? col : '#C9CDD2' });
+      const t = svg('text', { x: (x1 + x2) / 2, y: y1 - 5, class: 'trk-label', fill: col, 'fill-opacity': a ? 1 : 0.8 });
       t.textContent = text;
       g.append(t);
       g.addEventListener('click', (ev) => { ev.stopPropagation(); select(tid); });
@@ -284,7 +284,7 @@ export async function viewCalibrate(view, parts, params, ui) {
       h('div', { class: 'muted' }, `${sum.anchors_total} name${sum.anchors_total === 1 ? '' : 's'} saved` +
         (sum.pending ? ` · ${sum.pending} not used by tracking yet` : ' · all used by the current tracking')),
       ...jobs.map((j) => h('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
-        h('span', {}, j.title), h('span', { class: 'pill ' + (j.status === 'done' ? 'done' : j.status === 'failed' ? 'failed' : 'stale') }, j.status))));
+        h('span', {}, j.title), h('span', { class: 'pill ' + (j.status === 'done' ? 'done' : j.status === 'failed' ? 'failed' : 'stale') }, j.status === 'waiting for the step before' ? 'next' : j.status))));
   }
   async function run() {
     try {

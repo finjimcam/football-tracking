@@ -345,8 +345,16 @@ def create_app(root, runner=None, busy_check=None, warm=False):
     @app.get("/api/matches/{match_id}/calibration")
     def calib_summary(match_id: str):
         out = _calib(match_id).summary()
-        jobs = [j for j in runner.list(match_id=match_id, limit=50) if j["stage"] in RUN_CHAIN]
-        out["jobs"] = jobs[:len(RUN_CHAIN)]
+        # the latest run: the newest Track identities job and the jobs chained after it
+        start = next((j for j in runner.list(match_id=match_id, limit=200) if j["stage"] == RUN_CHAIN[0]), None)
+        chain = []
+        while start is not None and len(chain) < len(RUN_CHAIN):
+            chain.append(start)
+            start = runner.get(start["next_job"]) if start.get("next_job") else None
+        if chain and chain[-1].get("then") and chain[-1]["status"] in ("queued", "waiting", "running", "done"):
+            chain += [{"title": catalog.get_stage(t["stage"]).title, "status": "waiting for the step before"}
+                      for t in chain[-1]["then"]]
+        out["jobs"] = chain[::-1]
         return out
 
     @app.get("/api/matches/{match_id}/calibration/{clip_id}")
