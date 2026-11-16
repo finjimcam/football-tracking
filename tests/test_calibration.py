@@ -89,3 +89,20 @@ def test_clip_naming_and_accepting_guesses(client):
     assert r["anchors"] == [] and r["named"]["team_a"] == []
     s = client.get(f"/api/matches/{MID}/calibration").json()
     assert s["anchors_total"] == 0 and s["run_chain"][0] == "b_identities"
+
+
+def test_clips_are_fixed_once_picked(client):
+    s1 = client.get(f"/api/matches/{MID}/calibration").json()["clips"]
+    path = client.root / "config" / f"{MID}_calibration_clips.json"
+    saved = json.loads(path.read_text())
+    saved["clips"][0]["start"] += 7  # pretend the tracks changed since: the saved clip must win
+    saved["clips"][0]["end"] += 7
+    path.write_text(json.dumps(saved))
+    tp = client.root / ".tmp" / MID / "tracks.parquet"
+    import os
+    os.utime(tp, (tp.stat().st_atime, tp.stat().st_mtime + 5))  # tracks "re-run": cache reloads
+    s2 = client.get(f"/api/matches/{MID}/calibration").json()["clips"]
+    moved = saved["clips"][0]["id"]
+    a = {c["id"]: c["start"] for c in s1}
+    b = {c["id"]: c["start"] for c in s2}
+    assert b[moved] == a[moved] + 7 and set(a) == set(b)

@@ -8,6 +8,7 @@ track_identities.py uses both. Each box shows the tracker's current guess;
 "accept" turns the guesses on one frame into anchors in one go, so a clip is
 "fix the wrong ones, accept the rest".
 """
+import json
 import sys
 import time
 import uuid
@@ -47,9 +48,28 @@ class MatchCalibration:
         self.fps = float(self.meta["fps"])
         self.cfg = match_config(match_id, self.tmp_dir, self.config_dir)
         self.anchor_path = anchors_path(match_id, self.config_dir)
-        t = pd.read_parquet(self.tracks_path, columns=["frame", "class", "kit"])
-        self.clips = clips_for_match(match_id, self.tmp_dir, self.config_dir, tracks=t)
+        self.clips = self._load_clips()
         self.by_id = {c["id"]: c for c in self.clips}
+
+    def _load_clips(self):
+        """Clips are picked once and saved to config/<id>_calibration_clips.json:
+        the names are anchored to their frames, so a re-run of the tracking
+        (which changes the player counts the picker uses) must not move them.
+        Periods added to the match config later get their clips added."""
+        path = self.config_dir / f"{self.match_id}_calibration_clips.json"
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8")).get("clips") or []
+        except (OSError, ValueError):
+            saved = []
+        t = pd.read_parquet(self.tracks_path, columns=["frame", "class", "kit"])
+        fresh = clips_for_match(self.match_id, self.tmp_dir, self.config_dir, tracks=t)
+        have = {c["id"] for c in saved}
+        new = [c for c in fresh if c["id"] not in have]
+        clips = saved + new
+        if new or not path.exists():
+            path.write_text(json.dumps({"version": 1, "note": "Fixed once picked (issue #46): names are "
+                                        "anchored to these frames.", "clips": clips}, indent=1), encoding="utf-8")
+        return sorted(clips, key=lambda c: c["start"])
 
     # ---- helpers -------------------------------------------------------
     def _clip(self, clip_id):

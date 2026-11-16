@@ -79,7 +79,8 @@ export async function viewCalibrate(view, parts, params, ui) {
   const clipList = h('div', { class: 'scroll' });
   const rosterBox = h('div', { class: 'cal-roster' });
   const runInfo = h('div', { style: 'display:flex;flex-direction:column;gap:6px;font-size:12px' });
-  const runBtn = h('button', { type: 'button', class: 'btn primary', onclick: () => run() }, 'Run tracking with these names');
+  const runBtn = h('button', { type: 'button', class: 'btn primary', onclick: () => run(false) }, 'Run tracking with these names');
+  const guessBtn = h('button', { type: 'button', class: 'btn', onclick: () => run(true) }, 'Update guesses (re-track only)');
   const keysHelp = h('details', { class: 'panel', style: 'padding:10px 14px' }, h('summary', {}, 'Keys'),
     h('dl', { class: 'kv', style: 'margin-top:8px' }, KEYS_HELP.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])));
   const right = h('div', { class: 'col-side' },
@@ -89,8 +90,9 @@ export async function viewCalibrate(view, parts, params, ui) {
     h('section', { class: 'panel', style: 'padding:12px 14px;display:flex;flex-direction:column;gap:10px' },
       h('h2', { style: 'margin:0;font-size:13px' }, 'Run'),
       h('div', { class: 'muted', style: 'font-size:12px;line-height:1.5' },
-        'Re-runs Track identities with your names, then ball, possession, physical, positions and verification, one after another.'),
-      runBtn, runInfo,
+        'Re-runs Track identities with your names, then ball, possession, physical, positions and verification, one after another. ',
+        'Update guesses only re-tracks (about 4 min), so the next clip\'s guesses use the names you have so far.'),
+      runBtn, guessBtn, runInfo,
       h('a', { href: '#/tracking/' + mid, class: 'btn small' }, 'Back to Tracking')),
     keysHelp);
   view.replaceChildren(h('div', { class: 'cols' }, left, right));
@@ -286,10 +288,12 @@ export async function viewCalibrate(view, parts, params, ui) {
       ...jobs.map((j) => h('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
         h('span', {}, j.title), h('span', { class: 'pill ' + (j.status === 'done' ? 'done' : j.status === 'failed' ? 'failed' : 'stale') }, j.status === 'waiting for the step before' ? 'next' : j.status))));
   }
-  async function run() {
+  let lastStamp = null;
+  async function run(onlyIds) {
     try {
-      const j = await api(`/matches/${mid}/calibration-run`, { method: 'POST', body: {} });
-      toast('Tracking queued: the stages after it start automatically');
+      const j = await api(`/matches/${mid}/calibration-run`, { method: 'POST', body: { only_identities: onlyIds } });
+      toast(onlyIds ? 'Re-tracking: the guesses update when it finishes (about 4 min)'
+        : 'Tracking queued: the stages after it start automatically');
       sum.jobs = [j, ...(sum.jobs || [])];
       drawRun();
     } catch (e) { toast(e.message, true); }
@@ -299,6 +303,13 @@ export async function viewCalibrate(view, parts, params, ui) {
       const s = await api(`/matches/${mid}/calibration`);
       sum.jobs = s.jobs; sum.anchors_total = s.anchors_total; sum.pending = s.pending;
       drawRun();
+      const idJob = (s.jobs || []).find((j) => j.stage === 'b_identities');
+      const stamp = idJob && idJob.status === 'done' ? idJob.finished : null;
+      if (lastStamp !== null && stamp && stamp !== lastStamp && st.clip && !st.busy) {
+        msg.textContent = 'Tracking finished: guesses updated';
+        const keep = st.cur; await openClip(st.clip.id); seek(keep);
+      }
+      if (stamp) lastStamp = stamp; else if (lastStamp === null) lastStamp = 0;
     } catch { /* ignore */ }
   }, 5000);
 

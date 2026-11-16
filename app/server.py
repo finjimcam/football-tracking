@@ -99,6 +99,7 @@ class CalibName(BaseModel):
 
 class CalibRun(BaseModel):
     force: bool = False
+    only_identities: bool = False  # "Update guesses": just re-track, so the other clips' guesses use the names so far
 
 
 class JobRequest(BaseModel):
@@ -374,7 +375,7 @@ def create_app(root, runner=None, busy_check=None, warm=False):
         """Re-run identities with the clip names, then everything after it, in order."""
         m = _match_or_404(match_id)
         steps = []
-        for sid in RUN_CHAIN:
+        for sid in (RUN_CHAIN[:1] if req.only_identities else RUN_CHAIN):
             stage = catalog.get_stage(sid)
             args = catalog.build_args(stage, {}, match_id=match_id, videos_dir=root / "videos",
                                       meta_video=m.get("video"), config_dir=root / "config")
