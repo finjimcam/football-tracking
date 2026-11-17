@@ -42,6 +42,7 @@ import pandas as pd
 
 from _common import (OUTPUTS_DIR, Progress, VideoWriter, clock_label, ignored_track_ids, load_calibration,
                      load_meta, load_player_map, load_tracks, match_config, pitch_dims)
+from gap_status import observed
 
 UNKNOWN_COLOR = (160, 160, 160)
 IGNORED_COLOR = (90, 90, 90)
@@ -177,7 +178,7 @@ def main():
     video = args.video or meta["video"]
     fps = meta["fps"]
     cfg = match_config(args.match_id, args.tmp_dir, args.config_dir)
-    tracks = load_tracks(args.match_id, args.tmp_dir)
+    tracks = observed(load_tracks(args.match_id, args.tmp_dir))  # boxes exist for detections only
 
     team_color = {"team_a": parse_bgr(args.team_a_color), "team_b": parse_bgr(args.team_b_color)}
 

@@ -43,6 +43,7 @@ import pandas as pd
 
 from _common import (OUTPUTS_DIR, clock_label, load_meta, load_player_map, match_config, match_dir,
                      read_json, reference_path, write_json)
+from gap_status import FILLED, observed, status_of
 
 
 def name_index(pm):
@@ -147,7 +148,10 @@ def main():
     pm = load_player_map(args.match_id, args.tmp_dir)
     if pm is None:
         raise SystemExit("player_map.json missing - run tools/track_identities.py first")
-    tracks = pd.read_parquet(mdir / "tracks.parquet")
+    all_rows = pd.read_parquet(mdir / "tracks.parquet")
+    tracks = observed(all_rows)  # every check below reads real detections only
+    all_players = all_rows[all_rows["class"] == "player"]
+    all_status = status_of(all_players)
     links = pd.read_parquet(mdir / "identity_links.parquet")
     timeline = pd.read_parquet(mdir / "possession_timeline.parquet")
     names = name_index(pm)
@@ -165,6 +169,10 @@ def main():
         seq = links[links["identity"] == tid].sort_values("start")
         fr = np.sort(players.loc[players["track_id"] == tid, "frame"].unique())
         gaps = np.diff(np.r_[f_lo - 1, fr, f_hi + 1]) - 1
+        mine_all = (all_players["track_id"] == tid).to_numpy()
+        fr_any = np.sort(all_players.loc[mine_all, "frame"].unique())
+        unknown = np.diff(np.r_[f_lo - 1, fr_any, f_hi + 1]) - 1  # stretches with no row at all
+        st_counts = all_status[mine_all].value_counts()
         bad, n_links = 0, 0
         for prev, nxt in zip(seq.iloc[:-1].itertuples(), seq.iloc[1:].itertuples()):
             gap = max((nxt.start - prev.end) / fps, 1 / fps)
@@ -193,6 +201,9 @@ def main():
                      "tracklets": info["tracklets"], "links": n_links, "implausible_links": bad,
                      "fragile_links": info.get("fragile_links", 0),
                      "longest_unseen_s": round(float(gaps.max()) / fps, 1) if len(gaps) else None,
+                     "longest_unknown_s": round(float(unknown.max()) / fps, 1) if len(unknown) else None,
+                     **{f"frames_{k}": int(st_counts.get(k, 0)) for k in FILLED},
+                     "frames_unknown": int(n_frames - len(fr_any)),
                      "kit_consistency": kit_ok})
     per_player = pd.DataFrame(rows)
     pd.DataFrame(moments).sort_values("frame").to_csv(out_dir / "uncertain_moments.csv", index=False)

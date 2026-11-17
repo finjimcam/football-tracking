@@ -166,6 +166,27 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   exclusivity the 14 picked phases read 83% detected, 5% filled and 12% lost.
   The difference was fake "detected" frames that are now honest gaps to
   re-link.
+- **Gap status** (`gap_status.py`, issue #47 item 2): every identity row
+  in `tracks.parquet` has a `status`. `detected` is a real box.
+  `interpolated` fills a gap of <= 4 s that the player could have run
+  (distance <= 3 m + 8.5 m/s x gap), with a straight line in pitch space.
+  `absorbed` is the same fill, but the player was last seen within 1.5 m of
+  another player and came back within 2.5 m of that same player (a duel).
+  `unknown` means the gap is too long, not runnable, or before the first or
+  after the last sighting. Unknown frames have no row. `gaps.parquet` has one
+  row per gap (kind, reason, partner track). Fill rows have no box (x1..y2
+  NaN, conf 0); their foot pixels are projected back through the frame's
+  homography. `track_identities.py` labels as it writes tracks.parquet
+  (`--no-gap-status` turns it off). `python tools/gap_status.py --match-id
+  <id>` re-labels in place in ~10 s, so you can tune `--max-fill-s` and
+  `--duel-m` without re-linking. Heatmaps and average positions
+  (`compute_positions.py`) weight detected 1, interpolated 0.5, absorbed 0.5
+  (`--w-interpolated` / `--w-absorbed`). `compute_physical.py` counts filled
+  steps towards distance and time (`distance_filled`), but speed peaks only
+  come from detected-to-detected steps. Possession, contact swaps,
+  verification, renders and the Lines chains read detected rows only
+  (`gap_status.observed()`). New fillers (duel filler, smoother) plug in
+  through `label_tracks(..., classify=, fillers={kind: fn})`.
 - **Contact swaps** (`contact_swaps.py`, issue #34): this is a proxy for
   identities that swap when two teammates collide. Take each identity's
   average place in the team shape for 3 s before and 3 s after every contact
