@@ -39,7 +39,6 @@ out-of-possession phases) from it.
 | 1 | `tools/detect_frames.py` | **~55 min on the iGPU** (OpenVINO, 21 fps) - the only expensive step | `detections.parquet` (+ resumable chunks) |
 | 2 | `tools/calibrate_auto.py` | ~55 min CPU, runs *concurrently* with step 1 (it waits for detection chunks) | `frame_homographies.npz`, calibration -> `"dynamic"` |
 | 3 | `tools/track_identities.py` | ~10 min (two tracking passes + 8 flow solves); `--reuse-tracklets` re-links from its cache in ~3 min | `tracks.parquet`, `player_map.json`, `team_map.json`, `identity_links.parquet`, `tracklets_cache.parquet` |
-| 3b | `tools/duel_gaps.py` (optional, issue #47) | ~6 s | duel-gap fill rows in `tracks.parquet` (`interp`, `absorbed_by`), `duel_gaps.json` review list |
 | 4 | `tools/track_ball.py` | < 1 min | cleaned ball rows in `tracks.parquet`, `ball_track.parquet` |
 | 5 | `tools/compute_possession.py --include-unidentified` | < 1 min | `possession.json`, `possession_timeline.parquet` |
 | 6 | `tools/compute_physical.py --smooth-s 1.0`, `tools/compute_positions.py` | < 1 min | `physical.json`, `positions.json` + figures |
@@ -59,7 +58,6 @@ python tools/ingest_video.py --video "<video>.mp4" --config config/<id>_match.js
 python tools/detect_frames.py --match-id <id>                       # background, ~55 min
 python tools/calibrate_auto.py --match-id <id> --check-frames 5000,30000,60000   # background, concurrently
 python tools/track_identities.py --match-id <id>
-python tools/duel_gaps.py --match-id <id>                           # optional: fill duel gaps
 python tools/track_ball.py --match-id <id>
 python tools/compute_possession.py --match-id <id> --include-unidentified
 python tools/compute_physical.py --match-id <id> --smooth-s 1.0
@@ -168,27 +166,31 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   exclusivity the 14 picked phases read 83% detected, 5% filled and 12% lost.
   The difference was fake "detected" frames that are now honest gaps to
   re-link.
-- **Gap status** (`gap_status.py`, issue #47 item 2): every identity row
-  in `tracks.parquet` has a `status`. `detected` is a real box.
-  `interpolated` fills a gap of <= 4 s that the player could have run
-  (distance <= 3 m + 8.5 m/s x gap), with a straight line in pitch space.
-  `absorbed` is the same fill, but the player was last seen within 1.5 m of
-  another player and came back within 2.5 m of that same player (a duel).
-  `unknown` means the gap is too long, not runnable, or before the first or
-  after the last sighting. Unknown frames have no row. `gaps.parquet` has one
+- **Gap status** (`gap_status.py`, issue #47): every identity row in
+  `tracks.parquet` has a `status`. `detected` is a real box.
+  `interpolated` fills a gap of <= 3 s (`--fill-max-s`) that the player
+  could have run (distance <= 3 m + 8.5 m/s x gap) with the RTS smoother
+  (see "Short-gap fill"). `absorbed` is a duel gap of <= 10 s
+  (`--absorbed-max-s`): the player was last seen within 1.5 m of another
+  player and came back within 2.5 m of that same player. It is filled by the
+  duel filler (see "Duel gaps"), whose kit and swap checks can refuse it.
+  `unknown` means the gap is too long, not runnable, refused by its filler
+  (reason `...+fill_refused`), or before the first or after the last
+  sighting. `--linear-fill` restores the old straight line for both kinds. Unknown frames have no row. `gaps.parquet` has one
   row per gap (kind, reason, partner track). Fill rows have no box (x1..y2
   NaN, conf 0); their foot pixels are projected back through the frame's
   homography. `track_identities.py` labels as it writes tracks.parquet
   (`--no-gap-status` turns it off). `python tools/gap_status.py --match-id
-  <id>` re-labels in place in ~10 s, so you can tune `--max-fill-s` and
-  `--duel-m` without re-linking. Heatmaps and average positions
+  <id>` re-labels in place with the same fillers, so you can tune
+  `--max-fill-s`, `--max-absorbed-s` and `--duel-m` without re-linking. Heatmaps and average positions
   (`compute_positions.py`) weight detected 1, interpolated 0.5, absorbed 0.5
   (`--w-interpolated` / `--w-absorbed`). `compute_physical.py` counts filled
   steps towards distance and time (`distance_filled`), but speed peaks only
   come from detected-to-detected steps. Possession, contact swaps,
   verification, renders and the Lines chains read detected rows only
-  (`gap_status.observed()`). New fillers (duel filler, smoother) plug in
-  through `label_tracks(..., classify=, fillers={kind: fn})`.
+  (`gap_status.observed()`). Fillers plug in through
+  `label_tracks(..., classify=, fillers={kind: fn}, context_hook=)`;
+  `pipeline_fillers()` is the set the pipeline uses.
 - **Duel gaps** (`duel_gaps.py`, issue #47 item 3): a player who vanishes
   within 1.5 m of another tracked person, and comes back within 2.5 m of
   that same person, was hidden behind them in a merged box. The gap is
@@ -197,10 +199,12 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   gap (a partner chain re-linked mid-gap once jumped onto the referee). At
   the split the fill is checked: kit colour while the two stand > 1.2 m
   apart (opponents can't swap teams), and for teammates exit motion and
-  side. A failed check goes to `duel_gaps.json` for review and is not
-  written. Filled rows have `interp=True`, `conf` 0, `absorbed_by` = the
-  partner's track id ("k+P together"), and show amber ("filled") in the
-  Lines tab. Re-runs replace the previous fill. On the 2026-11-17 reference
+  side. A failed check leaves the gap `unknown`. In the pipeline this runs
+  as gap_status's `absorbed` filler (`duel_gaps.fill`, with the full checks
+  via `ctx.duel_index`). `python tools/duel_gaps.py --match-id <id>` is
+  the standalone experiment tool: it writes its own rows (`interp=True`,
+  `absorbed_by`) and a `duel_gaps.json` review list; don't run it on top of
+  a gap-status tracks.parquet. On the 2026-11-17 reference
   run: 2,023 duel gaps, 1,536 filled (6,488 frames), 69 flagged, 418 with no
   usable partner. Most duel gaps are under 1 s, and only 40 last 3-10 s
   (4 filled). In longer duel gaps the player usually comes back far from
@@ -220,22 +224,19 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   same-team contacts so the global linker decides who is who. `--w-vel` adds
   velocity continuity to short links. Experiments, and the standing
   improvement loop, are tracked in issue #35.
-- **Short-gap fill** (`interp_gaps.py`, issue #47 item 4): `track_identities.py`
-  fills identity gaps of up to `--interp-max-s` (default 3 s, 0 = off) before
-  writing tracks.parquet. Each gap is filled with a constant-velocity Kalman
+- **Short-gap fill** (`interp_gaps.py`, issue #47 item 4): gap_status's
+  `interpolated` filler (`make_filler`), up to `--fill-max-s` (default 3 s).
+  Each gap is filled with a constant-velocity Kalman
   filter and RTS smoother run over the player's own sightings 1 s either side.
   The curve is shifted so it joins both sightings exactly. The fill keeps the
   player's velocity through the gap, where a straight line has a kink at each
   end. Peak speed is capped at 10 m/s and acceleration at 8 m/s²: if the curve
   breaks either cap, the straight line is used instead. If even the straight
   line needs more than 10 m/s, the gap stays empty, because that is a tracking
-  jump rather than a hidden player. Gaps whose last sighting was within 1.5 m
-  of another identity are skipped (duels belong to the duel filler). Fill rows
-  carry `interp=True`, `status="interpolated"`, `conf=0`, a foot point
-  projected through that frame's homography, and a box. Lines chains and
-  `contact_swaps.py` drop them (`strip_fill`). `python tools/interp_gaps.py
-  --match-id <id>` re-applies the fill to an existing tracks.parquet, and
-  `--holdout` prints the error table.
+  jump rather than a hidden player (the filler refuses it: `unknown`).
+  `python tools/interp_gaps.py --match-id <id>` is the standalone
+  experiment tool (own `interp=True` rows; not on top of a gap-status
+  tracks.parquet), and `--holdout` prints the error table.
   **Hold-out test (2026-11-17):** fully seen stretches were blanked and
   refilled, and the fill was compared with the hidden detections. Parameters
   were tuned on even match minutes and the table below is from the odd
@@ -334,7 +335,8 @@ Local only (`.gitignore`: footage and anything cut from it):
   one-to-many head + NMS at IoU 0.7 instead. On a 4-min duel-heavy window
   (frames 65250-71249) that gave 258 instead of 178 player track ids and a
   median team tracklet of 121 instead of 193 frames, at the same coverage
-  (86%). Pass `--nms-free` to match the cached detections. Loosening NMS to
+  (86%). `--nms-free` is therefore the default since #47 (`--no-nms-free`
+  for the old NMS head). Loosening NMS to
   keep the hidden player in a duel did not help: `--iou 0.8/0.85` alone is
   undone by the duplicate filter; with `track_identities.py --dup-iou` raised
   to match, the duplicates triple to five-fold the tracklets, coverage
