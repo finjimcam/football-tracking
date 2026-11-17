@@ -631,6 +631,10 @@ def main():
                         help="Metres added for a kit mismatch (pass 1, rule-based kits)")
     parser.add_argument("--kit-penalty-2", type=float, default=2.5,
                         help="Kit mismatch cost in pass 2, once kits come from the learned colour model")
+    parser.add_argument("--dup-iou", type=float, default=0.6,
+                        help="Same-frame person boxes overlapping more than this are one player (keep the "
+                             "most confident). Raise together with detect_frames.py --iou, or the hidden "
+                             "player that looser NMS kept in a duel is dropped here (issue #47)")
     parser.add_argument("--max-miss", type=int, default=12, help="Frames a tracklet may coast")
     parser.add_argument("--vmax", type=float, default=8.5, help="Max average speed across a gap, m/s")
     parser.add_argument("--reach-m", type=float, default=3.0, help="Slack on the reachability test, metres")
@@ -703,7 +707,7 @@ def main():
     else:
         p = det[(det["class"] == "player") & (det["conf"] >= a.min_conf)].reset_index(drop=True)
         n_before = len(p)
-        p = suppress_duplicates(p)
+        p = suppress_duplicates(p, a.dup_iou)
         print(f"[{a.match_id}] dropped {n_before - len(p)} duplicate person boxes "
               f"({(n_before - len(p)) / n_before:.1%})")
         p, _ = apply_calibration(p, calib)

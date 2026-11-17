@@ -31,6 +31,17 @@ Device: `--device intel:gpu` runs OpenVINO on the Intel iGPU (yolo26n at
 boxes). The OpenVINO export is created once under .tmp/models/ (disposable).
 `--device cpu` (torch) works everywhere, just slower.
 
+Overlap handling (issue #47 - the hidden player in a duel): with torch
+weights, ultralytics 8.4 runs yolo26's one-to-many head + NMS at `--iou`
+(0.7 = ultralytics' default, = master behaviour). `--nms-free` switches to
+the one-to-one (NMS-free) head instead. `--soft-nms-sigma S` keeps every
+candidate from the one-to-many head and decays overlapping boxes' scores
+with Gaussian soft-NMS (Bodla et al. 2017) instead of deleting them, then
+applies --person-conf. Whatever the detector keeps is filtered again by
+track_identities.py's duplicate suppression (`--dup-iou`), so raise both
+together. The meta file records `dup_pairs_iou60`: same-frame person pairs
+with IoU > 0.6 per frame, the duplicate-box cost of a looser setting.
+
 Usage:
     python tools/detect_frames.py --match-id <id>            # window from meta config
     python tools/detect_frames.py --match-id <id> --start-frame 1151 --end-frame 71434
@@ -131,13 +142,69 @@ def kit_features(frame, box):
     return band_lab(lab, grass, 0.15, 0.45, 0.2) + band_lab(lab, grass, 0.48, 0.68, 0.2)
 
 
-def frame_rows(res, frame_idx, fps, frame, person_conf):
+def box_iou(a, b):
+    """Pairwise IoU between xyxy box arrays a (n, 4) and b (m, 4)."""
+    x1 = np.maximum(a[:, None, 0], b[None, :, 0])
+    y1 = np.maximum(a[:, None, 1], b[None, :, 1])
+    x2 = np.minimum(a[:, None, 2], b[None, :, 2])
+    y2 = np.minimum(a[:, None, 3], b[None, :, 3])
+    inter = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+    area_a = (a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1])
+    area_b = (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
+    return inter / (area_a[:, None] + area_b[None, :] - inter + 1e-9)
+
+
+def soft_nms(boxes, scores, classes, sigma=0.5, score_floor=0.05):
+    """Gaussian soft-NMS per class: repeatedly take the highest-scoring box
+    and multiply every remaining box's score by exp(-IoU^2 / sigma), so a
+    second player half-hidden behind the first loses some confidence instead
+    of being deleted. Boxes whose score falls below `score_floor` are dropped.
+    Returns (indices into the input, decayed scores), best first."""
+    keep, kept_scores = [], []
+    for k in np.unique(classes):
+        idx = np.flatnonzero(classes == k)
+        sc = scores[idx].astype(float).copy()
+        b = boxes[idx]
+        alive = sc >= score_floor
+        while alive.any():
+            i = np.flatnonzero(alive)[np.argmax(sc[alive])]
+            keep.append(idx[i])
+            kept_scores.append(sc[i])
+            alive[i] = False
+            rest = np.flatnonzero(alive)
+            if len(rest):
+                sc[rest] *= np.exp(-box_iou(b[i:i + 1], b[rest])[0] ** 2 / sigma)
+                alive[rest] = sc[rest] >= score_floor
+    if not keep:
+        return np.zeros(0, int), np.zeros(0)
+    keep, kept_scores = np.asarray(keep), np.asarray(kept_scores)
+    order = np.argsort(-kept_scores, kind="stable")
+    return keep[order], kept_scores[order]
+
+
+def duplicate_pairs(det, iou_thresh=0.6):
+    """Same-frame person box pairs with IoU > iou_thresh - the duplicate-box
+    side effect of looser NMS (a real duel pair rarely overlaps that much)."""
+    pl = det[det["class"] == "player"]
+    n = 0
+    for _, g in pl.groupby("frame"):
+        if len(g) < 2:
+            continue
+        iou = box_iou(g[["x1", "y1", "x2", "y2"]].to_numpy(), g[["x1", "y1", "x2", "y2"]].to_numpy())
+        n += int((np.triu(iou, 1) > iou_thresh).sum())
+    return n
+
+
+def frame_rows(res, frame_idx, fps, frame, person_conf, soft_sigma=0.0):
     rows = []
     if res.boxes is None or len(res.boxes) == 0:
         return rows
     boxes = res.boxes.xyxy.cpu().numpy()
     confs = res.boxes.conf.cpu().numpy()
     classes = res.boxes.cls.cpu().numpy().astype(int)
+    if soft_sigma > 0:
+        keep, confs = soft_nms(boxes, confs, classes, sigma=soft_sigma)
+        boxes, classes = boxes[keep], classes[keep]
     for (x1, y1, x2, y2), c, k in zip(boxes, confs, classes):
         if k == PERSON_CLASS:
             if c < person_conf:
@@ -169,6 +236,13 @@ def main():
     parser.add_argument("--imgsz", type=int, default=1280, help="Long side of the inference size")
     parser.add_argument("--person-conf", type=float, default=0.10)
     parser.add_argument("--ball-conf", type=float, default=0.05)
+    parser.add_argument("--iou", type=float, default=0.7,
+                        help="NMS IoU threshold of the one-to-many head (ultralytics default 0.7). Higher "
+                             "keeps more overlapping boxes, e.g. a player hidden behind another in a duel")
+    parser.add_argument("--nms-free", action="store_true",
+                        help="Use yolo26's one-to-one (NMS-free) head instead of one-to-many + NMS")
+    parser.add_argument("--soft-nms-sigma", type=float, default=0.0,
+                        help="> 0: Gaussian soft-NMS with this sigma instead of hard NMS (torch weights only)")
     parser.add_argument("--chunk-frames", type=int, default=2500)
     parser.add_argument("--limit", type=int, default=None, help="Only process this many frames (testing)")
     parser.add_argument("--tmp-dir", default=".tmp")
@@ -193,6 +267,16 @@ def main():
     print(f"[{args.match_id}] frames {start}-{end} ({end - start + 1} frames, "
           f"{(end - start + 1) / fps / 60:.1f} min), {len(chunks)} chunks, {len(todo)} to do")
     print(f"  model {args.weights} on {args.device}, input {input_hw[1]}x{input_hw[0]}")
+    if args.nms_free:
+        pred_kw = {"nms": False}
+        print("  overlap handling: NMS-free one-to-one head")
+    elif args.soft_nms_sigma > 0:
+        # keep every candidate (IoU > 1 never happens), soft-NMS runs in frame_rows
+        pred_kw = {"nms": True, "iou": 1.0, "max_det": 3000}
+        print(f"  overlap handling: Gaussian soft-NMS, sigma {args.soft_nms_sigma}")
+    else:
+        pred_kw = {"iou": args.iou}
+        print(f"  overlap handling: NMS at IoU {args.iou}")
 
     if todo:
         model = load_model(args.weights, args.device, input_hw)
@@ -217,8 +301,8 @@ def main():
                     print(f"WARNING: decode failed at frame {fi}; stopping this chunk early")
                     break
                 res = model.predict(frame, imgsz=input_hw, classes=[PERSON_CLASS, SPORTS_BALL_CLASS],
-                                    conf=conf, verbose=False, device=args.device)[0]
-                rows.extend(frame_rows(res, fi, fps, frame, args.person_conf))
+                                    conf=conf, verbose=False, device=args.device, **pred_kw)[0]
+                rows.extend(frame_rows(res, fi, fps, frame, args.person_conf, args.soft_nms_sigma))
                 done += 1
                 prog.update(done)
                 if done % 500 == 0:
@@ -249,11 +333,14 @@ def main():
     stats = {
         "weights": args.weights, "device": args.device, "input_hw": list(input_hw),
         "person_conf": args.person_conf, "ball_conf": args.ball_conf,
+        "overlap": ("nms_free" if args.nms_free else f"soft_nms_sigma{args.soft_nms_sigma:g}"
+                    if args.soft_nms_sigma > 0 else f"nms_iou{args.iou:g}"),
         "start_frame": start, "end_frame": end, "frames": n_frames,
         "rows": int(len(det)),
         "players_per_frame": round(len(players) / n_frames, 2),
         "ball_frame_rate": round(balls["frame"].nunique() / n_frames, 4),
         "ball_frame_rate_conf25": round(balls.loc[balls["conf"] >= 0.25, "frame"].nunique() / n_frames, 4),
+        "dup_pairs_iou60_per_frame": round(duplicate_pairs(det) / n_frames, 3),
         "last_run_seconds": round(elapsed, 1),
     }
     write_json(out_dir / ("detections_test_meta.json" if args.limit else "detections_meta.json"), stats)
