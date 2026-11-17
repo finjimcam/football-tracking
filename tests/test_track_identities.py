@@ -11,7 +11,7 @@ def args(**overrides):
         gate=1.2, gate_step=0.3, gate_max=3.0, kit_penalty=2.5, max_miss=12, new_conf=0.35,
         vmax=8.5, reach_m=3.0, w_role=1.5, role_tau_s=5.0, role_sigma_m=8.0, c_link=0.5,
         reward=0.5, reward_per_s=1.0, edge_s=20.0, cost_late=8.0, max_gap_s=300.0, max_succ=12,
-        overlap_frames=3, w_vel=0.0, contact_role=0.6)
+        overlap_frames=3, w_vel=0.0, contact_role=0.6, duel_reach_m=2.0, duel_overlap_frames=10)
     for k, v in overrides.items():
         setattr(a, k, v)
     return a
@@ -77,3 +77,54 @@ def test_mostly_unreadable_referee_is_not_a_team_player():
     r = next(pd.DataFrame([dict(offpitch=0.0, v_team_a=7, v_team_b=52, v_gk_b=0, v_official=7,
                                 v_gk_a=320, v_unknown=13, n=399)]).itertuples())
     assert T.decide_class(r) not in ("team_a", "team_b")
+
+
+def _duel_scene():
+    """k runs right (6 m/s) into a duel with opponent P at x=50 and vanishes
+    in P's box; P turns and runs left at 4 m/s. 1.6 s later two fragments
+    start: A right next to P (the real k), B where k's own velocity pointed."""
+    fps = 25.0
+    T_ = pd.DataFrame([
+        dict(tracklet=0, start=0, end=100, n=101, entry_x=26.0, entry_y=30.0, exit_x=50.0, exit_y=30.0,
+             vin_x=6.0, vin_y=0.0, vout_x=6.0, vout_y=0.0, role_x=np.nan, role_y=np.nan),
+        dict(tracklet=1, start=140, end=300, n=161, entry_x=43.9, entry_y=30.4, exit_x=30.0, exit_y=30.0,
+             vin_x=-4.0, vin_y=0.0, vout_x=-4.0, vout_y=0.0, role_x=np.nan, role_y=np.nan),
+        dict(tracklet=2, start=140, end=300, n=161, entry_x=56.0, entry_y=30.0, exit_x=60.0, exit_y=30.0,
+             vin_x=1.0, vin_y=0.0, vout_x=1.0, vout_y=0.0, role_x=np.nan, role_y=np.nan),
+    ])
+    f = np.arange(100, 300)
+    p = pd.concat([
+        pd.DataFrame({"frame": np.arange(0, 101), "tracklet": 0,
+                      "pitch_x": 26.0 + 6.0 * np.arange(0, 101) / fps, "pitch_y": 30.0}),
+        pd.DataFrame({"frame": f, "tracklet": 9,  # P: at k's side at frame 100, then runs left
+                      "pitch_x": 50.4 - 4.0 * (f - 100) / fps, "pitch_y": 30.6}),
+    ], ignore_index=True)
+    return T_, p, fps
+
+
+def test_duel_partners_finds_the_partner_at_a_tracklet_end():
+    T_, p, fps = _duel_scene()
+    part = T.duel_partners(p, [0], fps, duel_m=1.5, horizon_s=10.0)
+    assert set(part) == {0}
+    pf, pxy = part[0]
+    assert pf[0] == 100 and pf[-1] == 299 and np.isclose(pxy[0, 0], 50.4)
+    assert T.duel_partners(p, [0], fps, duel_m=0.5) == {}  # 0.72 m apart: not a duel at 0.5 m
+    assert T.duel_partners(p, [0], fps, ignore=[9]) == {}  # officials are never partners
+
+
+def test_link_flow_follows_the_duel_partner_not_the_old_velocity():
+    T_, p, fps = _duel_scene()
+    part = T.duel_partners(p, [0], fps)
+    off, _ = T.link_flow(T_, fps, args(duel_sigma_m=0.0), (0, 300), n_paths=1, partners=part)
+    on, links = T.link_flow(T_, fps, args(duel_sigma_m=1.0), (0, 300), n_paths=1, partners=part)
+    assert off.get(2) == off[0] and 1 not in off  # motion prediction alone picks B
+    assert on.get(1) == on[0] and 2 not in on  # partner prior: k came out next to P
+    assert links[0][:2] == (0, 1)
+
+
+def test_duel_partners_can_be_limited_to_opponents():
+    """Teammate duels: same kit, so 'came out next to the partner' can't tell
+    the two apart - the pipeline only passes the other team's tracklets."""
+    _, p, fps = _duel_scene()
+    assert set(T.duel_partners(p, [0], fps, allowed={9})) == {0}
+    assert T.duel_partners(p, [0], fps, allowed={5, 6}) == {}

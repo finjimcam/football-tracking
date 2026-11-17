@@ -212,6 +212,25 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   1 m off inside the merged box). All 3 flagged fills were real problems.
   `fill(gap, ctx)` is the plug-in for the gap-status labeller (status
   `absorbed`).
+- **Duel-split linking** (issue #48, opt-in `--duel-sigma-m 1.0`): when a
+  tracklet ends within `--duel-m` 1.5 m of an opponent (a merged box), the
+  linker prices successors by their distance from that partner's position
+  (`duel_partners()`), and allows `--duel-reach-m` +2 m and
+  `--duel-overlap-frames` 10 for those links. Merged boxes make the foot
+  point jump and briefly double-detect, so the hidden player's next piece was
+  often blocked by the 3 m reach gate or the 3-frame overlap limit. It is
+  skipped if a teammate is within `--duel-crowd-m` 2 m. On the 2026-11-17
+  reference half (exp48): City+Spurs tracklets in chains 1397 -> 1418,
+  unidentified tracks 794 -> 768, detected coverage 83.5% -> 84.1%, missing
+  frames in gaps > 10 s 172k -> 162k. 5 of 6 new links checked on video were
+  right; one teammate merge was ambiguous. But Spurs suspected swaps rose
+  14/90 -> 19/94. Some of that rise is newly evaluable contacts or shifted
+  team-shape averages, not wrong links, but the proxy can't separate them. It
+  stays off until a hand-labelled duel window can measure it.
+  Diagnosis: of 222 duel gaps >= 1 s, 84 come back to the right identity, 85
+  have no fragment near the partner, and 53 have a same-kit fragment near the
+  partner that went unclaimed or to a teammate. About half of those are extra
+  bodies, because the identity is seen elsewhere at the same time.
 - **Contact swaps** (`contact_swaps.py`, issue #34): this is a proxy for
   identities that swap when two teammates collide. Take each identity's
   average place in the team shape for 3 s before and 3 s after every contact

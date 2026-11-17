@@ -436,9 +436,60 @@ def role_vectors(p, tl, team, min_visible=4, frame="centroid"):
 # --------------------------------------------------------------------------
 # 4. Global identity linking (min-cost flow)
 # --------------------------------------------------------------------------
-def link_flow(T, fps, a, window, n_paths=10, vmax=None, w_role=None, c_link=None):
+def duel_partners(p, tracklets, fps, duel_m=1.5, horizon_s=10.0, ignore=(), allowed=None, same_kit=None,
+                  crowd_m=2.0):
+    """Issue #48: {tracklet: (frames, xy)} for each of `tracklets` that ends
+    within duel_m of another person's tracklet (any team; `ignore` tracklets,
+    e.g. officials, excluded) - that partner's detections over the next
+    horizon_s. A player who vanishes in a duel is hidden in the partner's
+    box, so when they split again they come out next to the partner, not
+    where their own velocity pointed. allowed: if given, only these
+    tracklets count as partners (the pipeline passes the other team's: in a
+    teammate duel both bodies wear the same kit, so coming out "next to the
+    partner" can't tell the two apart). same_kit: tracklets in this
+    team's kit; if one of them is within crowd_m at the split, the merged
+    box may hold a teammate too, and the tracklet gets no partner."""
+    q = p[(p["tracklet"] >= 0) & ~p["tracklet"].isin(list(ignore))]
+    q = q.sort_values(["frame", "tracklet"])
+    fr, tk = q["frame"].to_numpy(), q["tracklet"].to_numpy()
+    xy = q[["pitch_x", "pitch_y"]].to_numpy(float)
+    by_tl = {int(t): g for t, g in q.groupby("tracklet")[["frame", "pitch_x", "pitch_y"]]}
+    horizon = int(round(horizon_s * fps))
+    out = {}
+    for t in tracklets:
+        g = by_tl.get(int(t))
+        if g is None or not len(g):
+            continue
+        f_end = int(g["frame"].iat[-1])
+        a, b = np.searchsorted(fr, [f_end, f_end + 1])
+        others = tk[a:b] != t
+        if not others.any():
+            continue
+        d = np.hypot(*(xy[a:b][others] - g[["pitch_x", "pitch_y"]].iloc[-1].to_numpy(float)).T)
+        k = int(np.argmin(d))
+        if d[k] > duel_m:
+            continue
+        pt = int(tk[a:b][others][k])
+        if allowed is not None and pt not in allowed:
+            continue
+        if same_kit is not None:
+            mates = np.isin(tk[a:b][others], list(same_kit))
+            if (mates & (d <= crowd_m)).any():
+                continue
+        P = by_tl[pt]
+        P = P[(P["frame"] >= f_end) & (P["frame"] <= f_end + horizon)]
+        if len(P) >= 2:
+            out[int(t)] = (P["frame"].to_numpy(), P[["pitch_x", "pitch_y"]].to_numpy(float))
+    return out
+
+
+def link_flow(T, fps, a, window, n_paths=10, vmax=None, w_role=None, c_link=None, partners=None):
     """Exactly n_paths disjoint tracklet chains of minimum total cost.
-    Returns ({tracklet: path index}, [(from, to, cost, gap_s, dist_m)])."""
+    Returns ({tracklet: path index}, [(from, to, cost, gap_s, dist_m)]).
+    partners (duel_partners()): for a tracklet that ended in a duel, a
+    successor starting next to the partner's position at that moment is
+    priced by that distance (sigma a.duel_sigma_m) if cheaper than the
+    motion prediction."""
     import networkx as nx
 
     vmax = a.vmax if vmax is None else vmax
@@ -471,8 +522,13 @@ def link_flow(T, fps, a, window, n_paths=10, vmax=None, w_role=None, c_link=None
         G.add_edge("S", ("i", i), capacity=1, weight=c_in)
         G.add_edge(("o", i), "T", capacity=1, weight=c_out)
     meta = {}
+    duel_on = getattr(a, "duel_sigma_m", 0) > 0 and partners
     for i in range(n):
-        lo = np.searchsorted(st, en[i] - a.overlap_frames, side="left")
+        pp = partners.get(int(T["tracklet"].iat[i])) if duel_on else None
+        # issue #48: around a merged box the hidden player's pieces overlap a
+        # few frames (both boxes briefly detected) and the foot point jumps
+        overlap = max(a.overlap_frames, a.duel_overlap_frames) if pp is not None else a.overlap_frames
+        lo = np.searchsorted(st, en[i] - overlap, side="left")
         hi = np.searchsorted(st, en[i] + a.max_gap_s * fps, side="right")
         j = np.arange(lo, hi)
         j = j[st[j] > st[i]]
@@ -480,7 +536,8 @@ def link_flow(T, fps, a, window, n_paths=10, vmax=None, w_role=None, c_link=None
             continue
         gap = np.maximum((st[j] - en[i]) / fps, 0.0)
         disp = np.hypot(ent[j, 0] - ext[i, 0], ent[j, 1] - ext[i, 1])
-        feas = disp <= vmax * gap + a.reach_m
+        reach = a.reach_m + (a.duel_reach_m if pp is not None else 0.0)
+        feas = disp <= vmax * gap + reach
         j, gap, disp = j[feas], gap[feas], disp[feas]
         if not len(j):
             continue
@@ -492,7 +549,17 @@ def link_flow(T, fps, a, window, n_paths=10, vmax=None, w_role=None, c_link=None
             lam = np.where(sc[j], np.maximum(lam, a.contact_role), lam)
         rr = np.where(has_role[i] & has_role[j],
                       np.hypot(role[j, 0] - role[i, 0], role[j, 1] - role[i, 1]) / a.role_sigma_m, 1.0)
-        cost = d / sig + w_role * lam * rr + c_link
+        motion = d / sig
+        if pp is not None:  # issue #48: came out of the duel next to the partner
+            pf, pxy = pp
+            ok = (st[j] >= pf[0]) & (st[j] <= pf[-1])
+            near = np.abs(pf[np.clip(np.searchsorted(pf, st[j]), 0, len(pf) - 1)] - st[j]) <= 3
+            ok &= near
+            if ok.any():
+                qx, qy = np.interp(st[j], pf, pxy[:, 0]), np.interp(st[j], pf, pxy[:, 1])
+                dp = np.hypot(ent[j, 0] - qx, ent[j, 1] - qy) / a.duel_sigma_m
+                motion = np.where(ok, np.minimum(motion, dp), motion)
+        cost = motion + w_role * lam * rr + c_link
         if a.w_vel:  # velocity continuity across short gaps (a runner keeps running)
             dv = np.hypot(vin[j, 0] - vout[i, 0], vin[j, 1] - vout[i, 1])
             cost = cost + np.where(gap < 1.0, a.w_vel * dv / 3.0, 0.0)
@@ -668,6 +735,21 @@ def main():
                         help="Weight of the team-shape term on links across a contact cut (0-1)")
     parser.add_argument("--w-vel", type=float, default=0.0,
                         help="Cost per 3 m/s of velocity change across links with gaps < 1 s")
+    parser.add_argument("--duel-sigma-m", type=float, default=0.0,
+                        help="Issue #48: a tracklet that ends within --duel-m of another person links cheaply to a "
+                             "successor that starts this close to that partner (sigma, metres). 0 = off (default "
+                             "until validated, see issue #48). Try 1.0")
+    parser.add_argument("--duel-m", type=float, default=1.5, help="Duel distance at a tracklet's end, metres")
+    parser.add_argument("--duel-reach-m", type=float, default=2.0,
+                        help="Extra reach slack for links out of a tracklet that ended in a duel (merged-box foot jump)")
+    parser.add_argument("--duel-overlap-frames", type=int, default=10,
+                        help="Overlap allowed for links out of a tracklet that ended in a duel")
+    parser.add_argument("--duel-teammates", action="store_true",
+                        help="Also apply the duel prior/slack when the partner is a teammate (more swaps: same kit)")
+    parser.add_argument("--duel-crowd-m", type=float, default=2.0,
+                        help="No duel prior if a teammate (same kit) is this close at the split")
+    parser.add_argument("--duel-horizon-s", type=float, default=10.0,
+                        help="How long after the split the partner prior applies")
     parser.add_argument("--no-stability", action="store_true", help="Skip the perturbed re-solves")
     parser.add_argument("--no-gap-status", action="store_true",
                         help="Write detections only (no status column / gap fill rows, see gap_status.py)")
@@ -778,13 +860,20 @@ def main():
         sel = tl[(tl["cls"] == team) & (tl["n"] >= a.min_len) & (tl["identity"] < 0)].copy()
         sel["role_x"] = sel["tracklet"].map(roles["rx"])
         sel["role_y"] = sel["tracklet"].map(roles["ry"])
-        assign, links = link_flow(sel, fps, a, (f_lo, f_hi))
+        own = {team, "gk_a" if team == "team_a" else "gk_b"}
+        partners = (duel_partners(p, sel["tracklet"], fps, a.duel_m, a.duel_horizon_s,
+                                  ignore=tl.loc[tl["cls"].isin(["official", "off_pitch"]), "tracklet"],
+                                  allowed=None if a.duel_teammates else
+                                  set(tl.loc[~tl["cls"].isin(own | {"official", "off_pitch"}), "tracklet"]),
+                                  same_kit=set(tl.loc[tl["cls"].isin(own), "tracklet"]), crowd_m=a.duel_crowd_m)
+                    if a.duel_sigma_m > 0 else {})
+        assign, links = link_flow(sel, fps, a, (f_lo, f_hi), partners=partners)
         stab = {(i, j): 0 for i, j, *_ in links}
         variants = [] if a.no_stability else [
             {"vmax": a.vmax * 0.85}, {"w_role": a.w_role * 0.5},
             {"w_role": a.w_role * 1.5, "c_link": a.c_link * 1.5}]
         for v in variants:
-            alt, _ = link_flow(sel, fps, a, (f_lo, f_hi), **v)
+            alt, _ = link_flow(sel, fps, a, (f_lo, f_hi), partners=partners, **v)
             for i, j in stab:
                 stab[(i, j)] += int(i in alt and alt.get(i) == alt.get(j))
         incoming = {j: (i, c, g_, d_) for i, j, c, g_, d_ in links}
