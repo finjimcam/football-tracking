@@ -195,11 +195,42 @@ def test_plugin_fill_declines_swap_with_index_only():
     assert fill(_gap(t, P=3), _Ctx(t)) is not None                 # geometry alone can't tell
 
 
-def test_chains_show_absorbed_rows_as_filled():
-    """Lines UI / phase clips: a duel-filled row is followed like a detection
-    but drawn as 'filled' (amber), not 'seen'."""
-    from cut_phase_clips import fill_gaps, index_rows, track_run
-    out, _ = apply(duel(), FPS, 0, 149)
-    rows_idx = index_rows({int(f): g for f, g in out.groupby("frame")})
-    pts = fill_gaps(track_run(rows_idx, 2, range(0, 150), FPS), FPS, None, 0, 149)
-    assert pts[60][5] == "filled" and pts[10][5] == "seen" and pts[120][5] == "seen"
+def _pipeline(t, **kw):
+    import gap_status as gs
+    t = t.drop(columns=["interp"])
+    kw = {"max_fill_s": 3.0, "max_absorbed_s": 10.0, **kw}
+    return gs.label_tracks(t, FPS, track_ids=[2, 102], window=(0, int(t["frame"].max())),
+                           **gs.pipeline_fillers(kw["max_fill_s"]), **kw)
+
+
+def test_pipeline_routes_duel_gap_to_duel_filler():
+    """Combined pipeline (gap_status + duel_gaps): the duel gap is labelled
+    absorbed and filled along the partner's path, not a straight line."""
+    t = duel()
+    m = (t["track_id"] == 102) & t["frame"].between(50, 89)
+    t.loc[m, "pitch_y"] = 30.0 + 2.0 * np.sin((t.loc[m, "frame"] - 50) / 39 * np.pi)
+    out, gaps = _pipeline(t)
+    g = gaps[gaps["track_id"] == 2].iloc[0]
+    assert g["kind"] == "absorbed" and g["partner"] == 102
+    fill = out[(out["track_id"] == 2) & (out["status"] == "absorbed")]
+    assert len(fill) == 40
+    assert fill["pitch_y"].max() > 30.5  # rode the partner's bump; a line would stay at 29.2
+
+
+def test_pipeline_absorbed_cap_is_separate_from_short_fill_cap():
+    """A 6 s duel gap is filled (max_absorbed_s 10) although short fills stop at 3 s."""
+    t = duel(n=300, gap=(50, 199))
+    out, gaps = _pipeline(t)
+    assert gaps[gaps["track_id"] == 2].iloc[0]["kind"] == "absorbed"
+    out, gaps = _pipeline(t, max_absorbed_s=3.0)
+    g = gaps[gaps["track_id"] == 2].iloc[0]
+    assert g["kind"] == "unknown" and g["reason"] == "too_long"
+
+
+def test_pipeline_ambiguous_duel_is_unknown():
+    """The duel filler's kit check runs inside the pipeline: k comes out of
+    the duel in the other team's kit -> refused -> unknown, no rows."""
+    out, gaps = _pipeline(duel(kit_swap=True))
+    g = gaps[gaps["track_id"] == 2].iloc[0]
+    assert g["kind"] == "unknown" and "fill_refused" in g["reason"]
+    assert not ((out["track_id"] == 2) & (out["status"] != "detected")).any()

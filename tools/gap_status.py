@@ -50,7 +50,11 @@ STATUSES = ("detected", "interpolated", "absorbed", "unknown")
 FILLED = ("interpolated", "absorbed")
 DEFAULT_WEIGHTS = {"detected": 1.0, "interpolated": 0.5, "absorbed": 0.5, "unknown": 0.0}
 GAP_BUCKETS = ((0, 1), (1, 3), (3, 10), (10, np.inf))  # seconds, for reporting
-DEFAULTS = {"max_fill_s": 4.0, "duel_m": 1.5, "reemerge_m": 2.5, "vmax": 8.5, "reach_m": 3.0}
+DEFAULTS = {"max_fill_s": 4.0, "max_absorbed_s": None, "duel_m": 1.5, "reemerge_m": 2.5, "vmax": 8.5,
+            "reach_m": 3.0}
+# The pipeline (issue #47 combined): smoothed fill for short gaps, duel filler
+# for absorbed gaps up to 10 s. See pipeline_fillers().
+PIPELINE_DEFAULTS = {"max_fill_s": 3.0, "max_absorbed_s": 10.0}
 
 
 # --------------------------------------------------------------------------
@@ -188,9 +192,10 @@ def find_gaps(track_id, frames, xy, lo, hi):
     return gaps
 
 
-def classify_gap(gap, ctx, max_fill_s=4.0, duel_m=1.5, reemerge_m=2.5, vmax=8.5, reach_m=3.0):
+def classify_gap(gap, ctx, max_fill_s=4.0, max_absorbed_s=None, duel_m=1.5, reemerge_m=2.5, vmax=8.5,
+                 reach_m=3.0):
     """Sets gap.partner/duel/reemerge/reason and returns the kind:
-    absorbed     two-sided, <= max_fill_s, last seen within duel_m of another
+    absorbed     two-sided, <= max_absorbed_s (default max_fill_s), last seen within duel_m of another
                  player AND seen again within reemerge_m of that same player
     interpolated two-sided, <= max_fill_s, runnable (distance <= reach_m +
                  vmax * gap time), not a duel re-emergence
@@ -208,7 +213,8 @@ def classify_gap(gap, ctx, max_fill_s=4.0, duel_m=1.5, reemerge_m=2.5, vmax=8.5,
     if gap.duel:
         q = ctx.position(gap.partner, gap.end, tol=2)
         gap.reemerge = q is not None and float(np.hypot(*(q - gap.xy_end))) <= reemerge_m
-    if gap_s > max_fill_s:
+    cap = max_absorbed_s if gap.reemerge and max_absorbed_s is not None else max_fill_s
+    if gap_s > cap:
         gap.reason = "too_long"
         return "unknown"
     dist = float(np.hypot(*(gap.xy_end - gap.xy_start)))
@@ -228,8 +234,31 @@ def linear_fill(gap, ctx):
 DEFAULT_FILLERS = {"interpolated": linear_fill, "absorbed": linear_fill}
 
 
+def pipeline_fillers(max_fill_s=PIPELINE_DEFAULTS["max_fill_s"], ignore=(), linear=False):
+    """The fillers the pipeline uses (issue #47 combined):
+    interpolated  interp_gaps.py RTS smoother (straight line where the smooth
+                  path is not physical); refuses gaps > max_fill_s
+    absorbed      duel_gaps.py: the partner's path plus a blended offset, with
+                  its kit / swap checks at the split; ambiguous -> unknown
+    Returns dict(fillers=..., context_hook=...) for label_tracks(**...).
+    linear=True gives the old straight-line fill for both kinds."""
+    if linear:
+        return {"fillers": dict(DEFAULT_FILLERS), "context_hook": None}
+    import duel_gaps
+    import interp_gaps
+
+    def hook(ctx, players):
+        ctx.duel_index = duel_gaps.TrackIndex(players[players["pitch_x"].notna()])
+
+    def absorbed(gap, ctx):
+        return duel_gaps.fill(gap, ctx, ignore=tuple(ignore))
+
+    return {"fillers": {"interpolated": interp_gaps.make_filler(max_gap_s=max_fill_s), "absorbed": absorbed},
+            "context_hook": hook}
+
+
 def label_tracks(tracks, fps, track_ids=None, window=None, to_image=None, exclude_partners=(),
-                 classify=classify_gap, fillers=None, **params):
+                 classify=classify_gap, fillers=None, context_hook=None, **params):
     """Label the gaps of `track_ids` (default: every player track) inside
     `window` (lo, hi; default: the tracks' frame range) and append fill rows.
 
@@ -238,7 +267,9 @@ def label_tracks(tracks, fps, track_ids=None, window=None, to_image=None, exclud
     to_image(frames, xy) -> (n, 2) foot pixels for fill rows (downstream
     tools re-project foot pixels through the calibration); without it the
     fill rows' foot_x/foot_y are NaN. exclude_partners: track ids that can't
-    be a duel partner (officials, people off the pitch)."""
+    be a duel partner (officials, people off the pitch). context_hook(ctx,
+    players) runs once after the GapContext is built (detected player rows,
+    all columns), so a filler can attach its own index to ctx."""
     fillers = {**DEFAULT_FILLERS, **(fillers or {})}
     params = {**DEFAULTS, **params}
     base = tracks[~status_of(tracks).isin(FILLED).to_numpy()].copy()
@@ -251,6 +282,8 @@ def label_tracks(tracks, fps, track_ids=None, window=None, to_image=None, exclud
         window = (int(base["frame"].min()), int(base["frame"].max()))
     lo, hi = window
     ctx = GapContext.from_tracks(players, fps, exclude=exclude_partners)
+    if context_hook is not None:
+        context_hook(ctx, players)
 
     gap_rows, fill_parts = [], []
     excluded = set(exclude_partners)
@@ -370,8 +403,12 @@ def main():
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--match-id", required=True)
-    ap.add_argument("--max-fill-s", type=float, default=DEFAULTS["max_fill_s"],
-                    help="Longest gap filled (the Lines picker's fill_s); longer = unknown")
+    ap.add_argument("--max-fill-s", type=float, default=PIPELINE_DEFAULTS["max_fill_s"],
+                    help="Longest non-duel gap filled (smoothed fill); longer = unknown")
+    ap.add_argument("--max-absorbed-s", type=float, default=PIPELINE_DEFAULTS["max_absorbed_s"],
+                    help="Longest duel (absorbed) gap filled along the partner's path; longer = unknown")
+    ap.add_argument("--linear-fill", action="store_true",
+                    help="Old straight-line fill for both kinds (no smoother, no duel filler checks)")
     ap.add_argument("--duel-m", type=float, default=DEFAULTS["duel_m"],
                     help="Last sighting this close to another player = duel")
     ap.add_argument("--reemerge-m", type=float, default=DEFAULTS["reemerge_m"],
@@ -395,11 +432,14 @@ def main():
     ignored = [int(i["track_id"]) for i in pm.get("ignored_tracks", [])]
     out, gaps = label_tracks(tracks, meta["fps"], track_ids=ids, window=window,
                              to_image=homography_to_image(calib), exclude_partners=ignored,
-                             max_fill_s=a.max_fill_s, duel_m=a.duel_m, reemerge_m=a.reemerge_m, vmax=a.vmax)
+                             **pipeline_fillers(a.max_fill_s, ignore=ignored, linear=a.linear_fill),
+                             max_fill_s=a.max_fill_s, max_absorbed_s=a.max_absorbed_s, duel_m=a.duel_m,
+                             reemerge_m=a.reemerge_m, vmax=a.vmax)
     out.to_parquet(mdir / "tracks.parquet", index=False)
     gaps.to_parquet(mdir / "gaps.parquet", index=False)
     s = summarize(out, gaps, ids, window, meta["fps"])
-    s["params"] = {"max_fill_s": a.max_fill_s, "duel_m": a.duel_m, "reemerge_m": a.reemerge_m, "vmax": a.vmax}
+    s["params"] = {"max_fill_s": a.max_fill_s, "max_absorbed_s": a.max_absorbed_s, "linear_fill": a.linear_fill,
+                   "duel_m": a.duel_m, "reemerge_m": a.reemerge_m, "vmax": a.vmax}
     s["runtime_s"] = round(time.time() - t0, 2)
     write_json(mdir / "gap_status.json", s)
     tot = sum(s["frames_by_status"].values())

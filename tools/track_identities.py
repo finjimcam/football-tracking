@@ -53,7 +53,7 @@ from scipy.optimize import linear_sum_assignment
 
 from _common import (apply_calibration, load_calibration, load_meta, match_config, match_dir,
                      pitch_dims, read_json, reference_path, write_json)
-from gap_status import homography_to_image, label_tracks
+from gap_status import PIPELINE_DEFAULTS, homography_to_image, label_tracks, pipeline_fillers
 
 TEAMS = ("team_a", "team_b")
 KIT_LABELS = ("team_a", "team_b", "gk_a", "gk_b", "official")
@@ -671,6 +671,12 @@ def main():
     parser.add_argument("--no-stability", action="store_true", help="Skip the perturbed re-solves")
     parser.add_argument("--no-gap-status", action="store_true",
                         help="Write detections only (no status column / gap fill rows, see gap_status.py)")
+    parser.add_argument("--fill-max-s", type=float, default=PIPELINE_DEFAULTS["max_fill_s"],
+                        help="Fill non-duel identity gaps up to this long with the RTS smoother (interp_gaps.py)")
+    parser.add_argument("--absorbed-max-s", type=float, default=PIPELINE_DEFAULTS["max_absorbed_s"],
+                        help="Fill duel (absorbed) gaps up to this long along the partner's path (duel_gaps.py)")
+    parser.add_argument("--linear-fill", action="store_true",
+                        help="Old straight-line fill for every gap kind instead of the smoother / duel filler")
     parser.add_argument("--reuse-tracklets", action="store_true",
                         help="Reuse tracklets_cache.parquet from the last run: re-run only linking + outputs "
                              "(for tuning the linker in minutes instead of ~15)")
@@ -822,7 +828,9 @@ def main():
                        if c in ("official", "off_pitch", "gk_b")}
         idents = [*range(1, 12), *range(101, 112)]
         tracks, gaps = label_tracks(tracks, fps, track_ids=idents, window=(f_lo, f_hi),
-                                    to_image=homography_to_image(calib), exclude_partners=not_players)
+                                    to_image=homography_to_image(calib), exclude_partners=not_players,
+                                    **pipeline_fillers(a.fill_max_s, ignore=not_players, linear=a.linear_fill),
+                                    max_fill_s=a.fill_max_s, max_absorbed_s=a.absorbed_max_s)
         gaps.to_parquet(mdir / "gaps.parquet", index=False)
         print("  gap status: " + ", ".join(f"{k} {v}" for k, v in gaps["kind"].value_counts().items())
               + " gaps; fill rows " + ", ".join(f"{k} {v}" for k, v in tracks["status"].value_counts().items()

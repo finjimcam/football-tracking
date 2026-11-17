@@ -33,8 +33,10 @@ boxes). The OpenVINO export is created once under .tmp/models/ (disposable).
 
 Overlap handling (issue #47 - the hidden player in a duel): with torch
 weights, ultralytics 8.4 runs yolo26's one-to-many head + NMS at `--iou`
-(0.7 = ultralytics' default, = master behaviour). `--nms-free` switches to
-the one-to-one (NMS-free) head instead. `--soft-nms-sigma S` keeps every
+(0.7 = ultralytics' default) with `--no-nms-free`. The default is
+`--nms-free`, the one-to-one (NMS-free) head: on the #47 test window the
+NMS head gave ~45% more fragments, and the OpenVINO export already ran
+one-to-one. `--soft-nms-sigma S` keeps every
 candidate from the one-to-many head and decays overlapping boxes' scores
 with Gaussian soft-NMS (Bodla et al. 2017) instead of deleting them, then
 applies --person-conf. Whatever the detector keeps is filtered again by
@@ -239,8 +241,9 @@ def main():
     parser.add_argument("--iou", type=float, default=0.7,
                         help="NMS IoU threshold of the one-to-many head (ultralytics default 0.7). Higher "
                              "keeps more overlapping boxes, e.g. a player hidden behind another in a duel")
-    parser.add_argument("--nms-free", action="store_true",
-                        help="Use yolo26's one-to-one (NMS-free) head instead of one-to-many + NMS")
+    parser.add_argument("--nms-free", action=argparse.BooleanOptionalAction, default=True,
+                        help="yolo26's one-to-one (NMS-free) head (default). --no-nms-free: one-to-many head + "
+                             "NMS at --iou")
     parser.add_argument("--soft-nms-sigma", type=float, default=0.0,
                         help="> 0: Gaussian soft-NMS with this sigma instead of hard NMS (torch weights only)")
     parser.add_argument("--chunk-frames", type=int, default=2500)
@@ -267,13 +270,13 @@ def main():
     print(f"[{args.match_id}] frames {start}-{end} ({end - start + 1} frames, "
           f"{(end - start + 1) / fps / 60:.1f} min), {len(chunks)} chunks, {len(todo)} to do")
     print(f"  model {args.weights} on {args.device}, input {input_hw[1]}x{input_hw[0]}")
-    if args.nms_free:
-        pred_kw = {"nms": False}
-        print("  overlap handling: NMS-free one-to-one head")
-    elif args.soft_nms_sigma > 0:
+    if args.soft_nms_sigma > 0:
         # keep every candidate (IoU > 1 never happens), soft-NMS runs in frame_rows
         pred_kw = {"nms": True, "iou": 1.0, "max_det": 3000}
         print(f"  overlap handling: Gaussian soft-NMS, sigma {args.soft_nms_sigma}")
+    elif args.nms_free:
+        pred_kw = {"nms": False}
+        print("  overlap handling: NMS-free one-to-one head")
     else:
         pred_kw = {"iou": args.iou}
         print(f"  overlap handling: NMS at IoU {args.iou}")
@@ -333,8 +336,8 @@ def main():
     stats = {
         "weights": args.weights, "device": args.device, "input_hw": list(input_hw),
         "person_conf": args.person_conf, "ball_conf": args.ball_conf,
-        "overlap": ("nms_free" if args.nms_free else f"soft_nms_sigma{args.soft_nms_sigma:g}"
-                    if args.soft_nms_sigma > 0 else f"nms_iou{args.iou:g}"),
+        "overlap": (f"soft_nms_sigma{args.soft_nms_sigma:g}" if args.soft_nms_sigma > 0 else "nms_free"
+                    if args.nms_free else f"nms_iou{args.iou:g}"),
         "start_frame": start, "end_frame": end, "frames": n_frames,
         "rows": int(len(det)),
         "players_per_frame": round(len(players) / n_frames, 2),
