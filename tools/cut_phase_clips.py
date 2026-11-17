@@ -49,6 +49,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 from _common import (CONFIG_DIR, OUTPUTS_DIR, Progress, VideoWriter, clock_label, load_calibration, load_meta,
                      load_player_map, match_config, match_dir)
@@ -210,9 +211,10 @@ def load_team_rows(mdir, tmp_dir, match_id, team, segs):
     gk_ids = {int(t) for v in pm["players"].values()
               if v["team"] == team and v.get("role") == "GK" for t in v["track_ids"]}
     ignored = {int(i["track_id"]) for i in pm.get("ignored_tracks", [])}
-    tracks = pd.read_parquet(Path(mdir) / "tracks.parquet",
-                             columns=["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y",
-                                      "pitch_x", "pitch_y", "kit"])
+    path = Path(mdir) / "tracks.parquet"
+    cols = ["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y", "pitch_x", "pitch_y", "kit"]
+    names = pq.read_schema(path).names
+    tracks = pd.read_parquet(path, columns=cols + [c for c in ("absorbed_by",) if c in names])
     tracks = tracks[tracks["class"] == "player"]
     gk = tracks[tracks["track_id"].isin(list(gk_ids))]
     own_goal_x = 0.0 if (gk["pitch_x"].median() if len(gk) else 0.0) < 52.5 else 105.0
@@ -286,6 +288,8 @@ def track_run(rows_idx, tid, frames, fps, forbidden=(), handoff_s=3.0, vmax=8.0)
                     cur_tid, r, hand = best, cur[best], True
         if r is not None:
             last, seen = (float(r.pitch_x), float(r.pitch_y)), f
+            if not hand and pd.notna(getattr(r, "absorbed_by", np.nan)):
+                hand = "filled"  # duel fill from tools/duel_gaps.py: a position, not a detection
             out[f] = (cur_tid, float(r.pitch_x), float(r.pitch_y), float(r.foot_x), float(r.foot_y), hand)
         prev = set(cur)
     return out
@@ -325,7 +329,8 @@ def fill_gaps(obs, fps, H_at, lo, hi, fill_s=4.0, end_hold=12):
     (pixel-space interpolation is wrong while the camera pans; without a
     homography it falls back to pixels). Longer gaps stay open. The ends are
     held `end_hold` frames at the last pixel position."""
-    out = {f: (o[0], o[1], o[2], o[3], o[4], "link" if o[5] else "seen") for f, o in obs.items()}
+    out = {f: (o[0], o[1], o[2], o[3], o[4], o[5] if isinstance(o[5], str) else "link" if o[5] else "seen")
+           for f, o in obs.items()}
     fr = sorted(obs)
 
     def project(f, px, py):
