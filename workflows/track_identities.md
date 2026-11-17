@@ -212,7 +212,7 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   1 m off inside the merged box). All 3 flagged fills were real problems.
   `fill(gap, ctx)` is the plug-in for the gap-status labeller (status
   `absorbed`).
-- **Duel-split linking** (issue #48, opt-in `--duel-sigma-m 1.0`): when a
+- **Duel-split linking** (issue #48, on by default; `--duel-sigma-m 0` = off): when a
   tracklet ends within `--duel-m` 1.5 m of an opponent (a merged box), the
   linker prices successors by their distance from that partner's position
   (`duel_partners()`), and allows `--duel-reach-m` +2 m and
@@ -225,8 +225,15 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   frames in gaps > 10 s 172k -> 162k. 5 of 6 new links checked on video were
   right; one teammate merge was ambiguous. But Spurs suspected swaps rose
   14/90 -> 19/94. Some of that rise is newly evaluable contacts or shifted
-  team-shape averages, not wrong links, but the proxy can't separate them. It
-  stays off until a hand-labelled duel window can measure it.
+  team-shape averages, not wrong links; the proxy can't separate them. So the
+  92 links where the two runs disagree (50 events) were judged on video
+  instead: 24 sampled events, the new link right in 11, the old one in 3, and
+  10 undecidable from frames. The wins are mostly a white+blue merged box,
+  where the new link takes the player who comes out of it and the old one
+  jumped to a fragment 10-15 s later. The losses drop a correct immediate
+  continuation. Validate future linker changes the same way: render only
+  the disagreements and judge them (`/srv/football-data/exp48/scripts/
+  spot_dis.py`), rather than tune against the swap proxy.
   Diagnosis: of 222 duel gaps >= 1 s, 84 come back to the right identity, 85
   have no fragment near the partner, and 53 have a same-kit fragment near the
   partner that went unclaimed or to a teammate. About half of those are extra

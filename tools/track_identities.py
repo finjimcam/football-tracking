@@ -735,10 +735,9 @@ def main():
                         help="Weight of the team-shape term on links across a contact cut (0-1)")
     parser.add_argument("--w-vel", type=float, default=0.0,
                         help="Cost per 3 m/s of velocity change across links with gaps < 1 s")
-    parser.add_argument("--duel-sigma-m", type=float, default=0.0,
-                        help="Issue #48: a tracklet that ends within --duel-m of another person links cheaply to a "
-                             "successor that starts this close to that partner (sigma, metres). 0 = off (default "
-                             "until validated, see issue #48). Try 1.0")
+    parser.add_argument("--duel-sigma-m", type=float, default=1.0,
+                        help="Issue #48: a tracklet that ends within --duel-m of an opponent links cheaply to a "
+                             "successor that starts this close to that partner (sigma, metres). 0 = off")
     parser.add_argument("--duel-m", type=float, default=1.5, help="Duel distance at a tracklet's end, metres")
     parser.add_argument("--duel-reach-m", type=float, default=2.0,
                         help="Extra reach slack for links out of a tracklet that ended in a duel (merged-box foot jump)")
