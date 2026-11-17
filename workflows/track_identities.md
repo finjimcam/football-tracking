@@ -245,6 +245,22 @@ Local only (`.gitignore`: footage and anything cut from it):
 - **yolo26 duplicates**: its NMS-free head emits near-identical box pairs for
   ~8% of person boxes; unsuppressed they cut median tracklet length from ~190
   to ~45 frames. `suppress_duplicates()` (IoU 0.6) is mandatory.
+- **Which yolo26 head (issue #47, 2026-11-17)**: the cached half detections
+  came from the NMS-free one-to-one head (OpenVINO export). On pphub
+  (CUDA, ultralytics 8.4) `detect_frames.py` with default flags runs the
+  one-to-many head + NMS at IoU 0.7 instead. On a 4-min duel-heavy window
+  (frames 65250-71249) that gave 258 instead of 178 player track ids and a
+  median team tracklet of 121 instead of 193 frames, at the same coverage
+  (86%). Pass `--nms-free` to match the cached detections. Loosening NMS to
+  keep the hidden player in a duel did not help: `--iou 0.8/0.85` alone is
+  undone by the duplicate filter; with `track_identities.py --dup-iou` raised
+  to match, the duplicates triple to five-fold the tracklets, coverage
+  falls to 72% / 68% and suspected swaps rise from 2 to 8 / 17. Soft-NMS
+  (sigma 0.5) and `--imgsz 1536` didn't help player coverage either, though
+  1536 found the ball (conf >= 0.25) in 63% of frames instead of 54%.
+  Kit-aware duplicate suppression (keep overlapping opposite kits) rescued
+  < 0.01 boxes per frame: the hidden player's box reads the front player's
+  shirt. Treat the duel case downstream (gap filling), not in the detector.
 - **Kit colour flicker**: distant sky-blue washes towards white at 720p;
   hard thresholds left 22% of tracklets team-mixed. The self-trained colour
   model + flip-cutting brought that to ~5%.
