@@ -27,6 +27,7 @@ import pandas as pd
 from _common import (PITCH_LENGTH, PITCH_WIDTH, apply_calibration, load_calibration,
                      load_meta, load_player_map, load_team_map, load_tracks, match_config, match_dir,
                      resolve_track_teams, write_json)
+from gap_status import add_weight_args, status_weights, weights_from_args
 
 TEAM_COLORS = {"team_a": "#d62728", "team_b": "#1f77b4"}
 
@@ -49,12 +50,27 @@ def draw_pitch(ax, length, width):
     ax.axis("off")
 
 
-def heatmap_figure(xy, title, unit, length, width, calibrated, out_path):
+def position_hist(xy, extent, bins, weights=None):
+    """2-D histogram of positions; `weights` = per-row status weights
+    (gap_status.status_weights: detected 1, filled < 1, unknown has no row)."""
+    hist, _, _ = np.histogram2d(xy[:, 0], xy[:, 1], bins=bins, range=[extent[:2], extent[2:]], weights=weights)
+    return hist
+
+
+def weighted_mean(df, cols, w):
+    """Per-track weighted mean of `cols` (rows with weight 0 drop out)."""
+    d = df[cols].mul(w, axis=0)
+    d["_w"] = w
+    g = d.groupby(df["track_id"]).sum()
+    g = g[g["_w"] > 0]
+    return g[cols].div(g["_w"], axis=0)
+
+
+def heatmap_figure(xy, title, unit, length, width, calibrated, out_path, weights=None):
     fig, ax = plt.subplots(figsize=(9, 6.2))
     extent = (0, length, 0, width)  # meters if calibrated, else pixel frame dims
     bins = (int(length), int(width)) if calibrated else (80, 50)
-    hist, _, _ = np.histogram2d(xy[:, 0], xy[:, 1], bins=bins,
-                                range=[extent[:2], extent[2:]])
+    hist = position_hist(xy, extent, bins, weights)
     hist = cv2.GaussianBlur(hist.T.astype(np.float32), (0, 0), sigmaX=1.5)
     ax.imshow(hist, extent=(extent[0], extent[1], extent[3], extent[2]),
               cmap="hot", alpha=0.85, interpolation="bilinear", origin="upper")
@@ -91,7 +107,7 @@ def phase_figures(players, pm, timeline, cfg, length, width, fig_dir, figures):
         out[team] = {}
         for ax, (phase, holder) in zip(axes, (("in_possession", team), ("out_of_possession", other))):
             sub = sub_team[sub_team["state"] == holder]
-            avg = sub.groupby("track_id")[["pitch_x", "pitch_y"]].mean()
+            avg = weighted_mean(sub, ["pitch_x", "pitch_y"], sub["w"])
             draw_pitch(ax, length, width)
             ax.scatter(avg["pitch_x"], avg["pitch_y"], s=170, color=colors.get(team, "#444"),
                        edgecolors="black", zorder=3)
@@ -107,7 +123,7 @@ def phase_figures(players, pm, timeline, cfg, length, width, fig_dir, figures):
                         back.append(r["pitch_x"])
             if outfield:
                 xy = np.array(outfield)
-                m = {"frames": int(sub["frame"].nunique()),
+                m = {"frames": int(sub.loc[sub["status"] == "detected", "frame"].nunique()),
                      "defensive_line_m_from_own_goal": round(float(abs(np.mean(back) - own_goal)), 1) if back else None,
                      "avg_shape_length_m": round(float(np.ptp(xy[:, 0])), 1),
                      "avg_shape_width_m": round(float(np.ptp(xy[:, 1])), 1)}
@@ -130,6 +146,7 @@ def main():
     parser.add_argument("--calibration", default=None, help="Calibration file (default: config/<match_id>_calibration.json)")
     parser.add_argument("--config-dir", default="config")
     parser.add_argument("--tmp-dir", default=".tmp")
+    add_weight_args(parser)
     args = parser.parse_args()
 
     meta = load_meta(args.match_id, args.tmp_dir)
@@ -144,6 +161,11 @@ def main():
         length, width = meta["width"], meta["height"]
 
     players = tracks[tracks["class"] == "player"].copy()
+    # Gap status (gap_status.py): detected rows weigh 1, filled rows less,
+    # unknown stretches have no rows at all.
+    players["w"] = status_weights(players, weights_from_args(args))
+    players["status"] = players["status"].fillna("detected") if "status" in players else "detected"
+    players = players[players["w"] > 0]
     # Roster-space teams with curation applied: ignored tracks never match a
     # team below, so spectators stay off the heatmaps.
     pm = load_player_map(args.match_id, args.tmp_dir)
@@ -158,17 +180,22 @@ def main():
 
     teams, figures = {}, {}
     for team in ("team_a", "team_b"):
-        pts = players.loc[players["team"] == team, ["pitch_x", "pitch_y"]].to_numpy()
+        sel = players["team"] == team
+        pts = players.loc[sel, ["pitch_x", "pitch_y"]].to_numpy()
+        w = players.loc[sel, "w"].to_numpy()
         if len(pts) == 0:
             print(f"WARNING: no points for {team} — skipping its heatmap")
             continue
+        st = players.loc[sel, "status"]
         teams[team] = {
-            "avg_x": round(float(pts[:, 0].mean()), 2),
-            "avg_y": round(float(pts[:, 1].mean()), 2),
-            "n_points": len(pts),
+            "avg_x": round(float(np.average(pts[:, 0], weights=w)), 2),
+            "avg_y": round(float(np.average(pts[:, 1], weights=w)), 2),
+            "n_points": int((st == "detected").sum()),
+            "n_filled_points": int((st != "detected").sum()),
+            "weighted_points": round(float(w.sum()), 1),
         }
         out = fig_dir / f"heatmap_{team}.png"
-        heatmap_figure(pts, f"Positional heatmap — {team}", unit, length, width, calibrated, out)
+        heatmap_figure(pts, f"Positional heatmap — {team}", unit, length, width, calibrated, out, weights=w)
         figures[f"heatmap_{team}"] = str(out)
 
     # Average-position map: one dot per track (players' typical spot), colored by team.
@@ -183,7 +210,7 @@ def main():
         ax.set_ylabel("y (px)")
     for team in teams:
         sub = players[players["team"] == team]
-        avg = sub.groupby("track_id")[["pitch_x", "pitch_y"]].mean()
+        avg = weighted_mean(sub, ["pitch_x", "pitch_y"], sub["w"])
         ax.scatter(avg["pitch_x"], avg["pitch_y"], s=60, label=team,
                    color=TEAM_COLORS[team], edgecolors="white", zorder=3)
     ax.legend(loc="upper right")
@@ -201,6 +228,7 @@ def main():
                                     length, width, fig_dir, figures)
 
     result = {"calibrated": calibrated, "unit": unit, "teams": teams, "figures": figures,
+              "status_weights": weights_from_args(args),
               "by_phase": phase_shape}
     out = write_json(match_dir(args.match_id, args.tmp_dir) / "positions.json", result)
     for team, t in teams.items():

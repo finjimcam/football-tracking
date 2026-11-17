@@ -28,6 +28,7 @@ from _common import clock_label, load_calibration, load_meta, match_config  # no
 from cut_phase_clips import (build_chains, entry_slots, export_path, export_range,  # noqa: E402
                              homography_lookup, index_rows, load_export, load_selection, load_team_rows,
                              norm_anchors, phases, save_export, save_selection, selection_path)
+from gap_status import absorbed_lookup  # noqa: E402
 from select_shape_players import auto_slots, pick_keyframe, relink_target  # noqa: E402
 
 PHASE = "out_of_possession"
@@ -65,6 +66,8 @@ class MatchLines:
         self.rows_by_frame, self.own_goal_x = load_team_rows(mdir, self.tmp_dir, match_id, team, self.segs)
         self.rows_idx = index_rows(self.rows_by_frame)
         self.H_at = homography_lookup(load_calibration(match_id, self.config_dir))
+        gaps_p = mdir / "gaps.parquet"  # gap_status.py: which fills are duel gaps
+        self.is_absorbed = absorbed_lookup(pd.read_parquet(gaps_p) if gaps_p.exists() else None)
         self.sel_path = selection_path(match_id, team, PHASE, self.config_dir)
         self.exp_path = export_path(match_id, team, PHASE, self.config_dir)
         self.lock = threading.Lock()
@@ -92,13 +95,16 @@ class MatchLines:
 
     def _chains_json(self, chains, s, e):
         """Per chain: line, and per frame [tid, foot_x, foot_y, pitch_y, status]
-        (status s=seen, l=link (hand-off), f=filled). Missing frame = lost."""
+        (status s=seen, l=link (hand-off), f=filled, a=filled inside a duel gap
+        where the player was hidden by another (gap_status.py "absorbed")).
+        Missing frame = lost (gap_status "unknown")."""
         out = []
         for ch in chains:
             pts = {}
             for f, (tid, _px, py, fx, fy, st) in ch["pts"].items():
                 if s <= f <= e:
-                    pts[f] = [int(tid), round(fx, 1), round(fy, 1), round(py, 2), st[0]]
+                    code = "a" if st == "filled" and self.is_absorbed(tid, f) else st[0]
+                    pts[f] = [int(tid), round(fx, 1), round(fy, 1), round(py, 2), code]
             out.append({"line": ch["line"], "pts": pts})
         return out
 

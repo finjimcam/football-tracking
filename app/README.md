@@ -36,7 +36,8 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   picked chain, that chain swaps back too. Cut anchors are saved as
   `[frame, track_id, 1]` ("from this frame on"), which the renderer and the
   CLI picker understand. A strip under the frame shows each chain as green (detected), amber
-  (filled) or red (lost), with white ticks at hand-offs. Picks are saved to
+  (filled), blue (filled inside a duel gap, `absorbed` in `gaps.parquet`) or
+  red (lost), with white ticks at hand-offs. Picks are saved to
   the same `config/<id>_<team>_out_of_possession_shape_selection.json` the
   CLI picker uses, so either one can carry on from the other.
   **Render picked lines** queues `cut_phase_clips.py --shape-selection`.

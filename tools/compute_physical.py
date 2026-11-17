@@ -8,6 +8,13 @@ lost the player), and calibrated speeds > 12 m/s are dropped as tracking
 glitches (uncalibrated: top 0.5% of speeds dropped instead, since px/s has no
 absolute ceiling).
 
+Gap status (gap_status.py): filled rows (interpolated / absorbed, gaps up to
+a few seconds) bridge short gaps, so their steps count towards distance and
+time on the pitch (a straight-line fill is a lower bound on the distance
+actually run) and are reported separately as distance_filled; speed peaks
+(max_speed, top_speed_p99) come from steps between two detections only.
+Unknown stretches have no rows and stay excluded.
+
 Team totals are the primary numbers. If player_map.json exists (label_roster.py
 + assign_identities.py), per-player figures are aggregated across each
 player's track fragments and reported by shirt number ("players" section,
@@ -25,6 +32,7 @@ import numpy as np
 
 from _common import (apply_calibration, load_calibration, load_meta, load_player_map,
                      load_team_map, load_tracks, match_dir, resolve_track_teams, write_json)
+from gap_status import status_of
 
 
 def main():
@@ -65,6 +73,8 @@ def main():
         x = grp["pitch_x"].rolling(window, min_periods=1, center=True).mean().to_numpy()
         y = grp["pitch_y"].rolling(window, min_periods=1, center=True).mean().to_numpy()
         t = grp["t_s"].to_numpy()
+        det = (status_of(grp) == "detected").to_numpy()
+        measured = det[1:] & det[:-1]  # both ends real detections
         dt = np.diff(t)
         step = np.hypot(np.diff(x), np.diff(y))
         keep = dt <= args.max_gap_s
@@ -74,9 +84,9 @@ def main():
         per_track.append({
             "track_id": int(tid),
             "team": grp["team"].iloc[0],
-            "_step": step, "_speed": speed, "_keep": keep, "_dt": dt,
+            "_step": step, "_speed": speed, "_keep": keep, "_dt": dt, "_measured": measured,
         })
-        all_speeds.append(speed[keep])
+        all_speeds.append(speed[keep & measured])
 
     if not per_track:
         raise SystemExit("No player track long enough to compute physical stats")
@@ -90,15 +100,17 @@ def main():
     track_rows = []
     for tr in per_track:
         keep = tr["_keep"]
+        peak = keep & tr["_measured"]
         track_rows.append({
             "track_id": tr["track_id"],
             "team": tr["team"],
             "distance": round(float(tr["_step"][keep].sum()), 1),
+            "distance_filled": round(float(tr["_step"][keep & ~tr["_measured"]].sum()), 1),
             "duration_s": round(float(tr["_dt"][keep].sum()), 1),
-            "max_speed": round(float(tr["_speed"][keep].max()), 2) if keep.any() else 0.0,
+            "max_speed": round(float(tr["_speed"][peak].max()), 2) if peak.any() else 0.0,
             # Robust top speed: on broadcast footage the raw max sits at the
             # glitch cap (tracking jumps), so the 99th percentile is reported too.
-            "top_speed_p99": round(float(np.percentile(tr["_speed"][keep], 99)), 2) if keep.sum() >= 50 else None,
+            "top_speed_p99": round(float(np.percentile(tr["_speed"][peak], 99)), 2) if peak.sum() >= 50 else None,
         })
     track_rows.sort(key=lambda r: r["distance"], reverse=True)
 
@@ -117,6 +129,7 @@ def main():
             players_out.append({
                 "player": key, "team": info["team"], "number": info["number"],
                 "distance": round(dist, 1),
+                "distance_filled": round(sum(r["distance_filled"] for r in rows), 1),
                 "duration_s": round(dur, 1),
                 "avg_speed": round(dist / dur, 2) if dur else 0.0,
                 "max_speed": max(r["max_speed"] for r in rows),
@@ -135,6 +148,7 @@ def main():
         dur = sum(r["duration_s"] for r in rows)
         teams[team] = {
             "distance_total": round(dist, 1),
+            "distance_filled": round(sum(r["distance_filled"] for r in rows), 1),
             "avg_speed": round(dist / dur, 2) if dur else 0.0,
             "max_speed": max(r["max_speed"] for r in rows),
             "n_tracks": len(rows),

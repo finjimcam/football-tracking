@@ -49,9 +49,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 from _common import (CONFIG_DIR, OUTPUTS_DIR, Progress, VideoWriter, clock_label, load_calibration, load_meta,
                      load_player_map, match_config, match_dir)
+from gap_status import observed
 
 BAR_H = 30
 
@@ -210,10 +212,13 @@ def load_team_rows(mdir, tmp_dir, match_id, team, segs):
     gk_ids = {int(t) for v in pm["players"].values()
               if v["team"] == team and v.get("role") == "GK" for t in v["track_ids"]}
     ignored = {int(i["track_id"]) for i in pm.get("ignored_tracks", [])}
-    tracks = pd.read_parquet(Path(mdir) / "tracks.parquet",
-                             columns=["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y",
-                                      "pitch_x", "pitch_y", "kit"])
-    tracks = tracks[tracks["class"] == "player"]
+    cols = ["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y", "pitch_x", "pitch_y", "kit"]
+    path = Path(mdir) / "tracks.parquet"
+    has_status = "status" in pq.read_schema(path).names
+    tracks = pd.read_parquet(path, columns=cols + (["status"] if has_status else []))
+    # Chains follow real detections and fill their own gaps (fill_gaps); the
+    # pipeline's fill rows (gap_status.py) only colour those fills in the UI.
+    tracks = observed(tracks[tracks["class"] == "player"])
     gk = tracks[tracks["track_id"].isin(list(gk_ids))]
     own_goal_x = 0.0 if (gk["pitch_x"].median() if len(gk) else 0.0) < 52.5 else 105.0
     mine = (tracks["track_id"].isin(list(team_ids - gk_ids))
