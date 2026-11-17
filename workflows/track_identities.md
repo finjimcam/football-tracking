@@ -178,6 +178,47 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   same-team contacts so the global linker decides who is who. `--w-vel` adds
   velocity continuity to short links. Experiments, and the standing
   improvement loop, are tracked in issue #35.
+- **Short-gap fill** (`interp_gaps.py`, issue #47 item 4): `track_identities.py`
+  fills identity gaps of up to `--interp-max-s` (default 3 s, 0 = off) before
+  writing tracks.parquet. Each gap is filled with a constant-velocity Kalman
+  filter and RTS smoother run over the player's own sightings 1 s either side.
+  The curve is shifted so it joins both sightings exactly. The fill keeps the
+  player's velocity through the gap, where a straight line has a kink at each
+  end. Peak speed is capped at 10 m/s and acceleration at 8 m/s²: if the curve
+  breaks either cap, the straight line is used instead. If even the straight
+  line needs more than 10 m/s, the gap stays empty, because that is a tracking
+  jump rather than a hidden player. Gaps whose last sighting was within 1.5 m
+  of another identity are skipped (duels belong to the duel filler). Fill rows
+  carry `interp=True`, `status="interpolated"`, `conf=0`, a foot point
+  projected through that frame's homography, and a box. Lines chains and
+  `contact_swaps.py` drop them (`strip_fill`). `python tools/interp_gaps.py
+  --match-id <id>` re-applies the fill to an existing tracks.parquet, and
+  `--holdout` prints the error table.
+  **Hold-out test (2026-11-17):** fully seen stretches were blanked and
+  refilled, and the fill was compared with the hidden detections. Parameters
+  were tuned on even match minutes and the table below is from the odd
+  minutes, 600 stretches per length. Values are mean / p95 of each stretch's
+  mean error in metres:
+
+  | gap | straight line | RTS |
+  |---|---|---|
+  | 0.5 s | 0.15 / 0.32 | 0.15 / 0.32 |
+  | 1 s | 0.20 / 0.44 | 0.18 / 0.37 |
+  | 2 s | 0.39 / 0.87 | 0.27 / 0.56 |
+  | 3 s | 0.71 / 1.76 | 0.41 / 0.96 |
+  | 5 s | 1.30 / 3.01 | 0.72 / 1.83 |
+  | 8 s | 2.48 / 5.55 | 1.47 / 3.22 |
+  | 10 s | 3.21 / 7.10 | 2.07 / 4.78 |
+
+  RTS at 5 s is about as accurate as the straight line at 3 s. A cubic
+  Hermite spline came close to RTS but was slightly worse at every length.
+  These stretches were on camera, while real gaps often happen off camera, so
+  treat the table as a lower bound on the error. On the reference half the
+  fill covered 12,219 of 15,322 gaps (44k frames). Missing frames in gaps
+  under 3 s fell from 55k to 12k. It skipped 1,774 duel-like gaps and 958
+  implausible jumps. Team distance rose about 1%, and the median p99 top speed
+  fell from about 7.1 to 6.6 m/s. The filled stretches are smooth, so count
+  them for distance but not for speed peaks.
 - **Verification** (`verify_tracking.py`): see "Reading the verification".
 
 ## Reading the verification ("does it match?")

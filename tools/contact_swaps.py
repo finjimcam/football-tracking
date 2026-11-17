@@ -28,8 +28,10 @@ import json
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 from _common import load_meta, match_dir, write_json
+from interp_gaps import strip_fill
 
 TEAM_IDS = {"team_a": range(2, 12), "team_b": range(102, 112)}  # outfield identities
 
@@ -111,7 +113,12 @@ def main():
     a = ap.parse_args()
     meta = load_meta(a.match_id, a.tmp_dir)
     mdir = match_dir(a.match_id, a.tmp_dir)
-    tracks = pd.read_parquet(mdir / "tracks.parquet", columns=["frame", "track_id", "class", "pitch_x", "pitch_y"])
+    cols = ["frame", "track_id", "class", "pitch_x", "pitch_y"]
+    if "interp" in pq.read_schema(mdir / "tracks.parquet").names:
+        cols.append("interp")
+    # detected positions only: interp_gaps.py fill rows would add contacts
+    # the camera never saw (a straight/smoothed path through a teammate)
+    tracks = strip_fill(pd.read_parquet(mdir / "tracks.parquet", columns=cols))
     res = evaluate(tracks, meta["fps"], contact_m=a.contact_m, margin_m=a.margin_m)
     write_json(mdir / "contact_swaps.json", res)
     for team, r in res.items():

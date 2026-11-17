@@ -52,6 +52,7 @@ import pandas as pd
 
 from _common import (CONFIG_DIR, OUTPUTS_DIR, Progress, VideoWriter, clock_label, load_calibration, load_meta,
                      load_player_map, match_config, match_dir)
+from interp_gaps import strip_fill
 
 BAR_H = 30
 
@@ -210,10 +211,11 @@ def load_team_rows(mdir, tmp_dir, match_id, team, segs):
     gk_ids = {int(t) for v in pm["players"].values()
               if v["team"] == team and v.get("role") == "GK" for t in v["track_ids"]}
     ignored = {int(i["track_id"]) for i in pm.get("ignored_tracks", [])}
-    tracks = pd.read_parquet(Path(mdir) / "tracks.parquet",
-                             columns=["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y",
-                                      "pitch_x", "pitch_y", "kit"])
-    tracks = tracks[tracks["class"] == "player"]
+    tracks = strip_fill(pd.read_parquet(Path(mdir) / "tracks.parquet"))
+    # interp_gaps.py fill rows are dropped: chains do their own gap fill and
+    # must show those frames as filled, not seen.
+    tracks = tracks[tracks["class"] == "player"][["frame", "track_id", "x1", "y1", "x2", "y2", "foot_x", "foot_y",
+                                                  "pitch_x", "pitch_y", "kit"]]
     gk = tracks[tracks["track_id"].isin(list(gk_ids))]
     own_goal_x = 0.0 if (gk["pitch_x"].median() if len(gk) else 0.0) < 52.5 else 105.0
     mine = (tracks["track_id"].isin(list(team_ids - gk_ids))

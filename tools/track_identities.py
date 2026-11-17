@@ -53,6 +53,7 @@ from scipy.optimize import linear_sum_assignment
 
 from _common import (apply_calibration, load_calibration, load_meta, match_config, match_dir,
                      pitch_dims, read_json, reference_path, write_json)
+from interp_gaps import fill_tracks
 
 TEAMS = ("team_a", "team_b")
 KIT_LABELS = ("team_a", "team_b", "gk_a", "gk_b", "official")
@@ -663,6 +664,9 @@ def main():
                         help="Weight of the team-shape term on links across a contact cut (0-1)")
     parser.add_argument("--w-vel", type=float, default=0.0,
                         help="Cost per 3 m/s of velocity change across links with gaps < 1 s")
+    parser.add_argument("--interp-max-s", type=float, default=3.0,
+                        help="Fill identity gaps up to this long with a Kalman (RTS) smoother in pitch space "
+                             "(tools/interp_gaps.py; rows get interp=True, status='interpolated'). 0 = off")
     parser.add_argument("--no-stability", action="store_true", help="Skip the perturbed re-solves")
     parser.add_argument("--reuse-tracklets", action="store_true",
                         help="Reuse tracklets_cache.parquet from the last run: re-run only linking + outputs "
@@ -808,6 +812,11 @@ def main():
     tracks = pd.concat([p[cols + ["pitch_x", "pitch_y", "tracklet", "kit", "p_team_a"]], balls[cols]],
                        ignore_index=True)
     tracks = tracks.sort_values(["frame", "class", "track_id"]).reset_index(drop=True)
+    if a.interp_max_s > 0:  # issue #47: short "lost nearby" gaps -> smoothed fill
+        tracks, st = fill_tracks(tracks, fps, lambda f: w2i.get(f), max_gap_s=a.interp_max_s)
+        print(f"  interpolated {st['filled']} of {st['gaps']} identity gaps <= {a.interp_max_s} s "
+              f"({st['frames_filled']} frames; {st['duel_skipped']} duel-like left to the duel filler, "
+              f"{st['too_long']} longer)")
     tracks.to_parquet(mdir / "tracks.parquet", index=False)
 
     # 6. names + player_map / team_map
