@@ -39,6 +39,7 @@ out-of-possession phases) from it.
 | 1 | `tools/detect_frames.py` | **~55 min on the iGPU** (OpenVINO, 21 fps) - the only expensive step | `detections.parquet` (+ resumable chunks) |
 | 2 | `tools/calibrate_auto.py` | ~55 min CPU, runs *concurrently* with step 1 (it waits for detection chunks) | `frame_homographies.npz`, calibration -> `"dynamic"` |
 | 3 | `tools/track_identities.py` | ~10 min (two tracking passes + 8 flow solves); `--reuse-tracklets` re-links from its cache in ~3 min | `tracks.parquet`, `player_map.json`, `team_map.json`, `identity_links.parquet`, `tracklets_cache.parquet` |
+| 3b | `tools/duel_gaps.py` (optional, issue #47) | ~6 s | duel-gap fill rows in `tracks.parquet` (`interp`, `absorbed_by`), `duel_gaps.json` review list |
 | 4 | `tools/track_ball.py` | < 1 min | cleaned ball rows in `tracks.parquet`, `ball_track.parquet` |
 | 5 | `tools/compute_possession.py --include-unidentified` | < 1 min | `possession.json`, `possession_timeline.parquet` |
 | 6 | `tools/compute_physical.py --smooth-s 1.0`, `tools/compute_positions.py` | < 1 min | `physical.json`, `positions.json` + figures |
@@ -58,6 +59,7 @@ python tools/ingest_video.py --video "<video>.mp4" --config config/<id>_match.js
 python tools/detect_frames.py --match-id <id>                       # background, ~55 min
 python tools/calibrate_auto.py --match-id <id> --check-frames 5000,30000,60000   # background, concurrently
 python tools/track_identities.py --match-id <id>
+python tools/duel_gaps.py --match-id <id>                           # optional: fill duel gaps
 python tools/track_ball.py --match-id <id>
 python tools/compute_possession.py --match-id <id> --include-unidentified
 python tools/compute_physical.py --match-id <id> --smooth-s 1.0
@@ -187,6 +189,25 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   verification, renders and the Lines chains read detected rows only
   (`gap_status.observed()`). New fillers (duel filler, smoother) plug in
   through `label_tracks(..., classify=, fillers={kind: fn})`.
+- **Duel gaps** (`duel_gaps.py`, issue #47 item 3): a player who vanishes
+  within 1.5 m of another tracked person, and comes back within 2.5 m of
+  that same person, was hidden behind them in a merged box. The gap is
+  filled with the partner's path plus an offset blended from the entry
+  offset to the exit offset. The partner must be one tracklet through the
+  gap (a partner chain re-linked mid-gap once jumped onto the referee). At
+  the split the fill is checked: kit colour while the two stand > 1.2 m
+  apart (opponents can't swap teams), and for teammates exit motion and
+  side. A failed check goes to `duel_gaps.json` for review and is not
+  written. Filled rows have `interp=True`, `conf` 0, `absorbed_by` = the
+  partner's track id ("k+P together"), and show amber ("filled") in the
+  Lines tab. Re-runs replace the previous fill. On the 2026-11-17 reference
+  run: 2,023 duel gaps, 1,536 filled (6,488 frames), 69 flagged, 418 with no
+  usable partner. Most duel gaps are under 1 s, and only 40 last 3-10 s
+  (4 filled). In longer duel gaps the player usually comes back far from
+  the partner. Spot check: 9 of 10 fills on the right player (two about
+  1 m off inside the merged box). All 3 flagged fills were real problems.
+  `fill(gap, ctx)` is the plug-in for the gap-status labeller (status
+  `absorbed`).
 - **Contact swaps** (`contact_swaps.py`, issue #34): this is a proxy for
   identities that swap when two teammates collide. Take each identity's
   average place in the team shape for 3 s before and 3 s after every contact
