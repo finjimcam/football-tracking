@@ -53,6 +53,7 @@ from scipy.optimize import linear_sum_assignment
 
 from _common import (apply_calibration, load_calibration, load_meta, match_config, match_dir,
                      pitch_dims, read_json, reference_path, write_json)
+from gap_status import homography_to_image, label_tracks
 
 TEAMS = ("team_a", "team_b")
 KIT_LABELS = ("team_a", "team_b", "gk_a", "gk_b", "official")
@@ -664,6 +665,8 @@ def main():
     parser.add_argument("--w-vel", type=float, default=0.0,
                         help="Cost per 3 m/s of velocity change across links with gaps < 1 s")
     parser.add_argument("--no-stability", action="store_true", help="Skip the perturbed re-solves")
+    parser.add_argument("--no-gap-status", action="store_true",
+                        help="Write detections only (no status column / gap fill rows, see gap_status.py)")
     parser.add_argument("--reuse-tracklets", action="store_true",
                         help="Reuse tracklets_cache.parquet from the last run: re-run only linking + outputs "
                              "(for tuning the linker in minutes instead of ~15)")
@@ -808,6 +811,18 @@ def main():
     tracks = pd.concat([p[cols + ["pitch_x", "pitch_y", "tracklet", "kit", "p_team_a"]], balls[cols]],
                        ignore_index=True)
     tracks = tracks.sort_values(["frame", "class", "track_id"]).reset_index(drop=True)
+    if not a.no_gap_status:
+        # Gap labelling (issue #47): status column + fill rows for short gaps,
+        # one row per gap in gaps.parquet. Re-runnable alone: tools/gap_status.py.
+        not_players = {10000 + int(t) for t, c in zip(tl["tracklet"], tl["cls"])
+                       if c in ("official", "off_pitch", "gk_b")}
+        idents = [*range(1, 12), *range(101, 112)]
+        tracks, gaps = label_tracks(tracks, fps, track_ids=idents, window=(f_lo, f_hi),
+                                    to_image=homography_to_image(calib), exclude_partners=not_players)
+        gaps.to_parquet(mdir / "gaps.parquet", index=False)
+        print("  gap status: " + ", ".join(f"{k} {v}" for k, v in gaps["kind"].value_counts().items())
+              + " gaps; fill rows " + ", ".join(f"{k} {v}" for k, v in tracks["status"].value_counts().items()
+                                                 if k != "detected"))
     tracks.to_parquet(mdir / "tracks.parquet", index=False)
 
     # 6. names + player_map / team_map
