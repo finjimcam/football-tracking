@@ -1052,6 +1052,18 @@ def infer_names(det, ref):
 
 
 # --------------------------------------------------------------------------
+def wide_frames(p, ratio):
+    """Frames shot zoomed out (players tiny, the detector's confidence low,
+    e.g. Korea v Czechia's kick-off: 0.60 x the match's usual box height):
+    median person box shorter than `ratio` x the median over all frames.
+    Relative, because the usual size depends on the feed (Man City v Spurs'
+    whole match is smaller than Korea's wide shot; it has no frame < 0.6)."""
+    if not len(p) or ratio <= 0:
+        return set()
+    med = (p["y2"] - p["y1"]).groupby(p["frame"]).median()
+    return set(med.index[med < ratio * med.median()].astype(int))
+
+
 def rebase_track_edits(match_id, config_dir, tracks, pm):
     """The Tracking tab's hand fixes were made against the old ids: move them
     onto the new ones (track_edits.rebase). Naming fixes are retired: their
@@ -1078,6 +1090,12 @@ def main():
     parser.add_argument("--match-id", required=True)
     parser.add_argument("--min-conf", type=float, default=0.15, help="Ignore weaker person boxes")
     parser.add_argument("--new-conf", type=float, default=0.35, help="Min confidence to start a tracklet")
+    parser.add_argument("--wide-ratio", type=float, default=0.65,
+                        help="A frame whose median player box is shorter than this fraction of the match's "
+                             "median is a zoomed-out wide view (e.g. the kick-off shot): it uses the "
+                             "--*-conf-wide thresholds. 0 = off")
+    parser.add_argument("--min-conf-wide", type=float, default=0.10)
+    parser.add_argument("--new-conf-wide", type=float, default=0.15)
     parser.add_argument("--gate", type=float, default=1.2, help="Association gate, metres")
     parser.add_argument("--gate-step", type=float, default=0.3, help="Gate growth per missed frame, metres")
     parser.add_argument("--gate-max", type=float, default=3.0)
@@ -1166,7 +1184,13 @@ def main():
         p, tl = pd.read_parquet(cache_p), pd.read_parquet(cache_tl)
         print(f"[{a.match_id}] reusing cached tracklets ({len(tl)} tracklets, {len(p)} detections)")
     else:
-        p = det[(det["class"] == "player") & (det["conf"] >= a.min_conf)].reset_index(drop=True)
+        p = det[det["class"] == "player"]
+        wide = wide_frames(p, a.wide_ratio)
+        in_wide = p["frame"].isin(wide).to_numpy()
+        p = p[p["conf"].to_numpy() >= np.where(in_wide, a.min_conf_wide, a.min_conf)].reset_index(drop=True)
+        if wide:
+            print(f"  {len(wide)} zoomed-out wide-view frame(s) (median box < {a.wide_ratio:g} x the match's): confidence "
+                  f"thresholds {a.min_conf_wide}/{a.new_conf_wide} there instead of {a.min_conf}/{a.new_conf}")
         n_before = len(p)
         p = suppress_duplicates(p)
         print(f"[{a.match_id}] dropped {n_before - len(p)} duplicate person boxes "
@@ -1182,8 +1206,12 @@ def main():
         # from its pure tracklets, relabel, then re-track with the cleaner kits.
         def track(kit_penalty):
             a.kit_penalty = kit_penalty
+            # build_tracklets only uses conf to decide who may start a tracklet: scale
+            # wide-view boxes so new_conf_wide there acts as new_conf
+            c = p["conf"].to_numpy()
+            c = np.where(p["frame"].isin(wide).to_numpy(), c * a.new_conf / a.new_conf_wide, c)
             return build_tracklets(
-                p["frame"].to_numpy(), p["pitch_x"].to_numpy(), p["pitch_y"].to_numpy(), p["conf"].to_numpy(),
+                p["frame"].to_numpy(), p["pitch_x"].to_numpy(), p["pitch_y"].to_numpy(), c,
                 p["kit"].to_numpy(), lambda f: w2i[f], (meta["width"], meta["height"]),
                 lambda f: status.get(f, 0) != 3, fps, a)
 

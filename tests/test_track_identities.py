@@ -249,3 +249,14 @@ def test_kit_colour_extra_classes_only_when_named():
     assert base[0] != "yellow" and base[1] != "mint"
     got = list(T.kit_colour(d, extra={"yellow", "mint"}))
     assert got == ["yellow", "mint", "mint", "green", "orange", "white"]
+
+
+def test_wide_frames_are_relative_to_the_match():
+    import pandas as pd
+    from track_identities import wide_frames
+    rows = [(f, 0.0, 50.0 if f >= 10 else 30.0) for f in range(40) for _ in range(5)]
+    p = pd.DataFrame(rows, columns=["frame", "y1", "y2"])
+    assert wide_frames(p, 0.65) == set(range(10))
+    assert wide_frames(p, 0) == set()
+    small = p.assign(y2=p["y2"] * 0.5)  # a feed that is smaller everywhere: same answer
+    assert wide_frames(small, 0.65) == set(range(10))
