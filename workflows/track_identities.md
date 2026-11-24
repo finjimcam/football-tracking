@@ -97,6 +97,13 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   (top-hat filter, truncated chamfer distance). Re-anchoring every frame to
   the painted lines is what keeps it drift-free for 47 minutes. Check the
   `--check-frames` overlays in `.tmp/<id>/calib_check/`.
+  If the log says "self-calibration on 1 searched views" (or few), the global
+  search is locking onto false fits - typically steep, zoomed-out views at the
+  top of the tilt range. Read the seed view's tilt / focal length and narrow
+  the search around them with `--search-tilt MIN,MAX --search-focal MIN,MAX`
+  (Korea v Czechia, seed tilt 20.7 deg / f 2866 px: `14,28` and `1400,5000`
+  took the hit rate from 1/16 to ~2/3; the misses are midfield views with
+  only the halfway line and circle, which is harmless).
 - **Identities** (`track_identities.py`): duplicate-box suppression ->
   pitch-space tracklets -> a self-trained team colour model (gradient-boosted
   on pure tracklets) relabels flickering kits -> re-track -> cut tracklets at

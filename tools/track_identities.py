@@ -112,13 +112,22 @@ def suppress_duplicates(p, iou_thresh=0.6):
     return p[keep].reset_index(drop=True)
 
 
-def kit_colour(det):
+def kit_colour(det, extra=()):
     """Colour class per detection from detect_frames.py's shirt Lab median.
     Thresholds were set on this broadcast's crops (see the workflow):
     sky = City shirts, white = Spurs shirts, orange = Lloris, dark =
     officials/staff. 'green' = torso reads as grass (shirt_n ~ 0): Ederson's
     all-green kit - but also any box too small to read, so it is only a weak
-    vote, combined with position at tracklet level."""
+    vote, combined with position at tracklet level.
+
+    `extra` switches on classes that only some matches use (pass the match
+    config's kits map; a class is applied only if the map names it, so
+    matches that don't use it classify exactly as before). Set on Korea v
+    Czechia (WC26) crops:
+      mint   = referees in mint green: the shirt reads as grass or as a pale
+               green (a < 119, b < 150), over dark, neutral shorts.
+      yellow = an all-yellow keeper (a < 118, b > 150). Without it he reads
+               as 'white'. Hi-vis stewards match too, but stand off the pitch."""
     L, a, b = det["shirt_L"].to_numpy(), det["shirt_a"].to_numpy(), det["shirt_b"].to_numpy()
     n = det["shirt_n"].to_numpy()
     h = (det["y2"] - det["y1"]).to_numpy()
@@ -135,6 +144,12 @@ def kit_colour(det):
         out[ok & (L >= 105) & (b < 126.5) & (a < 135)] = "sky"
         out[ok & (L >= 175) & (b >= 129) & (a < 135)] = "white"
         out[ok & (a > 138) & (b > 140)] = "orange"
+        if "mint" in extra:
+            sL, sa, sn = (det[c].to_numpy() for c in ("shorts_L", "shorts_a", "shorts_n"))
+            dark_shorts = (sn >= 4) & (sL < 60) & (sa < 128)
+            out[dark_shorts & (green | (ok & (a < 119) & (b < 150)))] = "mint"
+        if "yellow" in extra:
+            out[ok & (L >= 105) & (a < 118) & (b > 150)] = "yellow"
     return out
 
 
@@ -1136,7 +1151,7 @@ def main():
         print(f"[{a.match_id}] dropped {n_before - len(p)} duplicate person boxes "
               f"({(n_before - len(p)) / n_before:.1%})")
         p, _ = apply_calibration(p, calib)
-        colour = kit_colour(p)
+        colour = kit_colour(p, extra=set(kits))
         p["kit"] = [kits.get(c, "unknown") for c in colour]
         p = p[p["pitch_x"].between(-8, L + 8) & p["pitch_y"].between(-8, W + 8)].reset_index(drop=True)
         print(f"  {len(p)} person detections near the pitch over frames {f_lo}-{f_hi}; kit mix: "

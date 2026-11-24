@@ -226,3 +226,26 @@ def test_assign_by_elimination_gives_a_loose_tracklet_to_the_only_player_off_scr
     roles = pd.DataFrame({"rx": [0.0, 5.0, 5.0, 5.0], "ry": [-10.0, 10.0, 10.0, 10.0]}, index=[0, 1, 2, 3])
     n = T.assign_by_elimination(tl, roles, 25.0, a, [2, 3])
     assert n == 1 and tl.loc[tl.tracklet == 3, "identity"].iat[0] == 3
+def _kit_rows(rows):
+    """rows: (shirt_L, shirt_a, shirt_b, shirt_n, shorts_L, shorts_a, shorts_n), 20x60 px boxes."""
+    cols = ["shirt_L", "shirt_a", "shirt_b", "shirt_n", "shorts_L", "shorts_a", "shorts_n"]
+    d = pd.DataFrame(rows, columns=cols, dtype=float)
+    d["shorts_b"] = 130.0
+    d["x1"], d["x2"], d["y1"], d["y2"] = 0.0, 20.0, 0.0, 60.0
+    return d
+
+
+def test_kit_colour_extra_classes_only_when_named():
+    d = _kit_rows([
+        (140, 113, 173, 200, 25, 120, 50),   # yellow keeper
+        (160, 115, 140, 100, 25, 120, 50),   # mint referee shirt, black shorts
+        (150, 115, 140, 0, 25, 120, 50),     # referee shirt masked as grass, black shorts
+        (150, 115, 140, 0, 25, 134, 50),     # grass-masked shirt over red shorts: not a referee
+        (113, 149, 154, 200, 82, 134, 50),   # red outfield shirt
+        (181, 125, 134, 200, 182, 124, 50),  # white outfield shirt
+    ])
+    base = T.kit_colour(d)
+    assert list(T.kit_colour(d, extra={"sky", "white"})) == list(base)  # unnamed extras change nothing
+    assert base[0] != "yellow" and base[1] != "mint"
+    got = list(T.kit_colour(d, extra={"yellow", "mint"}))
+    assert got == ["yellow", "mint", "mint", "green", "orange", "white"]
