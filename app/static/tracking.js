@@ -321,7 +321,7 @@ export async function viewTracking(view, parts, params, ui) {
     const relinkBtn = btn(active ? 'Re-linking…' : 'Re-link whole half', 'Re-run identities so every player\'s track passes through your labels', () => relink(),
       pending && !active ? 'primary' : '');
     relinkBtn.disabled = active || !all.length;
-    labelPanel.replaceChildren(
+    labelPanel.replaceChildren(...[
       h('div', { style: 'display:flex;align-items:center;gap:8px' }, h('h2', { style: 'margin:0;font-size:13px' }, 'Labels'),
         h('span', { class: 'muted', style: 'font-size:12px' }, `${all.length} pinned · ${pending} waiting`),
         h('div', { class: 'spacer' }), relinkBtn),
@@ -334,12 +334,12 @@ export async function viewTracking(view, parts, params, ui) {
         h('span', { class: 'muted', style: 'font-size:12px' }, here ? `${here} pinned here` : ''),
         h('div', { class: 'spacer' }),
         h('a', { class: 'btn small', href: '#/calibrate/' + mid, title: 'Name players in 3 × 5 s clips per half' }, 'Calibration clips')),
-      jobs.length ? h('div', { style: 'display:flex;flex-direction:column;gap:3px;font-size:12px' }, jobs.map((j) =>
+      jobs.length > 0 ? h('div', { style: 'display:flex;flex-direction:column;gap:3px;font-size:12px' }, jobs.map((j) =>
         h('div', { style: 'display:flex;justify-content:space-between;gap:8px' }, h('span', {}, j.title),
           h('span', { class: 'pill ' + (j.status === 'done' ? 'done' : j.status === 'failed' ? 'failed' : 'stale') },
             j.status === 'waiting for the step before' ? 'next' : j.status)))) : null,
-      (mine || sum.retired) && pending === 0 && !active && all.length ? h('div', { class: 'muted', style: 'font-size:11px' },
-        'All pins are in the current tracking.') : null);
+      (mine || sum.retired) && pending === 0 && !active && all.length > 0 ? h('div', { class: 'muted', style: 'font-size:11px' },
+        'All pins are in the current tracking.') : null].filter(Boolean));
   }
   async function undo(e) {
     try {
@@ -500,7 +500,7 @@ export async function viewTracking(view, parts, params, ui) {
       acts.push(btn('Not a swap', 'Mark this as checked', () => addEdit({ kind: 'ok', frame: st.cur, problem: prob.key }, 'Marked as checked')));
     } else {
       const pl = byKey[prob.keys[0]];
-      const b = btn(`Draw box for #${pl ? pl.number : ''}`, 'Draw a box for this player', () => {
+      const b = btn(`Draw box for ${label(pl)}`, 'Draw a box for this player', () => {
         st.sel = prob.keys[0]; st.drawFor = prob.keys[0]; st.drawProblem = prob.key; setTool('draw');
       });
       b.classList.add('primary');
