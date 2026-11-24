@@ -1052,6 +1052,27 @@ def infer_names(det, ref):
 
 
 # --------------------------------------------------------------------------
+def rebase_track_edits(match_id, config_dir, tracks, pm):
+    """The Tracking tab's hand fixes were made against the old ids: move them
+    onto the new ones (track_edits.rebase). Naming fixes are retired: their
+    anchors are part of this run's linking."""
+    import shutil
+    import time
+
+    import track_edits as te
+    path = te.edits_path(match_id, config_dir)
+    if not path.exists():
+        return
+    data = te.load_edits(path)
+    if not data.get("edits") or data.get("base") in (None, te.fingerprint(tracks)):
+        return
+    shutil.copy2(path, path.with_name(path.stem + f".before-rerun-{time.strftime('%Y%m%d-%H%M%S')}.json"))
+    data, rep = te.rebase(data, tracks, pm)
+    te.save_edits(path, data)
+    print(f"  Tracking tab fixes: {rep['baked']} names now in the tracking, {rep['kept']} hand fixes moved to "
+          f"the new ids, {rep['retired']} retired (see {path.name})")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--match-id", required=True)
@@ -1448,6 +1469,7 @@ def main():
                 for t in p["track_id"].unique()}
     write_json(mdir / "team_map.json", team_map)
     tl.to_parquet(mdir / "identity_links.parquet", index=False)
+    rebase_track_edits(a.match_id, a.config_dir, tracks, pm)
 
     print(f"Wrote tracks.parquet, player_map.json, team_map.json, identity_links.parquet to {mdir}")
     print(f"  identified {pm['identified_detection_fraction']:.0%} of on-pitch person detections; "

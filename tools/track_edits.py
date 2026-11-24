@@ -10,10 +10,15 @@ Edit kinds (all frames are video frames; ids are tracks.parquet track_ids):
                                         (to the end, or to `to`): the fix for an
                                         identity swap at a collision
   assign      {frame, tid, to[, tracklet]}
-                                        the box `tid` is player `to` from `frame`
-                                        to the end of that tracklet; whatever `to`
-                                        had on those frames becomes `tid` (they
-                                        trade), so a player is never doubled
+                                        "this box is player `to`", from `frame` on.
+                                        If the box is a labelled player (tid < 10000)
+                                        the two players trade names from `frame` to
+                                        the end of the half, i.e. a swap: the whole
+                                        track follows. If it's an unlabelled piece,
+                                        that tracklet becomes `to`, and every tracklet
+                                        `to` had overlapping it becomes `tid` in full
+                                        (a tracklet is one person, so the part outside
+                                        the overlap was the wrong person too)
   box         {frame, tid, x1, y1, x2, y2, pitch_x, pitch_y}
                                         a hand-drawn box for `tid`. Frames between
                                         it and the player's nearest box (hand or
@@ -26,6 +31,16 @@ Edit kinds (all frames are video frames; ids are tracks.parquet track_ids):
   not_player  {frame, tid[, tracklet]}  that whole tracklet is a referee / fan /
                                         coach: new id, kit "official"
   ok          {problem}                 a flagged problem you checked: no change
+  lock        {frame}                   "every name on this frame is right": no change
+                                        to the boxes; the server turns it into
+                                        identity anchors (see below)
+
+Names are also anchors. The Tracking tab writes an identity anchor
+(tools/identity_anchors.py) for every box a swap / assign / lock names, tagged
+with the edit id, so "Re-link whole half" (track_identities.py) rebuilds every
+chain through them. After that re-run rebase() retires the naming edits (they
+are in the tracking now) and moves box / delete / split / not-player edits onto
+the new ids, so the hand boxes survive.
 
 Edits apply in list order. Rows added by hand get source="hand" (the box you
 drew) or "hand_fill" (interpolated); tracked rows are source="auto".
@@ -46,7 +61,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-KINDS = ("swap", "assign", "box", "split", "delete", "not_player", "ok")
+KINDS = ("swap", "assign", "box", "split", "delete", "not_player", "ok", "lock")
+CHAIN_MAX = 10000  # track ids below this are whole-half player chains (track_identities.py)
 NEW_ID_BASE = 900000  # ids for split / not-player pieces: NEW_ID_BASE + edit id
 INTERP_S = 5.0
 HOLD_S = 0.5
@@ -131,7 +147,9 @@ def clean_edit(e):
             out["frame"] = _int(e, "frame")
         return out
     out["frame"] = _int(e, "frame")
-    if kind == "swap":
+    if kind == "lock":
+        pass
+    elif kind == "swap":
         out["a"], out["b"] = _int(e, "a"), _int(e, "b")
         if out["a"] == out["b"]:
             raise EditError("Pick two different players to swap")
@@ -155,6 +173,12 @@ def clean_edit(e):
     for k in ("problem", "note"):
         if isinstance(e.get(k), str) and e[k]:
             out[k] = e[k][:200]
+    pl = e.get("player")
+    if isinstance(pl, dict) and pl.get("team") in ("team_a", "team_b"):
+        out["player"] = {"team": pl["team"], "number": None if pl.get("number") is None else int(pl["number"]),
+                         "name": str(pl.get("name") or "")[:80] or None}
+    if e.get("anchored"):
+        out["anchored"] = int(e["anchored"])
     return out
 
 
@@ -195,12 +219,22 @@ def _swap(df, e):
 
 
 def _assign(df, e):
+    if e["tid"] < CHAIN_MAX:
+        # a labelled player's box: the names trade for the rest of the half
+        return _swap(df, {"frame": e["frame"], "a": e["tid"], "b": e["to"]})
     fr = df["frame"].to_numpy()
     src = _tracklet_mask(df, e["tid"], e["frame"], e.get("tracklet")) & (fr >= e["frame"])
     if not src.any():
         return df
     lo, hi = fr[src].min(), fr[src].max()
-    dst = _players(df) & (df["track_id"].to_numpy() == e["to"]) & (fr >= lo) & (fr <= hi) & ~src
+    ids = df["track_id"].to_numpy()
+    dst = _players(df) & (ids == e["to"]) & (fr >= lo) & (fr <= hi) & ~src
+    if "tracklet" in df.columns:
+        # the whole of each tracklet `to` had there (from `frame` on), not just the overlap
+        tl = df["tracklet"].to_numpy()
+        wrong = set(tl[dst][~np.isnan(tl[dst].astype(float))].tolist())
+        if wrong:
+            dst |= _players(df) & (ids == e["to"]) & (fr >= e["frame"]) & np.isin(tl, list(wrong)) & ~src
     df.loc[src, "track_id"] = e["to"]
     df.loc[dst, "track_id"] = e["tid"]
     return df
@@ -357,6 +391,60 @@ def apply_to(tracks, match_id, config_dir="config", fps=25.0, quiet=False):
                   "its fixes are NOT applied. Re-check them in the Tracking tab.", file=sys.stderr)
         return tracks
     return apply_edits(tracks, edits, fps)
+
+
+NAMING = ("swap", "assign", "lock")
+
+
+def rebase(data, tracks, player_map):
+    """After track_identities.py re-ran (new ids): retire the naming edits
+    (swap / assign / lock - with anchors they are now part of the linking) and
+    move the others onto the new ids: box / delete / split by the player they
+    were for, not-player by its tracklet. Edits that can't be moved are retired
+    with a reason. Returns (data, report); data["base"] is the new fingerprint.
+    `tracks`: the new tracks (frame, track_id, class[, tracklet])."""
+    pid = {}
+    for v in (player_map or {}).get("players", {}).values():
+        ids = v.get("track_ids") or []
+        if ids and v.get("team"):
+            pid[(v["team"], v.get("number"), v.get("name"))] = int(ids[0])
+            pid.setdefault((v["team"], v.get("number")), int(ids[0]))
+    p = tracks[tracks["class"] == "player"]
+    keep, retired, rep = [], list(data.get("retired") or []), {"kept": 0, "retired": 0, "baked": 0}
+
+    def retire(e, why):
+        retired.append({**e, "retired": why})
+        rep["retired" if why != "in the tracking" else "baked"] += 1
+
+    for e in data.get("edits", []):
+        k = e.get("kind")
+        if k in NAMING:
+            retire(e, "in the tracking" if e.get("anchored") else "made against older tracks")
+            continue
+        if k in ("box", "delete", "split"):
+            pl = e.get("player") or {}
+            new = pid.get((pl.get("team"), pl.get("number"), pl.get("name"))) or pid.get((pl.get("team"), pl.get("number")))
+            if new is None:
+                retire(e, "player not found after the re-run")
+                continue
+            keep.append({**e, "tid": new})
+        elif k == "not_player":
+            if e.get("tracklet") is None or "tracklet" not in p.columns:
+                retire(e, "no tracklet recorded")
+                continue
+            g = p[(p["tracklet"] == e["tracklet"]) & (p["frame"] >= e["frame"])]
+            if g.empty:
+                retire(e, "tracklet not found after the re-run")
+                continue
+            r = g.iloc[0]
+            keep.append({**e, "tid": int(r["track_id"]), "frame": int(r["frame"])})
+        else:
+            keep.append(e)
+    rep["kept"] = len([e for e in keep if e.get("kind") != "ok"])
+    data["edits"] = keep
+    data["retired"] = retired
+    data["base"] = fingerprint(tracks) if keep else None
+    return data, rep
 
 
 def add_edit(data, edit, base=None):

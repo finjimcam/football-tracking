@@ -13,6 +13,8 @@ Per player and frame the status is one of
 import json
 import sys
 import threading
+import time
+import uuid
 from collections import OrderedDict
 from pathlib import Path
 
@@ -25,6 +27,9 @@ if str(TOOLS) not in sys.path:
 
 import track_edits as te  # noqa: E402
 from _common import clock_label, load_calibration, load_meta, load_player_map, match_config  # noqa: E402
+from identity_anchors import anchors_path, iou, load_anchors, save_anchors  # noqa: E402
+
+from app.lines import ANCHOR_LOCK, team_lineup  # noqa: E402
 
 OFF, LOST, PRED, SEEN, HAND = 0, 1, 2, 3, 4
 CODES = "olpsh"
@@ -71,6 +76,8 @@ class MatchTracking:
         self._load_ball()
         self.swaps = self._load_swaps()
         self.edits_path = te.edits_path(match_id, self.config_dir)
+        self.anchor_path = anchors_path(match_id, self.config_dir)
+        self.tracks_mtime = (self.mdir / "tracks.parquet").stat().st_mtime
         self.lock = threading.Lock()
         self.edits_mtime = None
         self._rebuild()
@@ -300,6 +307,8 @@ class MatchTracking:
                 "edits": [{**e, "clock": clock_label(e["frame"], self.cfg, self.fps) if e.get("frame") is not None
                            else None} for e in self.data["edits"]],
                 "edits_file": self.edits_path.name,
+                "retired": len(self.data.get("retired") or []),
+                "anchors": self.anchors(),
                 "clocks": {f: clock_label(f, self.cfg, self.fps)
                            for f in range(self.lo - self.lo % int(self.fps), self.hi + 1, int(self.fps) * 60)},
             }
@@ -414,6 +423,82 @@ class MatchTracking:
         p = Hm @ np.array([x, y, 1.0])
         return float(p[0] / p[2]), float(p[1] / p[2])
 
+    # ---- names -> identity anchors (the re-link uses them) ----------------
+    def person(self, key):
+        """(team, number, name) of a player key, the number looked up in the
+        lineup by name when the tracking didn't have one."""
+        q = self.by_key.get(key)
+        if not q or q.get("team") not in ("team_a", "team_b"):
+            return None
+        num = q.get("number")
+        if num is None:
+            lu = team_lineup(self.config_dir, self.match_id, q["team"])
+            hit = next((x for x in lu if x.get("name") == q.get("name") and x.get("number") is not None), None)
+            num = hit["number"] if hit else None
+        return q["team"], (None if num is None else int(num)), q.get("name")
+
+    def _named_boxes(self, frame, tids=None):
+        """Detected (not hand-drawn) boxes of labelled players on `frame`, after
+        the fixes: [(key, row)]. tids limits it to those track ids."""
+        a, b = np.searchsorted(self.df_frames, [frame, frame + 1])
+        g = self.df.iloc[a:b]
+        out = []
+        for r in g.itertuples():
+            tid = int(r.track_id)
+            if tid not in self.key_of or (tids is not None and tid not in tids):
+                continue
+            if getattr(r, "source", "auto") != "auto":
+                continue
+            out.append((self.key_of[tid], r))
+        return out
+
+    def _write_anchors(self, edit_id, frame, named):
+        """One anchor per named box, tagged with the edit, replacing older
+        anchors on the same box or for the same player on that frame."""
+        new, skipped = [], []
+        for key, r in named:
+            who = self.person(key)
+            if not who or who[1] is None:
+                skipped.append(key)
+                continue
+            team, num, name = who
+            tl = getattr(r, "tracklet", None)
+            new.append({"id": uuid.uuid4().hex[:10], "team": team, "number": num, "name": name,
+                        "frame": int(frame), "box": [round(float(v), 1) for v in (r.x1, r.y1, r.x2, r.y2)],
+                        "track_id": int(r.track_id),
+                        "tracklet": int(tl) if tl is not None and pd.notna(tl) and tl >= 0 else None,
+                        "source": "tracking", "edit": int(edit_id), "created": time.time()})
+        if not new:
+            return 0, skipped
+        with ANCHOR_LOCK:
+            anchors = load_anchors(self.anchor_path)
+            for a in new:
+                anchors = [b for b in anchors if not (int(b["frame"]) == a["frame"] and (
+                    iou(b.get("box") or [0, 0, 0, 0], a["box"]) > 0.7
+                    or (b.get("team") == a["team"] and b.get("number") is not None and int(b["number"]) == a["number"])))]
+                anchors.append(a)
+            save_anchors(self.anchor_path, anchors)
+        return len(new), skipped
+
+    def _drop_anchors(self, edit_id):
+        with ANCHOR_LOCK:
+            anchors = load_anchors(self.anchor_path)
+            keep = [a for a in anchors if not (a.get("source") == "tracking" and a.get("edit") == int(edit_id))]
+            if len(keep) != len(anchors):
+                save_anchors(self.anchor_path, keep)
+
+    def anchors(self):
+        """Every anchor (calibration clips, Lines tab, this tab) in the tracked
+        window, and how many are newer than the tracking (waiting for a re-link)."""
+        out = []
+        for a in load_anchors(self.anchor_path):
+            f = int(a.get("frame", -1))
+            if self.lo <= f <= self.hi and a.get("box"):
+                out.append({"frame": f, "box": a["box"], "team": a.get("team"), "number": a.get("number"),
+                            "name": a.get("name"), "source": a.get("source") or "lines", "edit": a.get("edit"),
+                            "pending": float(a.get("created") or 0) > self.tracks_mtime})
+        return out
+
     def add_edit(self, edit):
         """Validate, fill in what the server knows (tracklet, pitch spot),
         save, re-apply. Returns the saved edit."""
@@ -452,6 +537,12 @@ class MatchTracking:
             if self.stale:
                 raise TrackingError("Your saved fixes were made against different tracks (tracking was re-run). "
                                     f"Check or remove {self.edits_path.name} first")
+            if kind in ("box", "delete", "split") and edit.get("tid") in self.key_of:
+                who = self.person(self.key_of[edit["tid"]])
+                if who:
+                    edit["player"] = {"team": who[0], "number": who[1], "name": who[2]}
+            if kind == "lock" and f is not None and not self._named_boxes(f):
+                raise TrackingError("No tracked, labelled boxes on this frame to lock")
             try:
                 data = te.load_edits(self.edits_path)
                 data["match_id"] = self.match_id
@@ -460,6 +551,24 @@ class MatchTracking:
                 raise TrackingError(str(e)) from None
             te.save_edits(self.edits_path, data)
             self._rebuild()
+            if kind in te.NAMING and f is not None:
+                if kind == "swap":
+                    tids = {saved["a"], saved["b"]}
+                elif kind == "assign":
+                    tids = {saved["to"]} | ({saved["tid"]} if saved["tid"] < te.CHAIN_MAX else set())
+                else:
+                    tids = None
+                n, skipped = self._write_anchors(saved["id"], f, self._named_boxes(f, tids))
+                saved["anchored"] = n
+                if skipped:
+                    saved["unanchored"] = [self._who(k, None) for k in skipped]
+                if n:
+                    data = te.load_edits(self.edits_path)
+                    for e in data["edits"]:
+                        if e.get("id") == saved["id"]:
+                            e["anchored"] = n
+                    te.save_edits(self.edits_path, data)
+                    self._rebuild()
             return saved
 
     def remove_edit(self, edit_id):
@@ -470,6 +579,7 @@ class MatchTracking:
             except te.EditError as e:
                 raise TrackingError(str(e)) from None
             te.save_edits(self.edits_path, data)
+            self._drop_anchors(edit_id)
             self._rebuild()
             return {"removed": int(edit_id)}
 

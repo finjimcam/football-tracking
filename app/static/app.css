@@ -408,3 +408,4 @@ button.job-row { font: inherit; cursor: pointer; }
 .cal-num:hover { border-color: var(--accent); }
 .cal-num.used { opacity: .55; }
 .cal-num.me { background: var(--accent); color: var(--bg); opacity: 1; }
+.linkish { background: none; border: 0; padding: 0; color: var(--accent, #FFD84D); text-decoration: underline; cursor: pointer; font: inherit; }

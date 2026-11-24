@@ -309,7 +309,9 @@ def create_app(root, runner=None, busy_check=None, warm=False):
 
     @app.get("/api/matches/{match_id}/tracking")
     def tracking_summary(match_id: str):
-        return _tracking(match_id).summary()
+        out = _tracking(match_id).summary()
+        out["run_jobs"] = _run_chain_jobs(match_id)
+        return out
 
     @app.get("/api/matches/{match_id}/tracking/lanes")
     def tracking_lanes(match_id: str, start: int, end: int, bins: int = 600):
@@ -343,10 +345,8 @@ def create_app(root, runner=None, busy_check=None, warm=False):
         except CalibrationError as e:
             raise HTTPException(400, str(e)) from None
 
-    @app.get("/api/matches/{match_id}/calibration")
-    def calib_summary(match_id: str):
-        out = _calib(match_id).summary()
-        # the latest run: the newest Track identities job and the jobs chained after it
+    def _run_chain_jobs(match_id):
+        """The latest run: the newest Track identities job and the jobs chained after it."""
         start = next((j for j in runner.list(match_id=match_id, limit=200) if j["stage"] == RUN_CHAIN[0]), None)
         chain = []
         while start is not None and len(chain) < len(RUN_CHAIN):
@@ -355,7 +355,12 @@ def create_app(root, runner=None, busy_check=None, warm=False):
         if chain and chain[-1].get("then") and chain[-1]["status"] in ("queued", "waiting", "running", "done"):
             chain += [{"title": catalog.get_stage(t["stage"]).title, "status": "waiting for the step before"}
                       for t in chain[-1]["then"]]
-        out["jobs"] = chain[::-1]
+        return chain[::-1]
+
+    @app.get("/api/matches/{match_id}/calibration")
+    def calib_summary(match_id: str):
+        out = _calib(match_id).summary()
+        out["jobs"] = _run_chain_jobs(match_id)
         return out
 
     @app.get("/api/matches/{match_id}/calibration/{clip_id}")
