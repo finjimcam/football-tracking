@@ -245,3 +245,86 @@ def test_chains_never_share_a_track():
     assert on9 == [0]  # only A's chain (closer) takes track 9
     assert chains[1]["raw"].get(80) is None
     assert build_chains(rows_idx, slots, 0, 100, 25, None, max_rounds=0)[1]["raw"][80][0] == 9  # the old bug
+
+
+# ---- auto-fix unrealistic jumps (issue #44) ----------------------------------
+def _jump_world(teleport=True, a_reappears=True, decoy_on_chain=True):
+    """Defender A (id 1) jogs along y=10 at 3 m/s. Unlabelled B (id 5) stands
+    10 m away. At frame 50 the tracker gives id 1 to B's body (a 10 m
+    teleport) and A carries on under a fresh id 7. A second picked defender
+    (id 2) stands right where A is heading, so the nearest track that ISN'T
+    on a chain has to be chosen, not just the nearest."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    from types import SimpleNamespace as R
+
+    def row(tid, px, py):
+        return R(track_id=tid, pitch_x=px, pitch_y=py, foot_x=px * 10, foot_y=py * 10)
+
+    rows_idx = {}
+    for f in range(0, 151):
+        ax = 20.0 + 3.0 * f / 25
+        cur = {}
+        if decoy_on_chain:
+            cur[2] = row(2, 26.3, 10.2)  # stands where A is heading
+        if not teleport or f < 50:
+            cur[1] = row(1, ax, 10.0)
+            cur[5] = row(5, 30.0, 18.0)
+        else:
+            cur[1] = row(1, 30.0, 18.0)  # id 1 now on B's body
+            if a_reappears and f >= 52:
+                cur[7] = row(7, ax + 0.5, 10.4)  # A again, fresh id, a touch off the line
+        rows_idx[f] = cur
+    slots = [{"line": "back", "anchors": [[0, 1]]}]
+    if decoy_on_chain:
+        slots.append({"line": "back", "anchors": [[0, 2]]})
+    return rows_idx, slots
+
+
+def test_autofix_relabels_teleport_onto_nearest_unlabelled():
+    rows_idx, slots = _jump_world()
+    from cut_phase_clips import auto_fix_jumps, build_chains, find_jump
+    before = build_chains(rows_idx, slots, 0, 150, 25, None)
+    assert before[0]["raw"][100][0] == 1 and before[0]["raw"][100][2] == 18.0  # chain went with id 1 onto B
+    a, b, d = find_jump(before[0]["raw"], slots[0]["anchors"], 25)
+    assert b == 50 and d > 8.5
+    new, fixes, unresolved, chains = auto_fix_jumps(rows_idx, slots, 0, 150, 25, None)
+    assert unresolved == []
+    assert [(x["chain"], x["frame"], x["from_tid"], x["to_tid"]) for x in fixes] == [(0, 50, 1, 7)]
+    assert new[0]["anchors"] == [[0, 1], [50, 7, 1]]  # analyst's label kept, cut added
+    assert new[1] == slots[1]                          # the other chain is untouched
+    assert chains[0]["raw"][49][0] == 1 and chains[0]["raw"][100][0] == 7
+    assert 50 not in chains[0]["raw"] and chains[0]["pts"][50][5] == "filled"  # gap filled until A is seen
+    assert find_jump(chains[0]["raw"], new[0]["anchors"], 25) is None
+
+
+def test_autofix_flags_jump_with_nobody_in_reach():
+    rows_idx, slots = _jump_world(a_reappears=False, decoy_on_chain=False)
+    from cut_phase_clips import auto_fix_jumps
+    new, fixes, unresolved, _ = auto_fix_jumps(rows_idx, slots, 0, 150, 25, None)
+    assert fixes == [] and new == slots
+    assert [(u["chain"], u["frame"]) for u in unresolved] == [(0, 50)]
+
+
+def test_autofix_trusts_the_analysts_own_anchor_and_normal_running():
+    from cut_phase_clips import auto_fix_jumps, find_jump
+    rows_idx, slots = _jump_world(decoy_on_chain=False)
+    slots[0]["anchors"].append([50, 1])  # analyst says: id 1 at frame 50 IS this player
+    _, fixes, unresolved, _ = auto_fix_jumps(rows_idx, slots, 0, 150, 25, None)
+    assert fixes == [] and unresolved == []
+    # a sprinter at 9 m/s with +-0.4 m pitch jitter is never a jump
+    rng = np.random.default_rng(0)
+    raw = {f: (1, 9.0 * f / 25 + rng.uniform(-0.4, 0.4), 10 + rng.uniform(-0.4, 0.4), 0, 0, False)
+           for f in range(0, 300) if f % 17}  # with short drop-outs
+    assert find_jump(raw, [[0, 1]], 25) is None
+
+
+def test_autofix_api(client):
+    r = client.get(f"/api/matches/{MID}/lines").json()
+    s = r["phases"][0]["start"]
+    bad = client.post(f"/api/matches/{MID}/lines/{s}/edit", json={"team": "team_a", "slots": [], "action": "autofix"})
+    assert bad.status_code == 400 and "Label the players" in bad.json()["detail"]
+    ph = client.get(f"/api/matches/{MID}/lines/{s}").json()
+    r = client.post(f"/api/matches/{MID}/lines/{s}/edit",
+                    json={"team": "team_a", "slots": ph["slots"], "action": "autofix"}).json()
+    assert r["fixes"] == [] and r["unresolved"] == [] and "No unrealistic jumps" in r["msg"]
+    assert r["slots"] == ph["slots"]
