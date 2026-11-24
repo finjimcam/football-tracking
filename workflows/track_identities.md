@@ -291,6 +291,18 @@ then Re-link, rebuilds each whole track from it.
 - Pins need shirt numbers: fill them into `config/<id>_reference.json`
   lineups. Without a number a player can't be pinned (the tab says so).
 
+### Start the half at the kick-off, even on a wide shot
+The kick-off is the best frame to name everyone (lined up in their own half),
+so don't start the window after it because the camera is zoomed out. On
+Korea v Czechia (frames 20-269, players ~30 px):
+- detect those frames at `--imgsz 1920` (1280 found ~14 of 25 people on the
+  pitch, 1920 found ~21);
+- `calibrate_auto.py` locked onto the stands there; chaining frame-to-frame
+  image homographies (SIFT, players masked, RANSAC) back from the first
+  calibrated tactical frame worked (fixed camera: pan/tilt/zoom only);
+- `track_identities.py` treats frames whose median box is < 0.65 x the
+  match's as wide view and starts tracklets from conf 0.15 there (else 0.35).
+
 ## Outputs
 Committed (the repo is public; nothing cut from footage):
 - `outputs/reports/<id>_report.pdf` - possession, positions, shape in/out of
