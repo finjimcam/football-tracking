@@ -429,6 +429,159 @@ def build_chains(rows_idx, slots, lo, hi, fps, H_at, max_rounds=6):
             for sl, raw in zip(slots, raws)]
 
 
+# ---- auto-fix unrealistic jumps (issue #44) ---------------------------------
+JUMP_M, JUMP_VMAX = 2.0, 10.0  # a step a -> b is a jump if it's > JUMP_M + JUMP_VMAX * dt metres
+
+
+def jump_reach(dt_s, jump_m=JUMP_M, vmax=JUMP_VMAX, cap=15.0):
+    """Furthest a player can plausibly get in dt_s seconds, plus pitch-position jitter.
+    (Frame-to-frame jitter on broadcast homographies is < ~1.1 m at the 99.9th percentile.)"""
+    return min(cap, jump_m + vmax * abs(dt_s))
+
+
+def find_jump(raw, anchors, fps, jump_m=JUMP_M, vmax=JUMP_VMAX):
+    """First unrealistic step in one chain's detections, walking out from its
+    first (earliest) anchor - the label the analyst set, taken as ground truth.
+    Walks forwards to the end of the phase, then backwards from the first
+    anchor (for a chain labelled after the phase start). A step that lands on
+    one of the analyst's own anchor frames, or hands back onto a track id the
+    analyst labelled as this player, is trusted. (The same id teleporting is
+    not: that's the tracker giving the id to someone else.)
+    Returns (a, b, dist): `a` last good sighting, `b` the jump, or None."""
+    if not raw or not anchors:
+        return None
+    trusted = {a[0] for a in anchors}
+    own = {a[1] for a in anchors}
+    f0 = anchors[0][0]
+    fr = sorted(raw)
+    # Both walks start at the anchor (the backward one is empty for a chain
+    # labelled on the phase's first frame).
+    fwd = [f for f in fr if f >= f0]
+    back = [f for f in reversed(fr) if f <= f0]
+    for walk in (fwd, back):
+        for a, b in zip(walk, walk[1:]):
+            if b in trusted or (raw[b][0] in own and raw[a][0] != raw[b][0]):
+                continue  # onto your own anchor, or back onto a track you labelled as this player
+            d = float(np.hypot(raw[b][1] - raw[a][1], raw[b][2] - raw[a][2]))
+            if d > jump_reach((b - a) / fps, jump_m, vmax):
+                return a, b, d
+    return None
+
+
+def _velocity(raw, a, b, fps, vmax, look_s=0.5):
+    """Pitch velocity (m per frame) at sighting `a`, from the sightings on the
+    trusted side of it (the side away from `b`), over up to look_s seconds."""
+    step = 1 if b > a else -1
+    ref = None
+    for k in range(a - step, a - step * int(look_s * fps) - step, -step):
+        if k in raw:
+            ref = k
+    if ref is None:
+        return 0.0, 0.0
+    n = a - ref
+    vx, vy = (raw[a][1] - raw[ref][1]) / n, (raw[a][2] - raw[ref][2]) / n
+    sp = float(np.hypot(vx, vy)) * fps
+    if sp > vmax:
+        vx, vy = vx * vmax / sp, vy * vmax / sp
+    return vx, vy
+
+
+def relabel_candidate(rows_idx, raw, a, b, fps, owned, excluded, look_s=1.0, min_run_s=0.2,
+                      jump_m=JUMP_M, vmax=JUMP_VMAX):
+    """The track the chain should have been on after its jump a -> b.
+
+    Candidates are detections over b .. b+look_s (in the walk's direction)
+    that NO chain owns on that frame, within plausible reach of the last good
+    sighting `a`, and that keep going for >= min_run_s (so a one-frame
+    flicker isn't taken). If the track the chain was on at `a` comes back in
+    that window it wins (the player was only missed for a few frames).
+    Otherwise the one closest to where the player should be - the position at
+    `a` carried on at its velocity from the frames before - relative to how
+    far he could have got by then; ties go to the earlier sighting.
+    `owned(f)` -> track ids on chains at frame f; `excluded` -> ids never to
+    take (the one the chain jumped onto, other chains' anchors).
+    Returns (frame first seen, tid, metres from prediction) or None."""
+    step = 1 if b > a else -1
+    vx, vy = _velocity(raw, a, b, fps, vmax)
+    ax, ay = raw[a][1], raw[a][2]
+    min_run, run_win = max(1, int(round(min_run_s * fps))), int(round(2 * min_run_s * fps))
+    first = {}  # tid -> (score, frame, metres from prediction)
+    for f in range(b, b + step * int(look_s * fps) + step, step):
+        cur = rows_idx.get(f)
+        if not cur:
+            continue
+        reach = jump_reach((f - a) / fps, jump_m, vmax)
+        px, py = ax + vx * (f - a), ay + vy * (f - a)
+        taken = owned(f)
+        for t, r in cur.items():
+            if t in first or t in taken or t in excluded:
+                continue
+            if float(np.hypot(r.pitch_x - ax, r.pitch_y - ay)) > reach:
+                continue
+            if sum(1 for k in range(f, f + step * run_win, step) if t in rows_idx.get(k, {})) < min_run:
+                continue
+            d = float(np.hypot(r.pitch_x - px, r.pitch_y - py))
+            first[t] = (d / reach, abs(f - b), d, f)
+    if not first:
+        return None
+    prev = raw[a][0]
+    t = prev if prev in first else min(first, key=lambda k: first[k][:2])
+    return first[t][3], t, first[t][2]
+
+
+def auto_fix_jumps(rows_idx, slots, lo, hi, fps, H_at, max_fixes=40, jump_m=JUMP_M, vmax=JUMP_VMAX):
+    """Issue #44. The analyst labels the players (slots' first anchors); this
+    finds every point where a chain moves further than a player can between
+    two sightings and puts it back on the nearest unlabelled player, by adding
+    a cut anchor [jump frame, tid, 1] (gap until he's seen is filled in pitch
+    space as usual). Jumps with nobody plausible in reach are left as they are
+    and reported. Never removes or moves the analyst's own anchors.
+    Returns (slots, fixes, unresolved, chains):
+      fixes: [{"chain", "frame", "from_tid", "to_tid", "jump_m"}]
+      unresolved: [{"chain", "frame", "tid", "jump_m"}]"""
+    slots = [{"line": sl["line"], "anchors": norm_anchors(sl["anchors"])} for sl in slots]
+    fixes, unresolved, done, tried = [], [], set(), set()
+    chains = build_chains(rows_idx, slots, lo, hi, fps, H_at)
+    while len(fixes) < max_fixes:
+        found = []
+        for i, (sl, ch) in enumerate(zip(slots, chains)):
+            if i in done:
+                continue
+            j = find_jump(ch["raw"], sl["anchors"], fps, jump_m, vmax)
+            if j is None:
+                done.add(i)
+            else:
+                found.append((i, *j))
+        if not found:
+            break
+        owners = {}  # (frame) -> {tid: [chains on it]}
+        for k, ch in enumerate(chains):
+            for f, o in ch["raw"].items():
+                owners.setdefault(f, {}).setdefault(o[0], []).append(k)
+        anchor_tids = [{a[1] for a in sl["anchors"]} for sl in slots]
+        claimed = set()
+        for i, a, b, d in found:
+            raw = chains[i]["raw"]
+            others = set().union(*(t for k, t in enumerate(anchor_tids) if k != i)) if len(slots) > 1 else set()
+            excluded = {raw[b][0]} | others | claimed
+            def owned(f, i=i):  # tracks other chains are on (this chain's own wrong path doesn't count)
+                return {t for t, ks in owners.get(f, {}).items() if ks != [i]}
+
+            cand = relabel_candidate(rows_idx, raw, a, b, fps, owned, excluded, jump_m=jump_m, vmax=vmax)
+            if cand is None or (i, b) in tried:  # nobody in reach, or the last fix here didn't take
+                unresolved.append({"chain": i, "frame": int(b), "tid": int(raw[b][0]), "jump_m": round(d, 1)})
+                done.add(i)  # past an unfixed jump the chain is on someone else: don't chase it further
+                continue
+            _f, tid, _dist = cand
+            tried.add((i, b))
+            claimed.add(tid)
+            slots[i]["anchors"] = norm_anchors(slots[i]["anchors"] + [[int(b), int(tid), 1]])
+            fixes.append({"chain": i, "frame": int(b), "from_tid": int(raw[b][0]), "to_tid": int(tid),
+                          "jump_m": round(d, 1)})
+        chains = build_chains(rows_idx, slots, lo, hi, fps, H_at)
+    return slots, fixes, unresolved, chains
+
+
 def chains_by_frame(chains):
     """{frame: [(line, foot_x, foot_y, pitch_y, tid, status)]}"""
     out = {}

@@ -25,7 +25,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 from _common import clock_label, load_calibration, load_meta, match_config  # noqa: E402
-from cut_phase_clips import (build_chains, entry_slots, export_path, export_range,  # noqa: E402
+from cut_phase_clips import (auto_fix_jumps, build_chains, entry_slots, export_path, export_range,  # noqa: E402
                              homography_lookup, index_rows, load_export, load_selection, load_team_rows,
                              norm_anchors, phases, save_export, save_selection, selection_path)
 from gap_status import absorbed_lookup  # noqa: E402
@@ -234,9 +234,28 @@ class MatchLines:
                 msg += "; swapped the other picked chain back too"
         return slots, msg
 
+    def _autofix_msg(self, fixes, unresolved, slots, s):
+        clk = lambda f: f"{(f - s) / self.fps:.1f} s"
+        if not fixes and not unresolved:
+            msg = "No unrealistic jumps: every chain moves like a player"
+        else:
+            msg = f"Fixed {len(fixes)} jump{'' if len(fixes) == 1 else 's'}"
+            if fixes:
+                msg += " (at " + ", ".join(clk(x["frame"]) for x in fixes[:6]) + (", ..." if len(fixes) > 6 else "") + ")"
+            if unresolved:
+                msg += (f"; {len(unresolved)} need{'s' if len(unresolved) == 1 else ''} you, nobody unlabelled in reach"
+                        " (at " + ", ".join(clk(x["frame"]) for x in unresolved) + "): press n to go there")
+            msg += ". Check, then Save + next"
+        late = [i for i, sl in enumerate(slots) if sl["anchors"][0][0] - s > 2 * self.fps]
+        if late:
+            msg += f". {len(late)} chain{'s were' if len(late) > 1 else ' was'} first labelled >2 s into the phase: label at the start for the best result"
+        return msg
+
     def edit(self, start, slots, action, frame=None, tid=None, chain=None):
         """Apply one picker action to a draft (nothing saved). Actions:
         cycle (left-click: none -> back -> mid -> none), relink (right-click),
+        autofix (issue #44: put chains that jump further than a player can back
+        on the nearest unlabelled player; adds fixes/unresolved to the reply),
         swap (fix an identity swap: chain `chain` belongs on `tid`), auto
         (reset to the automatic guess at `frame`), clear, chains (just
         recompute). Returns the new slots + chains + a message."""
@@ -283,6 +302,13 @@ class MatchLines:
             rows = self.rows_by_frame.get(f)
             slots = auto_slots(rows, f, self.own_goal_x) if rows is not None else []
             msg = "Reset to the automatic guess" if slots else "No automatic guess on this frame (too few players)"
+        elif action == "autofix":
+            if not slots:
+                raise LinesError("Label the players first (ideally on the phase's first frame), then auto-fix")
+            slots, fixes, unresolved, chains = auto_fix_jumps(self.rows_idx, slots, s, e, self.fps, self.H_at)
+            return {"slots": slots, "chains": self._chains_json(chains, s, e),
+                    "msg": self._autofix_msg(fixes, unresolved, slots, s),
+                    "fixes": fixes, "unresolved": unresolved}
         elif action == "clear":
             slots = []
         elif action != "chains":
