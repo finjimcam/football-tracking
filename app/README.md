@@ -35,7 +35,21 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   last 6 s) and cuts the chain there. If the other player was also on a
   picked chain, that chain swaps back too. Cut anchors are saved as
   `[frame, track_id, 1]` ("from this frame on"), which the renderer and the
-  CLI picker understand. A strip under the frame shows each chain as green (detected), amber
+  CLI picker understand.
+  **Auto-fix jumps** (`j`, issue #44): label the players first, ideally on
+  the phase's first frame (`|◀` / `Home` takes you there). Auto-fix then
+  walks each chain out from your first label. Wherever it moves further
+  between two sightings than a player can (more than 2 m + 10 m/s × the
+  gap), it puts the chain back on the nearest player no other chain is on.
+  That's judged from where he was heading in the frames before, and the
+  pick must still be there 0.2 s after. If the track the chain was on comes
+  back within a second, that track wins. It adds cut anchors to the draft
+  and never moves your own labels. A jump onto one of your labels, or back
+  onto a track you labelled as that player, counts as right. Blue markers
+  on the strip are fixes. Red ones need you, because nobody unlabelled was
+  in reach: it jumps to the first, and `n` steps through them. Nothing is
+  saved until Save + next. It doesn't catch swaps where the two players are
+  touching (no jump): use Fix swap for those. A strip under the frame shows each chain as green (detected), amber
   (filled) or red (lost), with white ticks at hand-offs. Picks are saved to
   the same `config/<id>_<team>_out_of_possession_shape_selection.json` the
   CLI picker uses, so either one can carry on from the other.
@@ -74,8 +88,8 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   whole match use the corrected identities.
   The chain, gap-filling and re-link logic runs on the server
   (`app/lines.py` calls the same functions), so the page shows exactly what
-  the render will draw. Keys: a/d ±0.5 s, A/D ±2 s, ,/. ±1 frame, k
-  play, Enter save + next, s skip, r auto guess, c clear, p previous.
+  the render will draw. Keys: a/d ±0.5 s, A/D ±2 s, ,/. ±1 frame, Home phase start, k
+  play, j auto-fix, n next auto-fix marker, Enter save + next, s skip, r auto guess, c clear, p previous.
 - **Players** (issue #16, also *Players* on a broadcast match's page): every
   player's whole-match path, heatmap and running stats, computed from
   `tracks.parquet` by `tools/player_paths.py` (`app/players.py` wraps it).
