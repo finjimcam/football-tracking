@@ -193,3 +193,13 @@ def test_loader_applies_saved_fixes_and_checks_fingerprint(tmp_path):
     # undo
     te.remove_edit(data, data["edits"][0]["id"])
     assert data["edits"] == [] and data["base"] is None
+
+
+def test_whole_game_swap():
+    """Labels wrong from the very start: swap every frame, wherever you saw it."""
+    df = te.apply_edits(make_tracks(), [{"kind": "swap", "frame": 70, "a": 1, "b": 2, "whole": True}], FPS)
+    assert ids_at(df, 0) == {2: 10.0, 1: 20.0}
+    assert ids_at(df, 99) == {2: 10.0, 1: 20.0}
+    df = te.apply_edits(make_tracks(), [{"kind": "assign", "frame": 70, "tid": 1, "to": 2, "whole": True}], FPS)
+    assert ids_at(df, 0) == {2: 10.0, 1: 20.0}
+    assert te.clean_edit({"kind": "swap", "frame": 3, "a": 1, "b": 2, "whole": 1})["whole"] is True

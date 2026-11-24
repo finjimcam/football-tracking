@@ -409,3 +409,5 @@ button.job-row { font: inherit; cursor: pointer; }
 .cal-num.used { opacity: .55; }
 .cal-num.me { background: var(--accent); color: var(--bg); opacity: 1; }
 .linkish { background: none; border: 0; padding: 0; color: var(--accent, #FFD84D); text-decoration: underline; cursor: pointer; font: inherit; }
+.trk-scope { display: inline-flex; gap: 2px; flex-wrap: wrap; }
+.trk-scope .trk-toggle[aria-pressed="true"] { background: var(--accent, #FFD84D); color: #0E1013; }

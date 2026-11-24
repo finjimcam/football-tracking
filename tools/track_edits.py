@@ -6,9 +6,12 @@ tracks through _common.read_tracks()/load_tracks() gets them applied on top.
 Undoing a fix is deleting it from the list.
 
 Edit kinds (all frames are video frames; ids are tracks.parquet track_ids):
-  swap        {frame, a, b[, to]}       ids a and b trade places from `frame` on
+  swap        {frame, a, b[, to][, whole]}
+                                        ids a and b trade places from `frame` on
                                         (to the end, or to `to`): the fix for an
-                                        identity swap at a collision
+                                        identity swap at a collision. whole=true:
+                                        for the whole game (labels wrong from the
+                                        start); `frame` is then only where you saw it
   assign      {frame, tid, to[, tracklet]}
                                         "this box is player `to`", from `frame` on.
                                         If the box is a labelled player (tid < 10000)
@@ -155,10 +158,14 @@ def clean_edit(e):
             raise EditError("Pick two different players to swap")
         if e.get("to") is not None:
             out["to"] = _int(e, "to")
+        if e.get("whole"):
+            out["whole"] = True
     elif kind == "assign":
         out["tid"], out["to"] = _int(e, "tid"), _int(e, "to")
         if out["tid"] == out["to"]:
             raise EditError("That box is already this player")
+        if e.get("whole"):
+            out["whole"] = True
     else:
         out["tid"] = _int(e, "tid")
     if kind in ("assign", "split", "not_player") and e.get("tracklet") is not None:
@@ -208,7 +215,7 @@ def _tracklet_mask(df, tid, frame, tracklet):
 
 def _swap(df, e):
     fr = df["frame"].to_numpy()
-    m = _players(df) & (fr >= e["frame"])
+    m = _players(df) if e.get("whole") else _players(df) & (fr >= e["frame"])
     if e.get("to") is not None:
         m &= fr <= e["to"]
     ids = df["track_id"].to_numpy()
@@ -221,7 +228,7 @@ def _swap(df, e):
 def _assign(df, e):
     if e["tid"] < CHAIN_MAX:
         # a labelled player's box: the names trade for the rest of the half
-        return _swap(df, {"frame": e["frame"], "a": e["tid"], "b": e["to"]})
+        return _swap(df, {"frame": e["frame"], "a": e["tid"], "b": e["to"], "whole": e.get("whole")})
     fr = df["frame"].to_numpy()
     src = _tracklet_mask(df, e["tid"], e["frame"], e.get("tracklet")) & (fr >= e["frame"])
     if not src.any():

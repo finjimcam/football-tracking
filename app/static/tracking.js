@@ -14,7 +14,8 @@ const LABEL_W = 116, RULER_H = 24, ROW_H = 13, HEAD_H = 18;
 const WINDOWS = [[60, '1 min'], [120, '2 min'], [300, '5 min'], [900, '15 min']];
 const KEYS_HELP = [
   ['Click a box', 'select that player (or say who an unlabelled box is)'],
-  ['s / Swap labels', 'click two boxes: they trade names from this frame to the end of the half'],
+  ['s / Swap labels', 'click two boxes: they trade names (from here on, or for the whole game)'],
+  ['w', 'switch swaps between "from here on" (a clash) and "whole game" (wrong from the start)'],
   ['b / Draw box', 'drag a box round a player the tracker missed, or redraw a bad one'],
   ['l', 'lock every name on this frame (do it on the first frame once the lineup is right)'],
   ['k', 'play / pause'], [', / .', '−/+ 1 frame'], ['a / d', '−/+ 2 s'],
@@ -99,14 +100,23 @@ export async function viewTracking(view, parts, params, ui) {
   indexAnchors();
   // the anchor (a name you pinned) on this box on frame f, if any
   const pinOn = (f, box) => (anchorMap.get(f) || []).find((a) => boxIou(a.box, box) > 0.5) || null;
-  const untilEnd = () => `from ${clockOf(st.cur)} to the end of the half`;
+  const untilEnd = () => (st.scope === 'all' ? 'for the whole game (they were wrong from the start)' : `from ${clockOf(st.cur)} to the end of the half`);
+  const scopeEdit = () => (st.scope === 'all' ? { whole: true } : {});
+  // "From here on | Whole game": how far back a swap / rename goes
+  function scopeToggle() {
+    const opt = (k, t, tip) => h('button', { type: 'button', class: 'trk-toggle', 'aria-pressed': String(st.scope === k), title: tip,
+      onclick: () => { st.scope = k; draw(); } }, t);
+    return h('div', { class: 'trk-scope', role: 'group', 'aria-label': 'How far the swap goes (w)' },
+      opt('here', 'From here on', 'Mixed up in a clash: fix from this frame to the end'),
+      opt('all', 'Whole game', 'Wrong from the very start: fix every frame'));
+  }
   const clockOf = (f) => { const r = rec(f); return r && r.c ? r.c : `frame ${f}`; };
 
   const firstOpen = sum.problems.find((p) => p.fixed == null);
   const st = {
     cur: clamp(+params.get('f') || (firstOpen ? firstOpen.frame : sum.start)),
     sel: params.get('sel') && byKey[params.get('sel')] ? params.get('sel') : (firstOpen && firstOpen.keys[0]) || null,
-    playing: false, tool: 'select', drawFor: null, drawProblem: null, pending: null, drag: null, swapFirst: null,
+    playing: false, tool: 'select', drawFor: null, drawProblem: null, pending: null, drag: null, swapFirst: null, scope: 'here',
     showBoxes: true, showNames: true, showTrails: false, showOthers: true,
     winLen: 120, win: null, lanes: null, filter: 'open', busy: false,
   };
@@ -487,7 +497,7 @@ export async function viewTracking(view, parts, params, ui) {
           : `Now click the box that is really ${f.kind === 'player' ? label(byKey[f.id]) : 'box ' + f.id}. They trade names ${untilEnd()}.`;
       }
       banner.replaceChildren(h('span', { class: 'trk-dot', style: `background:${SEL}` }), h('span', { style: 'font-weight:600' }, t),
-        btn('Cancel (Esc)', 'Cancel', () => setTool('select')));
+        ...(st.tool === 'swap' ? [scopeToggle()] : []), btn('Cancel (Esc)', 'Cancel', () => setTool('select')));
       return;
     }
     if (!prob || st.pending) { banner.hidden = true; return; }
@@ -581,7 +591,7 @@ export async function viewTracking(view, parts, params, ui) {
       const other = byKey[renameSel.value];
       if (!other) { toast('Pick who this box really is', true); return; }
       const op = at(r, other.key);
-      addEdit({ kind: 'swap', frame: st.cur, a: tid, b: op ? op[1] : other.tid },
+      addEdit({ kind: 'swap', frame: st.cur, a: tid, b: op ? op[1] : other.tid, ...scopeEdit() },
         `This box is ${label(other)} now: ${label(pl)} and ${label(other)} trade names ${untilEnd()}`);
     };
     const drawB = btn(hasBox ? 'Redraw box' : 'Draw a box here', hasBox ? 'The box is the wrong size or on the wrong spot: drag a new one' : 'Draw this player\'s box on this frame', () => {
@@ -599,6 +609,7 @@ export async function viewTracking(view, parts, params, ui) {
           h('dt', {}, 'Open problems'), h('dd', {}, String(myProblems))),
         section('Wrong name on this box?',
           `They trade names ${untilEnd()}: this box gets the player you pick, and that player's box gets ${label(pl)}. Both names are pinned for the re-link.`,
+          scopeToggle(),
           h('div', { style: 'display:flex;gap:6px' }, renameSel, btn('Rename', 'This box is really the player picked', rename, 'primary'))),
         section('Box in the wrong place or the wrong size?',
           hasBox ? 'Drag a new box head to feet. It replaces this one on this frame and blends into the frames either side.' : 'No box on this frame: draw one round the player.',
@@ -797,8 +808,8 @@ export async function viewTracking(view, parts, params, ui) {
 
   function describe(e) {
     switch (e.kind) {
-      case 'swap': return `Swapped ${who(e.a)} ⇄ ${who(e.b)} from here${e.to != null ? ' (to ' + e.to + ')' : ' to the end'}${e.anchored ? ' ✓' : ''}`;
-      case 'assign': return (keyOfTid[e.tid] ? `Renamed ${who(e.tid)} ⇄ ${who(e.to)} from here` : `Box ${e.tid} is ${who(e.to)}`) + (e.anchored ? ' ✓' : '');
+      case 'swap': return `Swapped ${who(e.a)} ⇄ ${who(e.b)} ${e.whole ? 'for the whole game' : 'from here' + (e.to != null ? ' (to ' + e.to + ')' : ' to the end')}${e.anchored ? ' ✓' : ''}`;
+      case 'assign': return (keyOfTid[e.tid] ? `Renamed ${who(e.tid)} ⇄ ${who(e.to)} ${e.whole ? 'for the whole game' : 'from here'}` : `Box ${e.tid} is ${who(e.to)}`) + (e.anchored ? ' ✓' : '');
       case 'lock': return `Locked ${e.anchored || 0} names on this frame ✓`;
       case 'box': return `Drew a box for ${who(e.tid)}`;
       case 'split': return `${who(e.tid)}: not him from here`;
@@ -943,10 +954,10 @@ export async function viewTracking(view, parts, params, ui) {
       const tidOf = (x) => (x.kind === 'player' ? (at(r, x.id) || [0, byKey[x.id].tid])[1] : x.id);
       if (f.kind === 'player' && hit.kind === 'player') {
         const a = byKey[f.id], b = byKey[hit.id];
-        addEdit({ kind: 'swap', frame: st.cur, a: tidOf(f), b: tidOf(hit) }, `Swapped ${label(a)} ⇄ ${label(b)} ${untilEnd()}`);
+        addEdit({ kind: 'swap', frame: st.cur, a: tidOf(f), b: tidOf(hit), ...scopeEdit() }, `Swapped ${label(a)} ⇄ ${label(b)} ${untilEnd()}`);
       } else if (f.kind === 'player' || hit.kind === 'player') {
         const [pl, box] = f.kind === 'player' ? [f, hit] : [hit, f];
-        addEdit({ kind: 'assign', frame: st.cur, tid: box.id, to: tidOf(pl) },
+        addEdit({ kind: 'assign', frame: st.cur, tid: box.id, to: tidOf(pl), ...scopeEdit() },
           `Box ${box.id} is ${label(byKey[pl.id])} now; the box that had the name is unlabelled`);
       } else { toast('Neither box has a name: click one of them in Select mode and say who it is', true); st.swapFirst = null; draw(); }
       return;
@@ -972,6 +983,7 @@ export async function viewTracking(view, parts, params, ui) {
     else if (k === 'p') jumpProblem(-1);
     else if (k === 'b') setTool(st.tool === 'draw' ? 'select' : 'draw');
     else if (k === 's') setTool(st.tool === 'swap' ? 'select' : 'swap');
+    else if (k === 'w') { st.scope = st.scope === 'all' ? 'here' : 'all'; msg.textContent = st.scope === 'all' ? 'Swaps now fix the whole game' : 'Swaps now fix from this frame on'; draw(); }
     else if (k === 'l') addEdit({ kind: 'lock', frame: st.cur }, `Locked the names at ${clockOf(st.cur)}`);
     else if (k === 'Escape') { st.drag = null; st.pending = null; if (st.tool !== 'select') setTool('select'); else { st.sel = null; draw(); } }
   }
