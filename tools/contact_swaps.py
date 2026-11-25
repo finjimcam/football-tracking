@@ -66,7 +66,53 @@ def contact_episodes(pos, ids, contact_m, join_frames=3):
     return sorted(eps, key=lambda e: e[2])
 
 
-def evaluate(tracks, fps, contact_m=1.0, pre_s=3.0, post_s=3.0, gap_s=0.5, margin_m=2.0, min_frames=15):
+def reference_contacts(tracks, contact_m=1.0):
+    """{team: [(frame, (xa, ya), (xb, yb))]}: the contact set of a reference
+    run, as detection positions (not ids), so another run's ids can be looked
+    up for exactly the same contacts - every variant uses the same detections."""
+    out = {}
+    pl = tracks[(tracks["class"] == "player") & tracks["pitch_x"].notna()]
+    for team, rng in TEAM_IDS.items():
+        ids = np.array(list(rng))
+        t = pl[pl["track_id"].isin(ids)]
+        pos = t.set_index("frame")[["track_id", "pitch_x", "pitch_y"]]
+        at = {(int(f), int(k)): (x, y) for f, k, x, y in
+              zip(t["frame"], t["track_id"], t["pitch_x"], t["pitch_y"])}
+        out[team] = [(fc, at[(fc, a)], at[(fc, b)]) for a, b, fc, _ in contact_episodes(pos, ids, contact_m)]
+    return out
+
+
+def kit_contacts(tracks, contact_m=1.0, min_len=25):
+    """Identity-free contact set, same shape as reference_contacts(): contacts
+    between frame-to-frame tracklets whose majority kit is the same outfield
+    team, whether or not any run identified them. Issue #35: a reference run's
+    own contact set only holds players *it* identified, so that run scores 0
+    unlinked by construction and every other variant looks worse on coverage.
+    Pass a run with uncut tracklets (base) - its detections and kits are the
+    same as every variant's. Tracklets under min_len detections (fragments,
+    duplicate boxes) are left out: no run is expected to identify them."""
+    out = {}
+    pl = tracks[(tracks["class"] == "player") & tracks["pitch_x"].notna() & tracks["tracklet"].notna()]
+    size = pl.groupby("tracklet")["frame"].transform("size")
+    pl = pl[size >= min_len]
+    team_of = pl.groupby("tracklet")["kit"].agg(lambda s: s.mode().iat[0])
+    for team in TEAM_IDS:
+        ids = team_of.index[team_of == team].to_numpy()
+        t = pl[pl["tracklet"].isin(ids)]
+        pos = t.assign(track_id=t["tracklet"].astype(int)).set_index("frame")[["track_id", "pitch_x", "pitch_y"]]
+        at = {(int(f), int(k)): (x, y) for f, k, x, y in
+              zip(t["frame"], t["tracklet"], t["pitch_x"], t["pitch_y"])}
+        out[team] = [(fc, at[(fc, a)], at[(fc, b)])
+                     for a, b, fc, _ in contact_episodes(pos, ids.astype(int), contact_m)]
+    return out
+
+
+def evaluate(tracks, fps, contact_m=1.0, pre_s=3.0, post_s=3.0, gap_s=0.5, margin_m=2.0, min_frames=15,
+             reference=None):
+    """reference: reference_contacts() of another run -> score exactly that
+    contact set (ids looked up by detection position at the contact frame;
+    a contact whose detections aren't both identified outfielders of the team
+    counts as 'unlinked')."""
     out = {}
     pl = tracks[(tracks["class"] == "player") & tracks["pitch_x"].notna()]
     for team, rng in TEAM_IDS.items():
@@ -78,7 +124,30 @@ def evaluate(tracks, fps, contact_m=1.0, pre_s=3.0, post_s=3.0, gap_s=0.5, margi
         t = t[cnt >= 4]  # an offset from 2-3 visible players means little
         pos = t.set_index("frame")
         by_id = {k: g for k, g in t.groupby("track_id")}
-        eps = contact_episodes(pos, ids, contact_m)
+        unlinked = 0
+        if reference is not None:
+            allp = tracks[(tracks["class"] == "player") & tracks["pitch_x"].notna()]
+            byf = {int(f): g for f, g in allp[allp["frame"].isin({c[0] for c in reference[team]})].groupby("frame")}
+            eps = []
+            for fc, pa_xy, pb_xy in reference[team]:
+                g = byf.get(fc)
+                found, used = [], []
+                for xy in (pa_xy, pb_xy):
+                    if g is None:
+                        break
+                    d = np.hypot(g["pitch_x"].to_numpy() - xy[0], g["pitch_y"].to_numpy() - xy[1])
+                    d[used] = np.inf  # players in contact can stand on the same spot
+                    k = int(np.argmin(d))
+                    used.append(k)
+                    tid = int(g["track_id"].iat[k])
+                    if d[k] < 0.05 and tid in ids:
+                        found.append(tid)
+                if len(found) == 2 and found[0] != found[1]:
+                    eps.append((found[0], found[1], fc, 0.0))
+                else:
+                    unlinked += 1
+        else:
+            eps = contact_episodes(pos, ids, contact_m)
         n_eval, swaps = 0, []
         g_pre, g_post = int(gap_s * fps), int(pre_s * fps)
         g_post2 = int(post_s * fps)
@@ -99,7 +168,8 @@ def evaluate(tracks, fps, contact_m=1.0, pre_s=3.0, post_s=3.0, gap_s=0.5, margi
             if crossed + margin_m < straight:
                 swaps.append({"a": a, "b": b, "frame": fc, "min_dist_m": round(dmin, 2),
                               "straight_m": round(float(straight), 1), "crossed_m": round(float(crossed), 1)})
-        out[team] = {"contacts": len(eps), "evaluated": n_eval, "suspected_swaps": len(swaps),
+        out[team] = {"contacts": len(eps) + unlinked, "unlinked": unlinked, "evaluated": n_eval,
+                     "suspected_swaps": len(swaps),
                      "swap_rate": round(len(swaps) / max(n_eval, 1), 4), "swaps": swaps}
     return out
 
@@ -110,16 +180,27 @@ def main():
     ap.add_argument("--contact-m", type=float, default=1.0)
     ap.add_argument("--margin-m", type=float, default=2.0)
     ap.add_argument("--tmp-dir", default=".tmp")
+    ap.add_argument("--reference-tmp-dir", default=None,
+                    help="Score a fixed contact set taken from this run (fair comparison between variants)")
+    ap.add_argument("--reference-set", choices=["kit", "identity"], default="kit",
+                    help="kit: contacts between same-kit tracklets, identified or not (neutral, default); "
+                         "identity: contacts between the reference run's identities (biased: that run "
+                         "scores 0 unlinked)")
     a = ap.parse_args()
     meta = load_meta(a.match_id, a.tmp_dir)
     mdir = match_dir(a.match_id, a.tmp_dir)
     cols = ["frame", "track_id", "class", "pitch_x", "pitch_y"]
     # with hand fixes (#42); detections only: fills would hide/skew contacts (#47)
     tracks = observed(load_tracks(a.match_id, a.tmp_dir, Path(a.tmp_dir).parent / "config"))[cols]
-    res = evaluate(tracks, meta["fps"], contact_m=a.contact_m, margin_m=a.margin_m)
-    write_json(mdir / "contact_swaps.json", res)
+    ref = None
+    if a.reference_tmp_dir:  # score variants on one fixed contact set (#35)
+        rt = observed(pd.read_parquet(match_dir(a.match_id, a.reference_tmp_dir) / "tracks.parquet"))[
+            ["frame", "track_id", "class", "pitch_x", "pitch_y", "tracklet", "kit"]]
+        ref = (kit_contacts if a.reference_set == "kit" else reference_contacts)(rt, a.contact_m)
+    res = evaluate(tracks, meta["fps"], contact_m=a.contact_m, margin_m=a.margin_m, reference=ref)
+    write_json(mdir / ("contact_swaps_ref.json" if ref else "contact_swaps.json"), res)
     for team, r in res.items():
-        print(f"{team}: {r['contacts']} same-team contacts, {r['evaluated']} evaluable, "
+        print(f"{team}: {r['contacts']} same-team contacts ({r['unlinked']} unlinked), {r['evaluated']} evaluable, "
               f"{r['suspected_swaps']} suspected swaps ({r['swap_rate']:.1%})")
     print(json.dumps({t: {k: v for k, v in r.items() if k != "swaps"} for t, r in res.items()}))
 

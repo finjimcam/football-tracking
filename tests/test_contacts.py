@@ -90,3 +90,82 @@ def test_contact_swap_proxy_flags_a_swap():
     tracks = pd.DataFrame(rows)
     res = evaluate(tracks, FPS)
     assert res["team_a"]["contacts"] >= 1 and res["team_a"]["suspected_swaps"] == 1
+
+
+def test_reference_scoring_matches_own_scoring():
+    """Scoring a run against its own contact set gives the same numbers."""
+    from contact_swaps import reference_contacts
+    rows = []
+    for f in range(400):
+        for tid, (x, y) in {2: (20, 10), 3: (20, 30), 4: (40, 20), 5: (40, 50)}.items():
+            if tid in (2, 3):
+                u = 1 - min(abs(f - 200) / 50, 1)
+                y = 10 + 10 * u if tid == 2 else 30 - 10 * u
+            t = (3 if tid == 2 else 2) if (f >= 200 and tid in (2, 3)) else tid
+            rows.append({"frame": f, "track_id": t, "class": "player", "pitch_x": float(x), "pitch_y": float(y)})
+    tracks = pd.DataFrame(rows)
+    own = evaluate(tracks, FPS)["team_a"]
+    ref = evaluate(tracks, FPS, reference=reference_contacts(tracks))["team_a"]
+    assert (ref["contacts"], ref["evaluated"], ref["suspected_swaps"], ref["unlinked"]) == \
+        (own["contacts"], own["evaluated"], own["suspected_swaps"], 0)
+    # an unidentified variant: ids 2/3 replaced by fragments -> unlinked, not evaluated
+    frag = tracks.assign(track_id=tracks["track_id"].where(~tracks["track_id"].isin([2, 3]), 10001))
+    r = evaluate(frag, FPS, reference=reference_contacts(tracks))["team_a"]
+    assert r["unlinked"] == own["contacts"] and r["evaluated"] == 0
+
+
+def test_repeated_contacts_never_leave_a_short_piece():
+    """Issue #35: two contacts 5 frames apart on one tracklet used to make a
+    5-detection middle piece (under --min-len, so it skipped the linker)."""
+    rows = []
+    for f in range(200):
+        # A walks along y=20; B stands at (30, 20.5) near frames 100 and 105
+        rows.append({"frame": f, "tracklet": 0, "pitch_x": 30.0, "pitch_y": 20.0, "kit": "team_a", "conf": 0.9})
+        if 95 <= f <= 101 or 104 <= f <= 110:
+            rows.append({"frame": f, "tracklet": 1, "pitch_x": 30.0 + (0.1 if f in (100, 105) else 0.8),
+                         "pitch_y": 20.0, "kit": "team_a", "conf": 0.9})
+        elif f < 95 or f > 110:
+            rows.append({"frame": f, "tracklet": 1, "pitch_x": 40.0, "pitch_y": 20.0 + f / 50, "kit": "team_a",
+                         "conf": 0.9})
+    p = pd.DataFrame(rows)
+    tl = summarize(p, FPS, 105, 68)
+    p2, _, n_cuts, _ = split_at_contacts(p, tl, 2, contact_m=0.5, min_side=15)
+    assert n_cuts >= 1
+    assert p2.groupby("tracklet").size().min() >= 15
+
+
+def test_kit_contact_set_counts_unidentified_contacts():
+    """The neutral set includes contacts no run identified, so a reference run
+    no longer scores 0 unlinked by construction."""
+    from contact_swaps import kit_contacts, reference_contacts
+    rows = []
+    for f in range(400):
+        for tl, (x, y) in {0: (20, 10), 1: (20, 30), 2: (40, 20), 3: (40, 50), 4: (60, 20), 5: (60, 20.5)}.items():
+            if tl in (0, 1):
+                u = 1 - min(abs(f - 200) / 50, 1)
+                y = 10 + 10 * u if tl == 0 else 30 - 10 * u
+            tid = tl + 2 if tl < 4 else 10000 + tl  # tracklets 4/5 are in contact all along but unidentified
+            rows.append({"frame": f, "track_id": tid, "tracklet": tl, "kit": "team_a", "class": "player",
+                         "pitch_x": float(x), "pitch_y": float(y)})
+    tracks = pd.DataFrame(rows)
+    assert len(reference_contacts(tracks)["team_a"]) == 1
+    neutral = kit_contacts(tracks)
+    assert len(neutral["team_a"]) == 2 and neutral["team_b"] == []
+    r = evaluate(tracks, FPS, reference=neutral)["team_a"]
+    assert r["contacts"] == 2 and r["unlinked"] == 1
+
+
+def test_kit_split_cuts_a_slide_onto_the_referee():
+    """Issue #35: a tracklet that follows a City player, then the referee
+    (official / keeper-like kit), is cut only with other=True."""
+    from track_identities import split_by_kit
+    kit = ["team_a"] * 60 + ["official", "gk_a", "official", "unknown"] * 15
+    p = pd.DataFrame({"frame": range(120), "tracklet": 0, "kit": kit})
+    p2, _, n = split_by_kit(p, 1, other=True)
+    assert n == 1 and p2["tracklet"].nunique() == 2
+    assert abs(int(p2.loc[p2["tracklet"] == 1, "frame"].min()) - 60) <= 8
+    _, _, n0 = split_by_kit(p, 1, other=False)
+    assert n0 == 0
+    # a keeper whose kit reads gk_a / official throughout is never cut
+    _, _, nk = split_by_kit(p.assign(kit=["gk_a", "official"] * 60), 1, other=True)
+    assert nk == 0
