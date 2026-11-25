@@ -19,6 +19,7 @@ if str(TOOLS) not in sys.path:
 
 from _common import (clock_label, load_calibration, load_meta, load_player_map, match_config,  # noqa: E402
                      pitch_dims)
+from gap_status import read_detections  # noqa: E402
 from player_paths import attacking_x, heatmap, path, player_index, player_rows, runs, stats  # noqa: E402
 
 
@@ -42,7 +43,7 @@ class MatchPlayers:
         if not self.players:
             raise PlayersError("No identified players yet: run \"Track identities\" first.")
         self.team_names = (pm or {}).get("team_names") or {}
-        t = pd.read_parquet(tp, columns=["frame", "track_id", "class", "pitch_x", "pitch_y"])
+        t = read_detections(tp, ["frame", "track_id", "class", "pitch_x", "pitch_y"])  # #47 fill rows left out
         t = t[t["class"] == "player"].drop(columns="class")
         ids = {tid for p in self.players for tid in p["track_ids"]}
         self.tracks = t[t["track_id"].isin(ids)].reset_index(drop=True)

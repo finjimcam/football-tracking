@@ -35,7 +35,7 @@ from library import load as load_library  # noqa: E402
 from cut_phase_clips import (auto_fix_jumps, build_chains, entry_slots, export_path, export_range,  # noqa: E402
                              homography_lookup, index_rows, load_export, load_selection, load_team_rows,
                              norm_anchors, phases, save_export, save_selection, selection_path)
-from gap_status import absorbed_lookup  # noqa: E402
+from gap_status import absorbed_lookup, read_detections  # noqa: E402
 from select_shape_players import auto_slots, pick_keyframe, relink_target  # noqa: E402
 
 PHASE = "out_of_possession"
@@ -177,9 +177,10 @@ class MatchLines:
 
     def _players_near(self, frame, half):
         """Every player detection within `half` frames of `frame` (any team, or none)."""
-        rows = pd.read_parquet(self.tracks_path, filters=[("frame", ">=", int(frame) - half), ("frame", "<=", int(frame) + half)],
-                               columns=["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y",
-                                        "tracklet"])
+        # real detections only: an anchor is re-found by detection box (#47 fill rows have none)
+        rows = read_detections(self.tracks_path, ["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x",
+                                                  "foot_y", "tracklet"],
+                               filters=[("frame", ">=", int(frame) - half), ("frame", "<=", int(frame) + half)])
         return rows[rows["class"] == "player"]
 
     def others(self, frame):

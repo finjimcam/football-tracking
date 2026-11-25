@@ -29,6 +29,7 @@ import pandas as pd
 
 from _common import (load_calibration, load_meta, load_player_map, match_config, match_dir,
                      pitch_dims)
+from gap_status import read_detections
 
 TEAMS = ("team_a", "team_b")
 # m/s; the last band has no upper limit
@@ -196,8 +197,8 @@ def main():
         start = max(start, int(ko + a.from_min * 60 * fps))
     if ko is not None and a.to_min is not None:
         end = min(end, int(ko + a.to_min * 60 * fps))
-    tracks = pd.read_parquet(match_dir(a.match_id, a.tmp_dir) / "tracks.parquet",
-                             columns=["frame", "track_id", "class", "pitch_x", "pitch_y"])
+    tracks = read_detections(match_dir(a.match_id, a.tmp_dir) / "tracks.parquet",  # #47 fill rows left out
+                             ["frame", "track_id", "class", "pitch_x", "pitch_y"])
     tracks = tracks[tracks["class"] == "player"]
     players = player_index(load_player_map(a.match_id, a.tmp_dir))
     if not players:

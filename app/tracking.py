@@ -6,7 +6,10 @@ problems worth checking, and hand fixes saved to config/<id>_track_edits.json
 Per player and frame the status is one of
   seen       a tracked box
   hand       a box you drew, or interpolated from one
-  predicted  a short gap (<= PRED_S) between two boxes: interpolated, dashed
+  predicted  a short gap (<= PRED_S) between two boxes: interpolated, dashed;
+             also the pipeline's `interpolated` fill rows (gap_status.py, #47)
+  absorbed   the pipeline's `absorbed` fill rows: hidden in a duel, following
+             the opponent they disappeared into (#47)
   lost       no box, but the last-known spot is inside the camera's view
   off        no box and the last-known spot is outside the view
 """
@@ -26,14 +29,15 @@ if str(TOOLS) not in sys.path:
 import track_edits as te  # noqa: E402
 from _common import clock_label, load_calibration, load_meta, load_player_map, match_config  # noqa: E402
 
-OFF, LOST, PRED, SEEN, HAND = 0, 1, 2, 3, 4
-CODES = "olpsh"
+OFF, LOST, PRED, SEEN, HAND, ABS = 0, 1, 2, 3, 4, 5
+CODES = "olpsha"
 PRED_S = 1.0          # gaps up to this long are drawn as predicted
 LOST_MIN_S = 3.0      # a lost run this long is a problem worth checking
 SWAP_NEAR_S = 3.0     # a swap fix this close to a flagged swap resolves it
 MAX_CHUNK = 750       # frames per /frames request (30 s at 25 fps)
 KIT_CODE = {"team_a": "a", "team_b": "b", "gk_a": "a", "gk_b": "b", "official": "r"}
-COLS = ["frame", "track_id", "class", "x1", "y1", "x2", "y2", "pitch_x", "pitch_y", "tracklet", "kit", "conf"]
+COLS = ["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y", "pitch_x", "pitch_y", "tracklet",
+        "kit", "conf", "status"]
 
 
 class TrackingError(ValueError):
@@ -42,6 +46,29 @@ class TrackingError(ValueError):
 
 def _r(v, n=1):
     return None if v is None or not np.isfinite(v) else round(float(v), n)
+
+
+def fill_boxes(df):
+    """The pipeline's fill rows (gap_status.py, #47) carry only a foot point.
+    Give each one a box the size of that identity's nearest real box (the
+    one before, else the one after), standing on the foot point."""
+    if "status" not in df.columns or "foot_x" not in df.columns:
+        return df
+    nobox = (df["x1"].isna() & df["foot_x"].notna() & (df["class"] == "player")).to_numpy()
+    if not nobox.any():
+        return df
+    df = df.copy()
+    p = df[df["class"] == "player"].sort_values(["track_id", "frame"], kind="stable")
+    wh = pd.DataFrame({"w": p["x2"] - p["x1"], "h": p["y2"] - p["y1"], "track_id": p["track_id"]})
+    wh[["w", "h"]] = wh.groupby("track_id")[["w", "h"]].ffill()
+    wh[["w", "h"]] = wh.groupby("track_id")[["w", "h"]].bfill()
+    wh = wh.reindex(df.index)
+    w, h = wh["w"].to_numpy(float)[nobox], wh["h"].to_numpy(float)[nobox]
+    fx, fy = df["foot_x"].to_numpy(float)[nobox], df["foot_y"].to_numpy(float)[nobox]
+    idx = df.index[nobox]
+    df.loc[idx, "x1"], df.loc[idx, "x2"] = fx - w / 2, fx + w / 2
+    df.loc[idx, "y1"], df.loc[idx, "y2"] = fy - h, fy
+    return df
 
 
 class MatchTracking:
@@ -62,6 +89,7 @@ class MatchTracking:
         self.base = raw[[c for c in COLS if c in raw.columns]].copy()
         if "tracklet" not in self.base.columns:
             self.base["tracklet"] = np.nan
+        self.base = fill_boxes(self.base)
         self.base_fp = te.fingerprint(self.base)
         p = self.base[self.base["class"] == "player"]
         self.lo, self.hi = int(p["frame"].min()), int(p["frame"].max())
@@ -186,6 +214,7 @@ class MatchTracking:
             fr = g["frame"].to_numpy() - self.lo
             vals = g[["x1", "y1", "x2", "y2", "pitch_x", "pitch_y"]].to_numpy(float)
             hand = src_hand[m][~df[m]["frame"].duplicated().to_numpy()]
+            fill = g["status"].to_numpy(object) if "status" in g.columns else None
             tids = g["track_id"].to_numpy()
             self.ident[q["key"]] = (fr, vals, hand, tids)
             st = np.zeros(self.N, np.uint8)
@@ -199,6 +228,9 @@ class MatchTracking:
                 st[seen] = SEEN
                 hidx = np.clip(i, 0, None)
                 st[seen & hand[hidx]] = HAND
+                if fill is not None:  # the pipeline's own fill rows (#47) are not tracked boxes
+                    st[seen & (fill[hidx] == "interpolated")] = PRED
+                    st[seen & (fill[hidx] == "absorbed")] = ABS
                 pred = ~seen & has_p & has_n & ((nf - pf) <= int(PRED_S * self.fps))
                 st[pred] = PRED
                 rest = ~seen & ~pred
@@ -317,7 +349,7 @@ class MatchTracking:
             out = {}
             for q in self.players:
                 st = self.status[q["key"]][start - self.lo:end - self.lo + 1]
-                onehot = np.stack([(st == k) for k in range(5)], axis=1).astype(np.int32)
+                onehot = np.stack([(st == k) for k in range(len(CODES))], axis=1).astype(np.int32)
                 counts = np.add.reduceat(onehot, edges[:-1] - edges[0], axis=0)
                 code = counts.argmax(axis=1)
                 code[counts[:, HAND] > 0] = HAND
@@ -348,7 +380,7 @@ class MatchTracking:
                 j = np.clip(np.searchsorted(fr, offs, side="left"), 0, len(fr) - 1)
                 for k in range(n):
                     s = int(st[k])
-                    if s in (SEEN, HAND):
+                    if s in (SEEN, HAND, ABS):
                         v = vals[i[k]]
                         tid = int(tids[i[k]])
                     elif s == PRED:

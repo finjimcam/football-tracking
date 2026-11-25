@@ -171,3 +171,28 @@ def test_api(root):
     assert c.delete(f"/api/matches/{MID}/tracking/edits/{eid}").status_code == 200
     assert c.delete(f"/api/matches/{MID}/tracking/edits/{eid}").status_code == 400
     assert c.get("/api/matches/nope/tracking").status_code == 404
+
+
+def test_pipeline_fill_rows(root):
+    """#47 fill rows (status interpolated / absorbed, foot point only) show
+    as predicted / in a duel with a box, and don't count as lost."""
+    from app.tracking import MatchTracking
+
+    tp = root / ".tmp" / MID / "tracks.parquet"
+    t = pd.read_parquet(tp)
+    t["status"] = "detected"
+    fill = []
+    for f in range(200, 300):  # a3's long gap: interpolated, then absorbed
+        fill.append({"frame": f, "t_s": f / FPS, "track_id": 2, "class": "player", "conf": 0.0,
+                     "pitch_x": 20.0, "pitch_y": 20.0, "foot_x": 200.0, "foot_y": 200.0,
+                     "status": "interpolated" if f < 250 else "absorbed"})
+    t = pd.concat([t, pd.DataFrame(fill)], ignore_index=True).sort_values(["frame", "class", "track_id"])
+    t.to_parquet(tp, index=False)
+    mt = MatchTracking(root, MID)
+    assert status(mt, "a3", 220) == "p"
+    assert status(mt, "a3", 270) == "a"
+    p = next(p for p in frame_of(mt, 270)["p"] if p[0] == "a3")
+    assert p[3:7] == [194.0, 170.0, 206.0, 200.0]  # a real box's size (12x30), standing on the foot point
+    assert not [q for q in mt.summary()["problems"] if q["kind"] == "lost" and q["keys"] == ["a3"]]
+    lanes = mt.lanes(200, 299, 2)["lanes"]["a3"]
+    assert lanes == "pa"
