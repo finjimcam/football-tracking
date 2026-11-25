@@ -35,8 +35,23 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   last 6 s) and cuts the chain there. If the other player was also on a
   picked chain, that chain swaps back too. Cut anchors are saved as
   `[frame, track_id, 1]` ("from this frame on"), which the renderer and the
-  CLI picker understand. A strip under the frame shows each chain as green (detected), amber
-  (filled) or red (lost), with white ticks at hand-offs. Picks are saved to
+  CLI picker understand.
+  **Auto-fix jumps** (`j`, issue #44): label the players first, ideally on
+  the phase's first frame (`|◀` / `Home` takes you there). Auto-fix then
+  walks each chain out from your first label. Wherever it moves further
+  between two sightings than a player can (more than 2 m + 10 m/s × the
+  gap), it puts the chain back on the nearest player no other chain is on.
+  That's judged from where he was heading in the frames before, and the
+  pick must still be there 0.2 s after. If the track the chain was on comes
+  back within a second, that track wins. It adds cut anchors to the draft
+  and never moves your own labels. A jump onto one of your labels, or back
+  onto a track you labelled as that player, counts as right. Blue markers
+  on the strip are fixes. Red ones need you, because nobody unlabelled was
+  in reach: it jumps to the first, and `n` steps through them. Nothing is
+  saved until Save + next. It doesn't catch swaps where the two players are
+  touching (no jump): use Fix swap for those. A strip under the frame shows each chain as green (detected), amber
+  (filled), violet (filled inside a duel gap, `absorbed` in `gaps.parquet`) or
+  red (lost), with white ticks at hand-offs. Picks are saved to
   the same `config/<id>_<team>_out_of_possession_shape_selection.json` the
   CLI picker uses, so either one can carry on from the other.
   **Render picked lines** queues `cut_phase_clips.py --shape-selection`.
@@ -74,8 +89,37 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   whole match use the corrected identities.
   The chain, gap-filling and re-link logic runs on the server
   (`app/lines.py` calls the same functions), so the page shows exactly what
-  the render will draw. Keys: a/d ±0.5 s, A/D ±2 s, ,/. ±1 frame, k
-  play, Enter save + next, s skip, r auto guess, c clear, p previous.
+  the render will draw. Keys: a/d ±0.5 s, A/D ±2 s, ,/. ±1 frame, Home phase start, k
+  play, j auto-fix, n next auto-fix marker, Enter save + next, s skip, r auto guess, c clear, p previous.
+- **Tracking** (broadcast matches, issue #42): follow every player's track
+  and fix it by hand. The video has a box and a name on every identified
+  player: solid when tracked, dashed amber when predicted across a gap of
+  1 s or less, dashed yellow for your hand-drawn boxes. Unlabelled boxes are
+  grey and dashed. A **top-down pitch** beside it shows the same frame: every
+  player, the ball and the camera's view from the calibration. Lost players
+  sit at their last-seen spot as a dashed red ring, and players off camera
+  are faded. **Tracks** has one lane per player over a 1-15 min window:
+  tracked / predicted / lost (no box while the last spot is in view) / off
+  camera / your box / in a duel (purple). Positions the identity
+  pipeline filled itself (`gap_status.py`, #47) show as predicted (short
+  gaps) or in a duel (hidden in an opponent's box), never as lost. Diamonds above the lanes mark problems: possible swaps
+  from `contact_swaps.json`, and losses of 3 s or more. When the playhead is
+  on one, a banner offers the fix: *Swap them from here*, *Draw box for #N*,
+  or *Not a swap* / *Ignore*. Other fixes:
+  - **Swap with… from this frame on**: pick a teammate.
+  - **Not him from here**: splits the track.
+  - **Delete box**: on this frame only.
+  - **Not a player**: the piece of track is a referee, coach or fan.
+  - **Draw box**: drag round the player. Your box is interpolated to the
+    player's nearest boxes up to 5 s away.
+  - Click a grey box to say who it is.
+
+  Fixes save as you go to `config/<id>_track_edits.json`. They are never
+  baked into `tracks.parquet`: `tools/track_edits.py` applies them whenever a
+  tool loads tracks (`_common.load_tracks`). The Lines tab picks them up
+  straight away. Possession, positions, physical and the tracking render
+  show as *stale* until you re-run them. Keys: k play, ,/. ±1 frame,
+  a/d ±2 s, n/p next/previous problem, b draw, Esc cancel.
 - **Players** (issue #16, also *Players* on a broadcast match's page): every
   player's whole-match path, heatmap and running stats, computed from
   `tracks.parquet` by `tools/player_paths.py` (`app/players.py` wraps it).
@@ -109,35 +153,30 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   number twice in a squad, no deleting a team or season that's still
   used. The Lines tab's Identify picker lists the match lineup, then the
   rest of the squad as subs.
-- **Tracking** (broadcast matches, issue #42): follow every player's track
-  and fix it by hand. The video has a box and a name on every identified
-  player: solid when tracked, dashed amber when predicted across a gap of
-  1 s or less, dashed yellow for your hand-drawn boxes. Unlabelled boxes are
-  grey and dashed. A **top-down pitch** beside it shows the same frame: every
-  player, the ball and the camera's view from the calibration. Lost players
-  sit at their last-seen spot as a dashed red ring, and players off camera
-  are faded. **Tracks** has one lane per player over a 1-15 min window:
-  tracked / predicted / lost (no box while the last spot is in view) / off
-  camera / your box. Diamonds above the lanes mark problems: possible swaps
-  from `contact_swaps.json`, and losses of 3 s or more. When the playhead is
-  on one, a banner offers the fix: *Swap them from here*, *Draw box for #N*,
-  or *Not a swap* / *Ignore*. Other fixes:
-  - **Swap with… from this frame on**: pick a teammate.
-  - **Not him from here**: splits the track.
-  - **Delete box**: on this frame only.
-  - **Not a player**: the piece of track is a referee, coach or fan.
-  - **Draw box**: drag round the player. Your box is interpolated to the
-    player's nearest boxes up to 5 s away.
-  - Click a grey box to say who it is.
-
-  Fixes save as you go to `config/<id>_track_edits.json`. They are never
-  baked into `tracks.parquet`: `tools/track_edits.py` applies them whenever a
-  tool loads tracks (`_common.load_tracks`). The Lines tab picks them up
-  straight away. Possession, positions, physical and the tracking render
-  show as *stale* until you re-run them. Keys: k play, ,/. ±1 frame,
-  a/d ±2 s, n/p next/previous problem, b draw, Esc cancel.
-- **Code / Review / Sorter / Matrix / Present** tabs are placeholders that
-  link to the issues that will build them (#3, #1, #4, #11, #12).
+- **Code** (issue #3): the match video with a *code window* of tagging
+  buttons beside it, like a Sportscode code window or a Nacsport category
+  board. Press a button, or its hotkey, while the video plays to make an
+  *instance*: a clip from `lead` seconds before to `lag` seconds after that
+  moment (set per button, for example Shot −8/+5 s). The new instance is
+  selected, and the label buttons underneath describe it, one label per group:
+  Team (the two teams), Player (the match lineup from
+  `config/<id>_reference.json`, narrowed to the team once a Team label is
+  set), Outcome, Zone, or any groups you add. Label groups can have hotkeys
+  too. `[` / `]` move the selected clip's start/end to the current time,
+  Delete removes it (Ctrl+Z undoes), Space plays, ←/→ jump 2 s (Shift: 10 s),
+  and `,` / `.` step one frame. A strip under the video shows every instance
+  along the match (click to seek), and the list below plays one from its
+  start when you click it. **Edit layout** changes buttons (colour, label,
+  hotkey, seconds before/after, order) and label groups. Layouts save as
+  templates in `config/code_windows/<name>.json`, and *Default* is built in.
+  Instances save as you go to `config/<id>_instances.json`. Each one keeps
+  its code name and colour, so later layout edits never change past tags.
+  **CSV** downloads them, one column per label group. The video is served
+  from `GET /api/matches/{id}/video` with HTTP Range, so the browser can seek
+  without downloading the whole file. It needs a codec the browser plays
+  (H.264 MP4 does).
+- **Review / Sorter / Matrix / Present** tabs are placeholders that
+  link to the issues that will build them (#1, #4, #11, #12).
 
 ## Two pipelines
 A match whose `config/<id>_match.json` exists gets the **broadcast** pipeline

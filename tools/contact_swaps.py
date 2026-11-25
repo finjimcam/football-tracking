@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 from _common import load_meta, load_tracks, match_dir, write_json
+from gap_status import observed
 
 TEAM_IDS = {"team_a": range(2, 12), "team_b": range(102, 112)}  # outfield identities
 
@@ -112,8 +113,9 @@ def main():
     a = ap.parse_args()
     meta = load_meta(a.match_id, a.tmp_dir)
     mdir = match_dir(a.match_id, a.tmp_dir)
-    tracks = load_tracks(a.match_id, a.tmp_dir, Path(a.tmp_dir).parent / "config",  # with hand fixes (#42)
-                         columns=["frame", "track_id", "class", "pitch_x", "pitch_y"])
+    cols = ["frame", "track_id", "class", "pitch_x", "pitch_y"]
+    # with hand fixes (#42); detections only: fills would hide/skew contacts (#47)
+    tracks = observed(load_tracks(a.match_id, a.tmp_dir, Path(a.tmp_dir).parent / "config"))[cols]
     res = evaluate(tracks, meta["fps"], contact_m=a.contact_m, margin_m=a.margin_m)
     write_json(mdir / "contact_swaps.json", res)
     for team, r in res.items():

@@ -32,9 +32,10 @@ from _common import clock_label, load_calibration, load_meta, load_player_map, m
 from identity_anchors import anchors_path, iou, load_anchors, save_anchors  # noqa: E402
 from library import LibraryError, library_path, match_lineup  # noqa: E402
 from library import load as load_library  # noqa: E402
-from cut_phase_clips import (build_chains, entry_slots, export_path, export_range,  # noqa: E402
+from cut_phase_clips import (auto_fix_jumps, build_chains, entry_slots, export_path, export_range,  # noqa: E402
                              homography_lookup, index_rows, load_export, load_selection, load_team_rows,
                              norm_anchors, phases, save_export, save_selection, selection_path)
+from gap_status import absorbed_lookup, read_detections  # noqa: E402
 from select_shape_players import auto_slots, pick_keyframe, relink_target  # noqa: E402
 
 PHASE = "out_of_possession"
@@ -101,6 +102,8 @@ class MatchLines:
         self.rows_by_frame, self.own_goal_x = load_team_rows(mdir, self.tmp_dir, match_id, team, self.segs)
         self.rows_idx = index_rows(self.rows_by_frame)
         self.H_at = homography_lookup(load_calibration(match_id, self.config_dir))
+        gaps_p = mdir / "gaps.parquet"  # gap_status.py: which fills are duel gaps
+        self.is_absorbed = absorbed_lookup(pd.read_parquet(gaps_p) if gaps_p.exists() else None)
         self.sel_path = selection_path(match_id, team, PHASE, self.config_dir)
         self.exp_path = export_path(match_id, team, PHASE, self.config_dir)
         self.anchor_path = anchors_path(match_id, self.config_dir)
@@ -132,13 +135,16 @@ class MatchLines:
 
     def _chains_json(self, chains, s, e):
         """Per chain: line, and per frame [tid, foot_x, foot_y, pitch_y, status]
-        (status s=seen, l=link (hand-off), f=filled). Missing frame = lost."""
+        (status s=seen, l=link (hand-off), f=filled, a=filled inside a duel gap
+        where the player was hidden by another (gap_status.py "absorbed")).
+        Missing frame = lost (gap_status "unknown")."""
         out = []
         for ch in chains:
             pts = {}
             for f, (tid, _px, py, fx, fy, st) in ch["pts"].items():
                 if s <= f <= e:
-                    pts[f] = [int(tid), round(fx, 1), round(fy, 1), round(py, 2), st[0]]
+                    code = "a" if st == "filled" and self.is_absorbed(tid, f) else st[0]
+                    pts[f] = [int(tid), round(fx, 1), round(fy, 1), round(py, 2), code]
             out.append({"line": ch["line"], "pts": pts})
         return out
 
@@ -178,9 +184,10 @@ class MatchLines:
 
     def _players_near(self, frame, half):
         """Every player detection within `half` frames of `frame` (any team, or none)."""
-        rows = pd.read_parquet(self.tracks_path, filters=[("frame", ">=", int(frame) - half), ("frame", "<=", int(frame) + half)],
-                               columns=["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y",
-                                        "tracklet"])
+        # real detections only: an anchor is re-found by detection box (#47 fill rows have none)
+        rows = read_detections(self.tracks_path, ["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x",
+                                                  "foot_y", "tracklet"],
+                               filters=[("frame", ">=", int(frame) - half), ("frame", "<=", int(frame) + half)])
         return rows[rows["class"] == "player"]
 
     def others(self, frame):
@@ -402,9 +409,28 @@ class MatchLines:
                 msg += "; swapped the other picked chain back too"
         return slots, msg
 
+    def _autofix_msg(self, fixes, unresolved, slots, s):
+        clk = lambda f: f"{(f - s) / self.fps:.1f} s"
+        if not fixes and not unresolved:
+            msg = "No unrealistic jumps: every chain moves like a player"
+        else:
+            msg = f"Fixed {len(fixes)} jump{'' if len(fixes) == 1 else 's'}"
+            if fixes:
+                msg += " (at " + ", ".join(clk(x["frame"]) for x in fixes[:6]) + (", ..." if len(fixes) > 6 else "") + ")"
+            if unresolved:
+                msg += (f"; {len(unresolved)} need{'s' if len(unresolved) == 1 else ''} you, nobody unlabelled in reach"
+                        " (at " + ", ".join(clk(x["frame"]) for x in unresolved) + "): press n to go there")
+            msg += ". Check, then Save + next"
+        late = [i for i, sl in enumerate(slots) if sl["anchors"][0][0] - s > 2 * self.fps]
+        if late:
+            msg += f". {len(late)} chain{'s were' if len(late) > 1 else ' was'} first labelled >2 s into the phase: label at the start for the best result"
+        return msg
+
     def edit(self, start, slots, action, frame=None, tid=None, chain=None):
         """Apply one picker action to a draft (nothing saved). Actions:
         cycle (left-click: none -> back -> mid -> none), relink (right-click),
+        autofix (issue #44: put chains that jump further than a player can back
+        on the nearest unlabelled player; adds fixes/unresolved to the reply),
         swap (fix an identity swap: chain `chain` belongs on `tid`), auto
         (reset to the automatic guess at `frame`), clear, chains (just
         recompute). Returns the new slots + chains + a message."""
@@ -451,6 +477,13 @@ class MatchLines:
             rows = self.rows_by_frame.get(f)
             slots = auto_slots(rows, f, self.own_goal_x) if rows is not None else []
             msg = "Reset to the automatic guess" if slots else "No automatic guess on this frame (too few players)"
+        elif action == "autofix":
+            if not slots:
+                raise LinesError("Label the players first (ideally on the phase's first frame), then auto-fix")
+            slots, fixes, unresolved, chains = auto_fix_jumps(self.rows_idx, slots, s, e, self.fps, self.H_at)
+            return {"slots": slots, "chains": self._chains_json(chains, s, e),
+                    "msg": self._autofix_msg(fixes, unresolved, slots, s),
+                    "fixes": fixes, "unresolved": unresolved}
         elif action == "clear":
             slots = []
         elif action != "chains":

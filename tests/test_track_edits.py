@@ -203,3 +203,22 @@ def test_whole_game_swap():
     df = te.apply_edits(make_tracks(), [{"kind": "assign", "frame": 70, "tid": 1, "to": 2, "whole": True}], FPS)
     assert ids_at(df, 0) == {2: 10.0, 1: 20.0}
     assert te.clean_edit({"kind": "swap", "frame": 3, "a": 1, "b": 2, "whole": 1})["whole"] is True
+def test_hand_box_replaces_pipeline_fill():
+    """#47 fill rows aren't boxes: a hand box in a filled gap interpolates to
+    the real boxes either side, replacing the pipeline's guess there."""
+    tracks = make_tracks()
+    tracks["status"] = "detected"
+    fill = tracks[(tracks["track_id"] == 1) & (tracks["frame"].between(30, 39))].copy()
+    fill["frame"] = fill["frame"] + 10  # 40-49: the pipeline's guess, at the wrong y
+    fill[["x1", "y1", "x2", "y2"]] = np.nan
+    fill["pitch_y"] = 99.0
+    fill["status"] = "interpolated"
+    tracks = pd.concat([tracks, fill], ignore_index=True)
+    box = {"kind": "box", "frame": 50, "tid": 1, "x1": 145, "y1": 80, "x2": 155, "y2": 100,
+           "pitch_x": 15.0, "pitch_y": 10.0}
+    df = te.apply_edits(tracks, [box], FPS)
+    one = df[df["track_id"] == 1]
+    assert not one["frame"].duplicated().any()
+    one = one.set_index("frame")
+    assert one.loc[45, "source"] == "hand_fill" and one.loc[45, "pitch_y"] == pytest.approx(10.0)
+    assert (one["pitch_y"] != 99.0).all()

@@ -7,6 +7,8 @@ const KEYS_HELP = [
   ['Click player', 'cycle none → back → midfield'],
   ['Right-click / Re-link mode', 're-attach a lost chain to this player'],
   ['x / Fix swap mode', 'click the chain that jumped to the wrong player, then the right player'],
+  ['Home', 'go to the phase start (label the players here)'],
+  ['j', 'auto-fix chains that jump further than a player can'], ['n', 'next auto-fix marker'],
   ['a / d', '−/+ 0.5 s'], ['A / D', '−/+ 2 s'], [', / .', '−/+ 1 frame'], ['k', 'play / pause'],
   ['Enter', 'save + next phase'], ['s', 'skip phase (no lines)'], ['r', 'reset to auto guess here'],
   ['c', 'clear picks'], ['p', 'previous phase'],
@@ -15,7 +17,9 @@ const KEYS_HELP = [
   ['Shift-click / long-press', 'change who a player is without leaving line picking'],
 ];
 const STRIP_ROW = 12;
-const COL = { seen: '#5DBB63', filled: '#E8A33A', lost: '#7A2E2E', link: '#FFFFFF', head: '#FFD84D' };
+const COL = { seen: '#5DBB63', filled: '#E8A33A', absorbed: '#A77BE0', lost: '#7A2E2E', link: '#FFFFFF', head: '#FFD84D', fixed: '#4DA3FF', flag: '#FF4D6D' };
+// chain point status: s seen, l hand-off, f filled, a filled inside a duel gap (absorbed)
+const isFill = (s) => s === 'f' || s === 'a';
 const SVGNS = 'http://www.w3.org/2000/svg';
 
 function svg(tag, attrs) {
@@ -60,7 +64,7 @@ export async function viewLines(view, parts, params, ui) {
 
   const W = sum.width, H = sum.height, FPS = sum.fps;
   const IMG_W = Math.min(W, 1280);
-  const st = { phase: null, cur: 0, slots: [], chains: [], dirty: false, playing: false, mode: 'pick', swapChain: null, busy: false, loadedFrame: null };
+  const st = { phase: null, cur: 0, slots: [], chains: [], dirty: false, playing: false, mode: 'pick', swapChain: null, busy: false, loadedFrame: null, marks: [] };
 
   // ---------- layout ----------
   const list = h('div', { class: 'scroll lines-list' });
@@ -111,6 +115,7 @@ export async function viewLines(view, parts, params, ui) {
     }));
 
   const transport = h('div', { class: 'lines-tools' },
+    btn('|◀', 'Go to the phase start (Home)', () => { stopPlay(); seek(st.phase.start); }),
     btn('−2s', 'Back 2 seconds', () => step(-2 * FPS)), btn('−½s', 'Back half a second', () => step(-FPS / 2)),
     btn('−1f', 'Previous frame', () => step(-1)), playBtn, btn('+1f', 'Next frame', () => step(1)),
     btn('+½s', 'Forward half a second', () => step(FPS / 2)), btn('+2s', 'Forward 2 seconds', () => step(2 * FPS)),
@@ -118,6 +123,7 @@ export async function viewLines(view, parts, params, ui) {
   const actions = h('div', { class: 'lines-tools' },
     btn('Save + next', 'Save picks and go to the next phase (Enter)', () => save(false), 'primary'),
     btn('Skip phase', 'Save as no lines (s)', () => save(true)),
+    btn('Auto-fix jumps', 'Put chains that jump further than a player can back on the nearest unlabelled player (j)', () => edit('autofix'), 'primary'),
     btn('Auto guess here', 'Reset to the automatic guess on this frame (r)', () => edit('auto')),
     btn('Clear', 'Clear all picks (c)', () => edit('clear')),
     btn('Previous phase', 'Previous phase (p)', () => gotoIndex(idx() - 1)),
@@ -324,8 +330,11 @@ export async function viewLines(view, parts, params, ui) {
           h('span', {}, h('i', { style: 'background:#fff' }), 'midfield line'),
           h('span', {}, h('i', { style: `background:${COL.seen}` }), 'detected'),
           h('span', {}, h('i', { style: `background:${COL.filled}` }), 'filled'),
+          h('span', {}, h('i', { style: `background:${COL.absorbed}` }), 'absorbed (duel)'),
           h('span', {}, h('i', { style: `background:${COL.lost}` }), 'lost'),
-          h('span', {}, h('i', { style: 'background:#fff;width:2px' }), 'hand-off')),
+          h('span', {}, h('i', { style: 'background:#fff;width:2px' }), 'hand-off'),
+          h('span', {}, h('i', { style: `background:${COL.fixed}` }), 'auto-fixed'),
+          h('span', {}, h('i', { style: `background:${COL.flag}` }), 'jump: needs you')),
       ))),
     h('div', { class: 'col-main' },
       h('section', { class: 'panel' },
@@ -368,6 +377,7 @@ export async function viewLines(view, parts, params, ui) {
       st.phase = d;
       st.slots = d.slots;
       st.chains = d.chains;
+      st.marks = [];
       st.cur = d.keyframe;
       st.dirty = false;
       msg.textContent = d.source === 'auto' ? 'Pre-filled with the automatic guess: check it, fix it, then Save + next.' : '';
@@ -391,6 +401,11 @@ export async function viewLines(view, parts, params, ui) {
       st.slots = r.slots;
       st.chains = r.chains;
       st.dirty = true;
+      if (action === 'autofix') {
+        st.marks = [...(r.fixes || []).map((x) => ({ ...x, kind: 'fixed' })),
+          ...(r.unresolved || []).map((x) => ({ ...x, kind: 'flag' }))].sort((a, b) => a.frame - b.frame);
+        if (r.unresolved && r.unresolved.length) { stopPlay(); seek(r.unresolved[0].frame); }
+      } else if (action === 'clear' || action === 'auto') st.marks = [];
       msg.textContent = r.msg || '';
       draw();
     } catch (e) { msg.textContent = e.message; } finally { st.busy = false; }
@@ -452,7 +467,7 @@ export async function viewLines(view, parts, params, ui) {
     overlay.replaceChildren();
     const rows = ph.rows[f] || [];
     const taken = new Set();
-    for (const ch of st.chains) { const p = chainAt(ch, f); if (p && p[4] !== 'f') taken.add(p[0]); }
+    for (const ch of st.chains) { const p = chainAt(ch, f); if (p && !isFill(p[4])) taken.add(p[0]); }
     if (st.mode === 'identify') {
       const here = sum.anchors.filter((a) => a.frame === f);
       for (const r of rows) {
@@ -500,10 +515,10 @@ export async function viewLines(view, parts, params, ui) {
       }
       if (st.mode !== 'identify') { // identify mode labels every box with its shirt number instead
         overlay.append(svg('ellipse', { cx: fx, cy: fy, rx: 16, ry: 6, fill: 'none', stroke: color,
-          'stroke-width': s === 'f' ? 1.5 : 2.5, 'stroke-dasharray': s === 'f' ? '4 4' : null }));
+          'stroke-width': isFill(s) ? 1.5 : 2.5, 'stroke-dasharray': isFill(s) ? '4 4' : null }));
         const t = svg('text', { x: fx, y: fy - 22, class: 'ov-label', fill: color });
-        t.textContent = (ch.line === 'back' ? 'B' : 'M') + (s === 'f' ? '~' : s === 'l' ? '*' : '');
-        const nm = s !== 'f' ? nameOf(p[0], f) : null; // the shirt number of the player the chain is on
+        t.textContent = (ch.line === 'back' ? 'B' : 'M') + (s === 'f' ? '~' : s === 'a' ? '≈' : s === 'l' ? '*' : '');
+        const nm = !isFill(s) ? nameOf(p[0], f) : null; // the shirt number of the player the chain is on
         if (nm) {
           const n = svg('tspan', { dx: 4, fill: nameFill(nm), class: 'ov-chain-num' });
           n.textContent = nm.label;
@@ -547,11 +562,17 @@ export async function viewLines(view, parts, params, ui) {
       for (let x = x0; x < x1; x++) {
         const f = ph.start + Math.round(((x - x0) / (x1 - x0)) * span);
         const p = ch.pts[f];
-        g.fillStyle = !p ? COL.lost : p[4] === 'f' ? COL.filled : COL.seen;
+        g.fillStyle = !p ? COL.lost : p[4] === 'f' ? COL.filled : p[4] === 'a' ? COL.absorbed : COL.seen;
         g.fillRect(x, y, 1, STRIP_ROW - 3);
       }
       g.fillStyle = COL.link;
       for (const [f, p] of Object.entries(ch.pts)) if (p[4] === 'l') g.fillRect(fx(+f) - 1, y, 2, STRIP_ROW - 3);
+      for (const m of st.marks) { // auto-fix (issue #44): blue = fixed, red = needs you
+        if (m.chain !== i) continue;
+        const x = fx(m.frame);
+        g.fillStyle = COL[m.kind];
+        g.beginPath(); g.moveTo(x - 4, y - 1); g.lineTo(x + 4, y - 1); g.lineTo(x, y + STRIP_ROW - 4); g.closePath(); g.fill();
+      }
     });
     const ex = curExport();
     if (ex) { // clip export: shade what's trimmed off (or the whole phase if dropped)
@@ -748,6 +769,13 @@ export async function viewLines(view, parts, params, ui) {
     else if (k === 'k') togglePlay();
     else if (k === 'x') setMode(st.mode === 'swap' ? 'pick' : 'swap');
     else if (k === 'i') setMode(st.mode === 'identify' ? 'pick' : 'identify');
+    else if (k === 'j') edit('autofix');
+    else if (k === 'Home') { stopPlay(); seek(st.phase.start); }
+    else if (k === 'n') { // next auto-fix marker (unresolved first), wrapping round
+      const flagged = st.marks.filter((m) => m.kind === 'flag');
+      const pool = flagged.length ? flagged : st.marks;
+      if (pool.length) { stopPlay(); seek((pool.find((m) => m.frame > st.cur) || pool[0]).frame); }
+    }
     else if (k === '[') setExport(st.phase.start, { trim_in: st.cur });
     else if (k === ']') setExport(st.phase.start, { trim_out: st.cur });
     else if (k === 'e') { const ex = curExport(); if (ex) setExport(st.phase.start, { keep: !ex.keep }); }

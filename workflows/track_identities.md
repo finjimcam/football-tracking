@@ -49,6 +49,7 @@ out-of-possession phases) from it.
 | 3 | `tools/track_identities.py` | ~10 min (two tracking passes + 8 flow solves); `--reuse-tracklets` re-links from its cache in ~3 min | `tracks.parquet`, `player_map.json`, `team_map.json`, `identity_links.parquet`, `tracklets_cache.parquet` |
 | 4 | `tools/track_ball.py` | < 1 min | cleaned ball rows in `tracks.parquet`, `ball_track.parquet` |
 | 5 | `tools/compute_possession.py --include-unidentified` | < 1 min | `possession.json`, `possession_timeline.parquet` |
+| 5b | `tools/detect_events.py [--instances]` | seconds | `events.parquet`, `events.json` (passes, turnovers, tackles, shots; scored vs Opta); `--instances` also puts them in the Code tab |
 | 6 | `tools/compute_physical.py --smooth-s 1.0`, `tools/compute_positions.py` | < 1 min | `physical.json`, `positions.json` + figures |
 | 7 | `tools/verify_tracking.py` | ~2 min (contact sheets read the video) | `verification.json`, `outputs/verification/<id>/` |
 | 8 | `tools/compare_reference_stats.py` | seconds | `outputs/stats/<id>_vs_reference.csv` |
@@ -68,6 +69,7 @@ python tools/calibrate_auto.py --match-id <id> --check-frames 5000,30000,60000  
 python tools/track_identities.py --match-id <id>
 python tools/track_ball.py --match-id <id>
 python tools/compute_possession.py --match-id <id> --include-unidentified
+python tools/detect_events.py --match-id <id>            # add --instances to see them in the Code tab
 python tools/compute_physical.py --match-id <id> --smooth-s 1.0
 python tools/compute_positions.py --match-id <id>
 python tools/verify_tracking.py --match-id <id>
@@ -116,8 +118,74 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   identities matched to the official formation lines by average depth/width
   (**role-inferred**).
 - **Ball** (`track_ball.py`): drops detections projecting > 1 m off the pitch
-  (spare balls), links the rest into ball tracklets, keeps the strongest
-  per frame, interpolates gaps <= 12 frames.
+  (spare balls), links the rest into ball tracklets, drops **static
+  clutter**, keeps the strongest per frame, and interpolates gaps <= 12
+  frames. Static clutter (issue #7) means still "balls" that keep coming back
+  to one spot: at least 30 s in total, across at least 3 different minutes.
+  On Man City v Spurs H1 that found 7 spots:
+  - the two painted **penalty spots** (94,34) and (12,34);
+  - a spare ball by the goal line at (105,58);
+  - objects on the far touchline at (80,0) and (78,0).
+
+  Near goal these used to beat the real ball: in 878 frames the pick moved
+  to the real ball (6/6 random frames checked by eye). 4409 frames that had
+  only clutter now have no ball, which is right. "Ball located" drops from
+  48% to 42% of frames, but ball-near-player frames rise from 16447 to
+  16914. Real set pieces don't trip the filter: a corner rests seconds, in
+  one or two minutes. `--clutter-min-s 0` turns it off.
+- **Events** (`detect_events.py`, issue #7, first step): control spells =
+  runs of the possession holder, flicker shorter than 5 frames dropped.
+  Consecutive spells give pass (same team, ball moved >= 4 m), pass_lost
+  (other team, >= 4 m), tackle (other team, < 4 m). A shot is the ball
+  leaving a spell <= 35 m from the attacked goal at >= 8 m/s towards it,
+  reaching the goal line between ±16 m of the centre or vanishing on the way.
+  Man City v Spurs H1 against Opta:
+  - shots: 4 of 13 Opta shots and goals found within 5 s;
+  - passes: 185 City / 109 Spurs, so 63% City (Opta full match 71%, 755/308
+    over 90 min);
+  - turnovers: 72/76 (Opta full match 133/104).
+
+  Passes are undercounted because the ball is seen in only ~42% of frames.
+  Shots are the weak spot: near goal the ball is in the air or blurred and
+  the detector misses it.
+- **Fine-tuned ball detector** (issue #7, no hand labels): the cleaned track
+  teaches the detector.
+  1. `tools/make_ball_dataset.py` writes a person+ball YOLO dataset:
+     - person boxes are detections with conf >= 0.4;
+     - ball boxes come from `ball_track.parquet` (clutter already dropped),
+       plus interpolated balls in gaps of up to 4 frames;
+     - training and validation windows are kept apart.
+  2. Fine-tune `yolo26n.pt` at imgsz 1280.
+  3. Run `detect_frames.py --weights <best.pt>`. It finds the person and
+     ball classes by name, so both COCO and fine-tuned weights work.
+
+  Man City v Spurs, trained on minutes 0-32 of H1 (1695 frames), 8 epochs,
+  batch 4 (3.6 GB VRAM on the GTX 1060, 41 min). Evaluated on the held-out
+  minutes 35-47, same identities, with `track_ball.py` and
+  `compute_possession.py` re-run:
+
+  | | yolo26n | fine-tuned |
+  |---|---|---|
+  | raw ball detections | 40958 | 19946 (less junk) |
+  | ball located (detected) | 44.6% | 48.1% |
+  | ball-near-player frames | 4658 | **5441** (+17%) |
+  | City possession (Opta 71% full match) | 58% | **65%** |
+  | City pass share (Opta 71%) | 58% | 63% |
+
+  Spot-check of picks where the two disagree: the fine-tuned picks were the
+  ball (5/5 zoomed). The base picks were grass, a coach's hand, and a ball
+  on the touchline. Shots near goal are still missed by both.
+
+  The weights are not in the repo (`*.pt` is gitignored). On pphub they are
+  at `runs/ballft/v1/weights/best.pt`. Commands:
+  ```
+  python tools/make_ball_dataset.py --match-id <id> --out <dir> --train 1151:52000 --val 53000:71434
+  python tools/train_yolo.py --data <dir>/dataset.yaml --model yolo26n.pt --epochs 8 --imgsz 1280 --batch 4
+  python tools/detect_frames.py --match-id <id> --weights runs/detect/train/weights/best.pt
+  ```
+  On pphub, batch 8 at 1280 needs 5.9 GB of VRAM, which leaves Kodi nothing.
+  Use batch 4, and stop training if Jellyfin/Kodi starts playing (it resumes
+  from `last.pt`).
 - **Manual anchors** (issue #16): `track_identities.py` applies
   `config/<id>_identity_anchors.json` (made in the Lines tab's Identify
   mode) after gap-filling. An anchor is a frame plus a detection box plus a
@@ -198,6 +266,78 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   exclusivity the 14 picked phases read 83% detected, 5% filled and 12% lost.
   The difference was fake "detected" frames that are now honest gaps to
   re-link.
+- **Gap status** (`gap_status.py`, issue #47): every identity row in
+  `tracks.parquet` has a `status`. `detected` is a real box.
+  `interpolated` fills a gap of <= 3 s (`--fill-max-s`) that the player
+  could have run (distance <= 3 m + 8.5 m/s x gap) with the RTS smoother
+  (see "Short-gap fill"). `absorbed` is a duel gap of <= 10 s
+  (`--absorbed-max-s`): the player was last seen within 1.5 m of another
+  player and came back within 2.5 m of that same player. It is filled by the
+  duel filler (see "Duel gaps"), whose kit and swap checks can refuse it.
+  `unknown` means the gap is too long, not runnable, refused by its filler
+  (reason `...+fill_refused`), or before the first or after the last
+  sighting. `--linear-fill` restores the old straight line for both kinds. Unknown frames have no row. `gaps.parquet` has one
+  row per gap (kind, reason, partner track). Fill rows have no box (x1..y2
+  NaN, conf 0); their foot pixels are projected back through the frame's
+  homography. `track_identities.py` labels as it writes tracks.parquet
+  (`--no-gap-status` turns it off). `python tools/gap_status.py --match-id
+  <id>` re-labels in place with the same fillers, so you can tune
+  `--max-fill-s`, `--max-absorbed-s` and `--duel-m` without re-linking. Heatmaps and average positions
+  (`compute_positions.py`) weight detected 1, interpolated 0.5, absorbed 0.5
+  (`--w-interpolated` / `--w-absorbed`). `compute_physical.py` counts filled
+  steps towards distance and time (`distance_filled`), but speed peaks only
+  come from detected-to-detected steps. Possession, contact swaps,
+  verification, renders and the Lines chains read detected rows only
+  (`gap_status.observed()`). Fillers plug in through
+  `label_tracks(..., classify=, fillers={kind: fn}, context_hook=)`;
+  `pipeline_fillers()` is the set the pipeline uses.
+- **Duel gaps** (`duel_gaps.py`, issue #47 item 3): a player who vanishes
+  within 1.5 m of another tracked person, and comes back within 2.5 m of
+  that same person, was hidden behind them in a merged box. The gap is
+  filled with the partner's path plus an offset blended from the entry
+  offset to the exit offset. The partner must be one tracklet through the
+  gap (a partner chain re-linked mid-gap once jumped onto the referee). At
+  the split the fill is checked: kit colour while the two stand > 1.2 m
+  apart (opponents can't swap teams), and for teammates exit motion and
+  side. A failed check leaves the gap `unknown`. In the pipeline this runs
+  as gap_status's `absorbed` filler (`duel_gaps.fill`, with the full checks
+  via `ctx.duel_index`). `python tools/duel_gaps.py --match-id <id>` is
+  the standalone experiment tool: it writes its own rows (`interp=True`,
+  `absorbed_by`) and a `duel_gaps.json` review list; don't run it on top of
+  a gap-status tracks.parquet. On the 2026-11-17 reference
+  run: 2,023 duel gaps, 1,536 filled (6,488 frames), 69 flagged, 418 with no
+  usable partner. Most duel gaps are under 1 s, and only 40 last 3-10 s
+  (4 filled). In longer duel gaps the player usually comes back far from
+  the partner. Spot check: 9 of 10 fills on the right player (two about
+  1 m off inside the merged box). All 3 flagged fills were real problems.
+  `fill(gap, ctx)` is the plug-in for the gap-status labeller (status
+  `absorbed`).
+- **Duel-split linking** (issue #48, on by default; `--duel-sigma-m 0` = off): when a
+  tracklet ends within `--duel-m` 1.5 m of an opponent (a merged box), the
+  linker prices successors by their distance from that partner's position
+  (`duel_partners()`), and allows `--duel-reach-m` +2 m and
+  `--duel-overlap-frames` 10 for those links. Merged boxes make the foot
+  point jump and briefly double-detect, so the hidden player's next piece was
+  often blocked by the 3 m reach gate or the 3-frame overlap limit. It is
+  skipped if a teammate is within `--duel-crowd-m` 2 m. On the 2026-11-17
+  reference half (exp48): City+Spurs tracklets in chains 1397 -> 1418,
+  unidentified tracks 794 -> 768, detected coverage 83.5% -> 84.1%, missing
+  frames in gaps > 10 s 172k -> 162k. 5 of 6 new links checked on video were
+  right; one teammate merge was ambiguous. But Spurs suspected swaps rose
+  14/90 -> 19/94. Some of that rise is newly evaluable contacts or shifted
+  team-shape averages, not wrong links; the proxy can't separate them. So the
+  92 links where the two runs disagree (50 events) were judged on video
+  instead: 24 sampled events, the new link right in 11, the old one in 3, and
+  10 undecidable from frames. The wins are mostly a white+blue merged box,
+  where the new link takes the player who comes out of it and the old one
+  jumped to a fragment 10-15 s later. The losses drop a correct immediate
+  continuation. Validate future linker changes the same way: render only
+  the disagreements and judge them (`/srv/football-data/exp48/scripts/
+  spot_dis.py`), rather than tune against the swap proxy.
+  Diagnosis: of 222 duel gaps >= 1 s, 84 come back to the right identity, 85
+  have no fragment near the partner, and 53 have a same-kit fragment near the
+  partner that went unclaimed or to a teammate. About half of those are extra
+  bodies, because the identity is seen elsewhere at the same time.
 - **Contact swaps** (`contact_swaps.py`, issue #34): this is a proxy for
   identities that swap when two teammates collide. Take each identity's
   average place in the team shape for 3 s before and 3 s after every contact
@@ -210,6 +350,44 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   same-team contacts so the global linker decides who is who. `--w-vel` adds
   velocity continuity to short links. Experiments, and the standing
   improvement loop, are tracked in issue #35.
+- **Short-gap fill** (`interp_gaps.py`, issue #47 item 4): gap_status's
+  `interpolated` filler (`make_filler`), up to `--fill-max-s` (default 3 s).
+  Each gap is filled with a constant-velocity Kalman
+  filter and RTS smoother run over the player's own sightings 1 s either side.
+  The curve is shifted so it joins both sightings exactly. The fill keeps the
+  player's velocity through the gap, where a straight line has a kink at each
+  end. Peak speed is capped at 10 m/s and acceleration at 8 m/s²: if the curve
+  breaks either cap, the straight line is used instead. If even the straight
+  line needs more than 10 m/s, the gap stays empty, because that is a tracking
+  jump rather than a hidden player (the filler refuses it: `unknown`).
+  `python tools/interp_gaps.py --match-id <id>` is the standalone
+  experiment tool (own `interp=True` rows; not on top of a gap-status
+  tracks.parquet), and `--holdout` prints the error table.
+  **Hold-out test (2026-11-17):** fully seen stretches were blanked and
+  refilled, and the fill was compared with the hidden detections. Parameters
+  were tuned on even match minutes and the table below is from the odd
+  minutes, 600 stretches per length. Values are mean / p95 of each stretch's
+  mean error in metres:
+
+  | gap | straight line | RTS |
+  |---|---|---|
+  | 0.5 s | 0.15 / 0.32 | 0.15 / 0.32 |
+  | 1 s | 0.20 / 0.44 | 0.18 / 0.37 |
+  | 2 s | 0.39 / 0.87 | 0.27 / 0.56 |
+  | 3 s | 0.71 / 1.76 | 0.41 / 0.96 |
+  | 5 s | 1.30 / 3.01 | 0.72 / 1.83 |
+  | 8 s | 2.48 / 5.55 | 1.47 / 3.22 |
+  | 10 s | 3.21 / 7.10 | 2.07 / 4.78 |
+
+  RTS at 5 s is about as accurate as the straight line at 3 s. A cubic
+  Hermite spline came close to RTS but was slightly worse at every length.
+  These stretches were on camera, while real gaps often happen off camera, so
+  treat the table as a lower bound on the error. On the reference half the
+  fill covered 12,219 of 15,322 gaps (44k frames). Missing frames in gaps
+  under 3 s fell from 55k to 12k. It skipped 1,774 duel-like gaps and 958
+  implausible jumps. Team distance rose about 1%, and the median p99 top speed
+  fell from about 7.1 to 6.6 m/s. The filled stretches are smooth, so count
+  them for distance but not for speed peaks.
 - **Verification** (`verify_tracking.py`): see "Reading the verification".
 
 ## Reading the verification ("does it match?")
@@ -341,6 +519,23 @@ Local only (`.gitignore`: footage and anything cut from it):
 - **yolo26 duplicates**: its NMS-free head emits near-identical box pairs for
   ~8% of person boxes; unsuppressed they cut median tracklet length from ~190
   to ~45 frames. `suppress_duplicates()` (IoU 0.6) is mandatory.
+- **Which yolo26 head (issue #47, 2026-11-17)**: the cached half detections
+  came from the NMS-free one-to-one head (OpenVINO export). On pphub
+  (CUDA, ultralytics 8.4) `detect_frames.py` with default flags runs the
+  one-to-many head + NMS at IoU 0.7 instead. On a 4-min duel-heavy window
+  (frames 65250-71249) that gave 258 instead of 178 player track ids and a
+  median team tracklet of 121 instead of 193 frames, at the same coverage
+  (86%). `--nms-free` is therefore the default since #47 (`--no-nms-free`
+  for the old NMS head). Loosening NMS to
+  keep the hidden player in a duel did not help: `--iou 0.8/0.85` alone is
+  undone by the duplicate filter; with `track_identities.py --dup-iou` raised
+  to match, the duplicates triple to five-fold the tracklets, coverage
+  falls to 72% / 68% and suspected swaps rise from 2 to 8 / 17. Soft-NMS
+  (sigma 0.5) and `--imgsz 1536` didn't help player coverage either, though
+  1536 found the ball (conf >= 0.25) in 63% of frames instead of 54%.
+  Kit-aware duplicate suppression (keep overlapping opposite kits) rescued
+  < 0.01 boxes per frame: the hidden player's box reads the front player's
+  shirt. Treat the duel case downstream (gap filling), not in the detector.
 - **Kit colour flicker**: distant sky-blue washes towards white at 720p;
   hard thresholds left 22% of tracklets team-mixed. The self-trained colour
   model + flip-cutting brought that to ~5%.

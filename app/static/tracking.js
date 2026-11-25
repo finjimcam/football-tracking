@@ -6,8 +6,9 @@
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const CHUNK = 250;
-const LANE_COL = { s: '#5DBB63', h: '#FFD84D', p: '#E8A33A', l: '#7A2E2E', o: '#2A2F36' };
-const STATUS = { s: 'Tracked', h: 'Your box', p: 'Predicted', l: 'Lost', o: 'Off camera' };
+const LANE_COL = { s: '#5DBB63', h: '#FFD84D', p: '#E8A33A', a: '#A77BE0', l: '#7A2E2E', o: '#2A2F36' };
+const STATUS = { s: 'Tracked', h: 'Your box', p: 'Predicted', a: 'In a duel', l: 'Lost', o: 'Off camera' };
+const ABS_COL = LANE_COL.a; // absorbed: hidden in a duel, following the opponent (#47)
 const PROB_COL = { swap: '#FFD84D', lost: '#EF5B5B' };
 const SEL = '#FFD84D';
 const LABEL_W = 116, RULER_H = 24, ROW_H = 13, HEAD_H = 18;
@@ -195,6 +196,7 @@ export async function viewTracking(view, parts, params, ui) {
         h('span', {}, h('i', { style: `background:${color.team_a};border-radius:50%;width:10px;height:10px` }), sum.teams.team_a.name),
         h('span', {}, h('i', { style: `background:${color.team_b};border-radius:50%;width:10px;height:10px` }), sum.teams.team_b.name),
         h('span', {}, h('i', { style: 'border:1.5px dashed #E8A33A;border-radius:50%;width:10px;height:10px' }), 'Predicted'),
+        h('span', {}, h('i', { style: `border:1.5px dashed ${ABS_COL};border-radius:50%;width:10px;height:10px` }), 'In a duel'),
         h('span', {}, h('i', { style: 'border:1.5px dashed #EF5B5B;border-radius:50%;width:10px;height:10px' }), 'Lost (last seen)'),
         h('span', {}, h('i', { style: 'background:#9AA1AB;opacity:.4;border-radius:50%;width:10px;height:10px' }), 'Off camera'),
         h('span', {}, h('i', { style: 'border:1px dashed #fff;opacity:.6;width:12px;height:8px' }), 'Camera view'))));
@@ -443,7 +445,7 @@ export async function viewTracking(view, parts, params, ui) {
     const clock = r && r.c ? r.c : '';
     clockChip.textContent = clock || `frame ${st.cur}`;
     topClock.textContent = clock;
-    const tracked = r ? r.p.filter((p) => p[2] === 's' || p[2] === 'h' || p[2] === 'p').length : 0;
+    const tracked = r ? r.p.filter((p) => p[2] === 's' || p[2] === 'h' || p[2] === 'p' || p[2] === 'a').length : 0;
     frameChip.textContent = r ? `frame ${st.cur} · ${tracked}/${sum.players.length} tracked` : `frame ${st.cur} · loading…`;
 
     overlay.replaceChildren();
@@ -475,14 +477,14 @@ export async function viewTracking(view, parts, params, ui) {
         const pl = byKey[p[0]];
         const isFirst = st.swapFirst && st.swapFirst.kind === 'player' && st.swapFirst.id === p[0];
         const isSel = p[0] === st.sel || isFirst;
-        const c = isSel ? SEL : p[2] === 'h' ? SEL : p[2] === 'p' ? '#E8A33A' : pColor(pl);
+        const c = isSel ? SEL : p[2] === 'h' ? SEL : p[2] === 'p' ? '#E8A33A' : p[2] === 'a' ? ABS_COL : pColor(pl);
         overlay.append(svg('rect', { x: p[3], y: p[4], width: p[5] - p[3], height: p[6] - p[4], fill: 'none', stroke: c,
           'stroke-width': isSel ? 3 : 2, 'stroke-dasharray': p[2] === 's' ? null : '5 4', rx: 2 }));
         const pin = p[2] === 's' ? pinOn(st.cur, p.slice(3, 7)) : null;
         if (st.showNames || isSel || warn.has(p[0]) || pin) {
           let t = st.showNames || isSel ? label(pl) : (pl.number != null ? `#${pl.number}` : pl.name);
           if (pin) t = '✓ ' + t;
-          if (p[2] === 'p') t += ' ·?';
+          if (p[2] === 'p' || p[2] === 'a') t += ' ·?';
           const cx = (p[3] + p[5]) / 2;
           const txt = svg('text', { x: cx, y: p[4] - 6, class: 'trk-label', fill: c });
           txt.textContent = t;
@@ -580,8 +582,8 @@ export async function viewTracking(view, parts, params, ui) {
       const solid = p[2] === 's' || p[2] === 'h';
       g.append(svg('circle', { cx: p[7], cy: p[8], r: 1.9,
         fill: solid ? c : p[2] === 'o' ? c : '#15181C', 'fill-opacity': p[2] === 'o' ? 0.35 : 1,
-        stroke: isSel ? SEL : p[2] === 'p' ? '#E8A33A' : p[2] === 'l' ? '#EF5B5B' : p[2] === 'h' ? SEL : '#0E1013',
-        'stroke-width': isSel ? 0.7 : 0.35, 'stroke-dasharray': p[2] === 'p' || p[2] === 'l' ? '0.7 0.45' : null }));
+        stroke: isSel ? SEL : p[2] === 'p' ? '#E8A33A' : p[2] === 'a' ? ABS_COL : p[2] === 'l' ? '#EF5B5B' : p[2] === 'h' ? SEL : '#0E1013',
+        'stroke-width': isSel ? 0.7 : 0.35, 'stroke-dasharray': p[2] === 'p' || p[2] === 'a' || p[2] === 'l' ? '0.7 0.45' : null }));
       const t = svg('text', { x: p[7], y: p[8] + 0.68, class: 'trk-num', fill: solid ? ink(c) : '#E6E8EB' });
       t.textContent = pl && pl.number != null ? pl.number : '';
       g.append(t);
@@ -619,7 +621,7 @@ export async function viewTracking(view, parts, params, ui) {
       ['team_a', 'team_b'].map((t) => h('optgroup', { label: sum.teams[t].name },
         mates.filter((q) => q.team === t).map((q) => h('option', { value: q.key }, label(q))))));
     const myProblems = sum.problems.filter((q) => q.fixed == null && q.keys.includes(pl.key)).length;
-    const statusPill = h('span', { class: 'pill ' + (s === 's' ? 'done' : s === 'h' || s === 'p' ? 'stale' : s === 'l' ? 'failed' : 'blocked') }, s ? STATUS[s] : '…');
+    const statusPill = h('span', { class: 'pill ' + (s === 's' ? 'done' : s === 'h' || s === 'p' || s === 'a' ? 'stale' : s === 'l' ? 'failed' : 'blocked') }, s ? STATUS[s] : '…');
     const pin = p && s === 's' ? pinOn(st.cur, p.slice(3, 7)) : null;
     const rename = () => {
       const other = byKey[renameSel.value];
@@ -672,7 +674,7 @@ export async function viewTracking(view, parts, params, ui) {
     const noBox = r ? r.p.filter((p) => p[2] !== 's' && p[2] !== 'h') : [];
     // drawn box: nearest last-known spots first is not possible client-side (no camera model), so
     // order by how long they've been missing: lost before predicted before off camera
-    const rank = { l: 0, p: 1, o: 2 };
+    const rank = { l: 0, a: 1, p: 2, o: 3 };
     noBox.sort((a, b) => rank[a[2]] - rank[b[2]]);
     const chooseTo = (key) => {
       const pl = byKey[key];
@@ -942,7 +944,7 @@ export async function viewTracking(view, parts, params, ui) {
       const d = inside ? (b[2] - b[0]) * (b[3] - b[1]) * 0.001 : Math.hypot(x - (b[0] + b[2]) / 2, y - b[3]);
       if ((inside || d < 30) && d < bd) { best = { kind, id }; bd = d; }
     };
-    if (st.showBoxes) for (const p of r.p) if (p[2] === 's' || p[2] === 'h' || p[2] === 'p') consider('player', p[0], p.slice(3, 7));
+    if (st.showBoxes) for (const p of r.p) if (p[2] === 's' || p[2] === 'h' || p[2] === 'p' || p[2] === 'a') consider('player', p[0], p.slice(3, 7));
     if (st.showOthers && st.showBoxes) for (const o of r.o) consider('other', o[0], o.slice(2, 6));
     return best;
   }

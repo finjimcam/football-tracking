@@ -69,6 +69,7 @@ from scipy.optimize import linear_sum_assignment
 
 from _common import (apply_calibration, load_calibration, load_meta, match_config, match_dir,
                      pitch_dims, read_json, reference_path, write_json)
+from gap_status import PIPELINE_DEFAULTS, homography_to_image, label_tracks, pipeline_fillers
 from identity_anchors import anchors_path, load_anchors  # noqa: E402
 from identity_anchors import apply as apply_anchors  # noqa: E402
 from identity_anchors import resolve as resolve_anchors  # noqa: E402
@@ -542,10 +543,61 @@ def role_vectors(p, tl, team, min_visible=4, frame="centroid"):
 # --------------------------------------------------------------------------
 # 4. Global identity linking (min-cost flow)
 # --------------------------------------------------------------------------
-def link_edges(T, fps, a, window, vmax=None, w_role=None, c_link=None):
+def duel_partners(p, tracklets, fps, duel_m=1.5, horizon_s=10.0, ignore=(), allowed=None, same_kit=None,
+                  crowd_m=2.0):
+    """Issue #48: {tracklet: (frames, xy)} for each of `tracklets` that ends
+    within duel_m of another person's tracklet (any team; `ignore` tracklets,
+    e.g. officials, excluded) - that partner's detections over the next
+    horizon_s. A player who vanishes in a duel is hidden in the partner's
+    box, so when they split again they come out next to the partner, not
+    where their own velocity pointed. allowed: if given, only these
+    tracklets count as partners (the pipeline passes the other team's: in a
+    teammate duel both bodies wear the same kit, so coming out "next to the
+    partner" can't tell the two apart). same_kit: tracklets in this
+    team's kit; if one of them is within crowd_m at the split, the merged
+    box may hold a teammate too, and the tracklet gets no partner."""
+    q = p[(p["tracklet"] >= 0) & ~p["tracklet"].isin(list(ignore))]
+    q = q.sort_values(["frame", "tracklet"])
+    fr, tk = q["frame"].to_numpy(), q["tracklet"].to_numpy()
+    xy = q[["pitch_x", "pitch_y"]].to_numpy(float)
+    by_tl = {int(t): g for t, g in q.groupby("tracklet")[["frame", "pitch_x", "pitch_y"]]}
+    horizon = int(round(horizon_s * fps))
+    out = {}
+    for t in tracklets:
+        g = by_tl.get(int(t))
+        if g is None or not len(g):
+            continue
+        f_end = int(g["frame"].iat[-1])
+        a, b = np.searchsorted(fr, [f_end, f_end + 1])
+        others = tk[a:b] != t
+        if not others.any():
+            continue
+        d = np.hypot(*(xy[a:b][others] - g[["pitch_x", "pitch_y"]].iloc[-1].to_numpy(float)).T)
+        k = int(np.argmin(d))
+        if d[k] > duel_m:
+            continue
+        pt = int(tk[a:b][others][k])
+        if allowed is not None and pt not in allowed:
+            continue
+        if same_kit is not None:
+            mates = np.isin(tk[a:b][others], list(same_kit))
+            if (mates & (d <= crowd_m)).any():
+                continue
+        P = by_tl[pt]
+        P = P[(P["frame"] >= f_end) & (P["frame"] <= f_end + horizon)]
+        if len(P) >= 2:
+            out[int(t)] = (P["frame"].to_numpy(), P[["pitch_x", "pitch_y"]].to_numpy(float))
+    return out
+
+
+def link_edges(T, fps, a, window, vmax=None, w_role=None, c_link=None, partners=None):
     """The linking graph shared by link_flow and link_anchored. T must be
     sorted by start. Returns (I, J, cost, gap_s, dist_m) over candidate links
-    i -> j plus per-node reward, start cost and end cost."""
+    i -> j plus per-node reward, start cost and end cost. partners
+    (duel_partners(), issue #48): for a tracklet that ended in a duel, a
+    successor starting next to the partner's position at that moment is
+    priced by that distance (sigma a.duel_sigma_m) if cheaper than the
+    motion prediction."""
     vmax = a.vmax if vmax is None else vmax
     w_role = a.w_role if w_role is None else w_role
     c_link = a.c_link if c_link is None else c_link
@@ -559,8 +611,13 @@ def link_edges(T, fps, a, window, vmax=None, w_role=None, c_link=None):
     role = T[["role_x", "role_y"]].to_numpy()
     has_role = np.isfinite(role).all(axis=1)
     I, J, C, G, D = [], [], [], [], []
+    duel_on = getattr(a, "duel_sigma_m", 0) > 0 and partners
     for i in range(n):
-        lo = np.searchsorted(st, en[i] - a.overlap_frames, side="left")
+        pp = partners.get(int(T["tracklet"].iat[i])) if duel_on else None
+        # issue #48: around a merged box the hidden player's pieces overlap a
+        # few frames (both boxes briefly detected) and the foot point jumps
+        overlap = max(a.overlap_frames, a.duel_overlap_frames) if pp is not None else a.overlap_frames
+        lo = np.searchsorted(st, en[i] - overlap, side="left")
         hi = np.searchsorted(st, en[i] + a.max_gap_s * fps, side="right")
         j = np.arange(lo, hi)
         j = j[st[j] > st[i]]
@@ -568,7 +625,8 @@ def link_edges(T, fps, a, window, vmax=None, w_role=None, c_link=None):
             continue
         gap = np.maximum((st[j] - en[i]) / fps, 0.0)
         disp = np.hypot(ent[j, 0] - ext[i, 0], ent[j, 1] - ext[i, 1])
-        feas = disp <= vmax * gap + a.reach_m
+        reach = a.reach_m + (a.duel_reach_m if pp is not None else 0.0)
+        feas = disp <= vmax * gap + reach
         j, gap, disp = j[feas], gap[feas], disp[feas]
         if not len(j):
             continue
@@ -580,7 +638,17 @@ def link_edges(T, fps, a, window, vmax=None, w_role=None, c_link=None):
             lam = np.where(sc[j], np.maximum(lam, a.contact_role), lam)
         rr = np.where(has_role[i] & has_role[j],
                       np.hypot(role[j, 0] - role[i, 0], role[j, 1] - role[i, 1]) / a.role_sigma_m, 1.0)
-        cost = d / sig + w_role * lam * rr + c_link
+        motion = d / sig
+        if pp is not None:  # issue #48: came out of the duel next to the partner
+            pf, pxy = pp
+            ok = (st[j] >= pf[0]) & (st[j] <= pf[-1])
+            near = np.abs(pf[np.clip(np.searchsorted(pf, st[j]), 0, len(pf) - 1)] - st[j]) <= 3
+            ok &= near
+            if ok.any():
+                qx, qy = np.interp(st[j], pf, pxy[:, 0]), np.interp(st[j], pf, pxy[:, 1])
+                dp = np.hypot(ent[j, 0] - qx, ent[j, 1] - qy) / a.duel_sigma_m
+                motion = np.where(ok, np.minimum(motion, dp), motion)
+        cost = motion + w_role * lam * rr + c_link
         if a.w_vel:  # velocity continuity across short gaps (a runner keeps running)
             dv = np.hypot(vin[j, 0] - vout[i, 0], vin[j, 1] - vout[i, 1])
             cost = cost + np.where(gap < 1.0, a.w_vel * dv / 3.0, 0.0)
@@ -605,13 +673,14 @@ def link_edges(T, fps, a, window, vmax=None, w_role=None, c_link=None):
     return (cat(I, int), cat(J, int), cat(C, float), cat(G, float), cat(D, float), reward, c_in, c_out)
 
 
-def link_flow(T, fps, a, window, n_paths=10, vmax=None, w_role=None, c_link=None):
+def link_flow(T, fps, a, window, n_paths=10, vmax=None, w_role=None, c_link=None, partners=None):
     """Exactly n_paths disjoint tracklet chains of minimum total cost.
-    Returns ({tracklet: path index}, [(from, to, cost, gap_s, dist_m)])."""
+    Returns ({tracklet: path index}, [(from, to, cost, gap_s, dist_m)]).
+    partners: see link_edges."""
     import networkx as nx
 
     T = T.sort_values("start").reset_index(drop=True)
-    I, J, C, Gs, Ds, reward, c_in, c_out = link_edges(T, fps, a, window, vmax, w_role, c_link)
+    I, J, C, Gs, Ds, reward, c_in, c_out = link_edges(T, fps, a, window, vmax, w_role, c_link, partners)
     scale = 100
     G = nx.DiGraph()
     G.add_node("S", demand=-n_paths)
@@ -668,7 +737,7 @@ def shape_costs(T, pins, K, fps, w_shape=1.0, sigma_m=6.0, cap_s=20.0):
     return nc - nc.min(axis=1, keepdims=True)
 
 
-def link_anchored(T, fps, a, window, pins, K, time_limit=900.0):
+def link_anchored(T, fps, a, window, pins, K, time_limit=900.0, partners=None):
     """K disjoint chains, one per PLAYER, through the tracklets the analyst
     named (issue #46). pins = {tracklet: player index}. A multi-commodity
     flow solved as an integer programme: each player's chain must pass
@@ -685,7 +754,7 @@ def link_anchored(T, fps, a, window, pins, K, time_limit=900.0):
     T = T.sort_values("start").reset_index(drop=True)
     node_of = {int(t): i for i, t in enumerate(T["tracklet"])}
     pin_ix = {node_of[int(t)]: int(k) for t, k in pins.items() if int(t) in node_of}
-    I, J, C, Gs, Ds, reward, c_in, c_out = link_edges(T, fps, a, window)
+    I, J, C, Gs, Ds, reward, c_in, c_out = link_edges(T, fps, a, window, partners=partners)
     # make sure consecutive tracklets named as one player can always be joined
     st, en = T["start"].to_numpy(), T["end"].to_numpy()
     by_k = {}
@@ -1103,6 +1172,10 @@ def main():
                         help="Metres added for a kit mismatch (pass 1, rule-based kits)")
     parser.add_argument("--kit-penalty-2", type=float, default=2.5,
                         help="Kit mismatch cost in pass 2, once kits come from the learned colour model")
+    parser.add_argument("--dup-iou", type=float, default=0.6,
+                        help="Same-frame person boxes overlapping more than this are one player (keep the "
+                             "most confident). Raise together with detect_frames.py --iou, or the hidden "
+                             "player that looser NMS kept in a duel is dropped here (issue #47)")
     parser.add_argument("--max-miss", type=int, default=12, help="Frames a tracklet may coast")
     parser.add_argument("--vmax", type=float, default=8.5, help="Max average speed across a gap, m/s")
     parser.add_argument("--reach-m", type=float, default=3.0, help="Slack on the reachability test, metres")
@@ -1142,6 +1215,20 @@ def main():
                         help="Weight of the team-shape term on links across a contact cut (0-1)")
     parser.add_argument("--w-vel", type=float, default=0.0,
                         help="Cost per 3 m/s of velocity change across links with gaps < 1 s")
+    parser.add_argument("--duel-sigma-m", type=float, default=1.0,
+                        help="Issue #48: a tracklet that ends within --duel-m of an opponent links cheaply to a "
+                             "successor that starts this close to that partner (sigma, metres). 0 = off")
+    parser.add_argument("--duel-m", type=float, default=1.5, help="Duel distance at a tracklet's end, metres")
+    parser.add_argument("--duel-reach-m", type=float, default=2.0,
+                        help="Extra reach slack for links out of a tracklet that ended in a duel (merged-box foot jump)")
+    parser.add_argument("--duel-overlap-frames", type=int, default=10,
+                        help="Overlap allowed for links out of a tracklet that ended in a duel")
+    parser.add_argument("--duel-teammates", action="store_true",
+                        help="Also apply the duel prior/slack when the partner is a teammate (more swaps: same kit)")
+    parser.add_argument("--duel-crowd-m", type=float, default=2.0,
+                        help="No duel prior if a teammate (same kit) is this close at the split")
+    parser.add_argument("--duel-horizon-s", type=float, default=10.0,
+                        help="How long after the split the partner prior applies")
     parser.add_argument("--no-stability", action="store_true", help="Skip the perturbed re-solves")
     parser.add_argument("--no-anchor-solve", dest="anchor_solve", action="store_false",
                         help="Apply names after linking (majority vote per chain) instead of linking through them")
@@ -1150,6 +1237,14 @@ def main():
                              "the team shape (per second, capped at 20 s)")
     parser.add_argument("--shape-sigma-m", type=float, default=6.0)
     parser.add_argument("--anchor-time-limit", type=float, default=900.0, help="Seconds per team for the solver")
+    parser.add_argument("--no-gap-status", action="store_true",
+                        help="Write detections only (no status column / gap fill rows, see gap_status.py)")
+    parser.add_argument("--fill-max-s", type=float, default=PIPELINE_DEFAULTS["max_fill_s"],
+                        help="Fill non-duel identity gaps up to this long with the RTS smoother (interp_gaps.py)")
+    parser.add_argument("--absorbed-max-s", type=float, default=PIPELINE_DEFAULTS["max_absorbed_s"],
+                        help="Fill duel (absorbed) gaps up to this long along the partner's path (duel_gaps.py)")
+    parser.add_argument("--linear-fill", action="store_true",
+                        help="Old straight-line fill for every gap kind instead of the smoother / duel filler")
     parser.add_argument("--reuse-tracklets", action="store_true",
                         help="Reuse tracklets_cache.parquet from the last run: re-run only linking + outputs "
                              "(for tuning the linker in minutes instead of ~15)")
@@ -1192,7 +1287,7 @@ def main():
             print(f"  {len(wide)} zoomed-out wide-view frame(s) (median box < {a.wide_ratio:g} x the match's): confidence "
                   f"thresholds {a.min_conf_wide}/{a.new_conf_wide} there instead of {a.min_conf}/{a.new_conf}")
         n_before = len(p)
-        p = suppress_duplicates(p)
+        p = suppress_duplicates(p, a.dup_iou)
         print(f"[{a.match_id}] dropped {n_before - len(p)} duplicate person boxes "
               f"({(n_before - len(p)) / n_before:.1%})")
         p, _ = apply_calibration(p, calib)
@@ -1310,7 +1405,14 @@ def main():
                  & (tl["identity"] < 0) & ~tl["tracklet"].isin(list(other))].copy()
         sel["role_x"] = sel["tracklet"].map(roles["rx"])
         sel["role_y"] = sel["tracklet"].map(roles["ry"])
-        jobs[team] = (base, sel, pins, dropped, numbers)
+        own = {team, "gk_a" if team == "team_a" else "gk_b"}
+        partners = (duel_partners(p, sel["tracklet"], fps, a.duel_m, a.duel_horizon_s,
+                                  ignore=tl.loc[tl["cls"].isin(["official", "off_pitch"]), "tracklet"],
+                                  allowed=None if a.duel_teammates else
+                                  set(tl.loc[~tl["cls"].isin(own | {"official", "off_pitch"}), "tracklet"]),
+                                  same_kit=set(tl.loc[tl["cls"].isin(own), "tracklet"]), crowd_m=a.duel_crowd_m)
+                    if a.duel_sigma_m > 0 else {})
+        jobs[team] = (base, sel, pins, dropped, numbers, partners)
         team_roles[team] = roles
     solved = {}
     todo = {t: j for t, j in jobs.items() if j[2] and a.anchor_solve}
@@ -1319,15 +1421,15 @@ def main():
         from concurrent.futures import ProcessPoolExecutor
         with ProcessPoolExecutor(max_workers=len(todo)) as ex:
             fut = {team: ex.submit(link_anchored, sel, fps, a, (f_lo, f_hi), pins, len(numbers),
-                                   a.anchor_time_limit)
-                   for team, (base, sel, pins, dropped, numbers) in todo.items()}
+                                   a.anchor_time_limit, partners)
+                   for team, (base, sel, pins, dropped, numbers, partners) in todo.items()}
             for team, fu in fut.items():
                 try:
                     solved[team] = fu.result()
                 except Exception as exc:  # noqa: BLE001 - fall back to the plain flow
                     print(f"  {team}: anchored solve failed ({exc}); falling back to plain linking")
                     solved[team] = None
-    for team, (base, sel, pins, dropped, numbers) in jobs.items():
+    for team, (base, sel, pins, dropped, numbers, partners) in jobs.items():
         variants = []
         if solved.get(team):
             assign, links = solved[team]
@@ -1336,13 +1438,13 @@ def main():
                               "named": sorted({numbers[k] for k in pins.values()})}
             link_kind = "anchored"
         else:
-            assign, links = link_flow(sel, fps, a, (f_lo, f_hi))
+            assign, links = link_flow(sel, fps, a, (f_lo, f_hi), partners=partners)
             stab = {(i, j): 0 for i, j, *_ in links}
             variants = [] if a.no_stability else [
                 {"vmax": a.vmax * 0.85}, {"w_role": a.w_role * 0.5},
                 {"w_role": a.w_role * 1.5, "c_link": a.c_link * 1.5}]
             for v in variants:
-                alt, _ = link_flow(sel, fps, a, (f_lo, f_hi), **v)
+                alt, _ = link_flow(sel, fps, a, (f_lo, f_hi), partners=partners, **v)
                 for i, j in stab:
                     stab[(i, j)] += int(i in alt and alt.get(i) == alt.get(j))
             link_kind = "linked"
@@ -1441,6 +1543,20 @@ def main():
     tracks = pd.concat([p[cols + ["pitch_x", "pitch_y", "tracklet", "kit", "p_team_a"]], balls[cols]],
                        ignore_index=True)
     tracks = tracks.sort_values(["frame", "class", "track_id"]).reset_index(drop=True)
+    if not a.no_gap_status:
+        # Gap labelling (issue #47): status column + fill rows for short gaps,
+        # one row per gap in gaps.parquet. Re-runnable alone: tools/gap_status.py.
+        not_players = {10000 + int(t) for t, c in zip(tl["tracklet"], tl["cls"])
+                       if c in ("official", "off_pitch", "gk_b")}
+        idents = [*range(1, 12), *range(101, 112)]
+        tracks, gaps = label_tracks(tracks, fps, track_ids=idents, window=(f_lo, f_hi),
+                                    to_image=homography_to_image(calib), exclude_partners=not_players,
+                                    **pipeline_fillers(a.fill_max_s, ignore=not_players, linear=a.linear_fill),
+                                    max_fill_s=a.fill_max_s, max_absorbed_s=a.absorbed_max_s)
+        gaps.to_parquet(mdir / "gaps.parquet", index=False)
+        print("  gap status: " + ", ".join(f"{k} {v}" for k, v in gaps["kind"].value_counts().items())
+              + " gaps; fill rows " + ", ".join(f"{k} {v}" for k, v in tracks["status"].value_counts().items()
+                                                 if k != "detected"))
     tracks.to_parquet(mdir / "tracks.parquet", index=False)
 
     # 6. player_map / team_map (names from step 4b)
