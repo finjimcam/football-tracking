@@ -37,6 +37,14 @@ Edit kinds (all frames are video frames; ids are tracks.parquet track_ids):
   lock        {frame}                   "every name on this frame is right": no change
                                         to the boxes; the server turns it into
                                         identity anchors (see below)
+  autoref     {frame, items: [[tid, f0, f1], ...]}
+                                        Auto-fix: rows of `tid` in f0..f1 look like a
+                                        referee you marked (shirt + shorts colour): each
+                                        run gets a new id, kit "official"
+  autofill    {frame, items: [[tid, f0, f1, to], ...]}
+                                        Auto-fix: a player's gap bridged by a line from
+                                        the last box to the next one; the unlabelled
+                                        boxes (`tid`) on that line in f0..f1 become `to`
 
 Names are also anchors. The Tracking tab writes an identity anchor
 (tools/identity_anchors.py) for every box a swap / assign / lock names, tagged
@@ -64,7 +72,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-KINDS = ("swap", "assign", "box", "split", "delete", "not_player", "ok", "lock")
+KINDS = ("swap", "assign", "box", "split", "delete", "not_player", "ok", "lock", "autoref", "autofill")
+AUTO = ("autoref", "autofill")
+AUTO_ID_BASE = 700000  # ids for auto-fix referee runs: AUTO_ID_BASE + 1000 * edit id + item
+MAX_ITEMS = 5000
 CHAIN_MAX = 10000  # track ids below this are whole-half player chains (track_identities.py)
 NEW_ID_BASE = 900000  # ids for split / not-player pieces: NEW_ID_BASE + edit id
 INTERP_S = 5.0
@@ -150,6 +161,24 @@ def clean_edit(e):
             out["frame"] = _int(e, "frame")
         return out
     out["frame"] = _int(e, "frame")
+    if kind in AUTO:
+        items = e.get("items")
+        width = 3 if kind == "autoref" else 4
+        if not isinstance(items, list) or not items or len(items) > MAX_ITEMS:
+            raise EditError("'items' must be a non-empty list")
+        try:
+            out["items"] = [[int(v) for v in it] for it in items]
+        except (TypeError, ValueError):
+            raise EditError("'items' must hold whole numbers") from None
+        if any(len(it) != width or it[2] < it[1] for it in out["items"]):
+            raise EditError(f"each item is {width} numbers with f0 <= f1")
+        if kind == "autoref" and len(out["items"]) > 999:
+            raise EditError("too many referee runs in one auto-fix")
+        if isinstance(e.get("batch"), str):
+            out["batch"] = e["batch"][:40]
+        if isinstance(e.get("note"), str) and e["note"]:
+            out["note"] = e["note"][:200]
+        return out
     if kind == "lock":
         pass
     elif kind == "swap":
@@ -259,6 +288,41 @@ def _not_player(df, e, new_id):
     df.loc[m, "track_id"] = new_id
     if "kit" in df.columns:
         df.loc[m, "kit"] = "official"
+    return df
+
+
+def _ranges(df, items):
+    """Row positions of track `it[0]` in frames it[1]..it[2], per item."""
+    ids, fr = df["track_id"].to_numpy(), df["frame"].to_numpy()
+    pl = _players(df)
+    want = {it[0] for it in items}
+    sel = np.flatnonzero(pl & np.isin(ids, list(want)))
+    order = sel[np.lexsort((fr[sel], ids[sel]))]
+    oid, ofr = ids[order], fr[order]
+    for it in items:
+        a = np.searchsorted(oid, it[0], side="left")
+        b = np.searchsorted(oid, it[0], side="right")
+        lo = a + np.searchsorted(ofr[a:b], it[1], side="left")
+        hi = a + np.searchsorted(ofr[a:b], it[2], side="right")
+        yield it, order[lo:hi]
+
+
+def _autoref(df, e, eid):
+    tid_col = df.columns.get_loc("track_id")
+    kit_col = df.columns.get_loc("kit") if "kit" in df.columns else None
+    for i, (it, rows) in enumerate(_ranges(df, e["items"])):
+        if len(rows):
+            df.iloc[rows, tid_col] = AUTO_ID_BASE + 1000 * eid + i
+            if kit_col is not None:
+                df.iloc[rows, kit_col] = "official"
+    return df
+
+
+def _autofill(df, e):
+    tid_col = df.columns.get_loc("track_id")
+    for it, rows in _ranges(df, e["items"]):
+        if len(rows):
+            df.iloc[rows, tid_col] = it[3]
     return df
 
 
@@ -374,6 +438,10 @@ def apply_edits(tracks, edits, fps=25.0):
             df = _not_player(df, e, NEW_ID_BASE + eid)
         elif k == "delete":
             df = _delete(df, e)
+        elif k == "autoref":
+            df = _autoref(df, e, eid)
+        elif k == "autofill":
+            df = _autofill(df, e)
         elif k == "box":
             df, row = _box_row(df, e, fps)
             df = _concat(df, pd.DataFrame([row]))
@@ -427,6 +495,9 @@ def rebase(data, tracks, player_map):
         k = e.get("kind")
         if k in NAMING:
             retire(e, "in the tracking" if e.get("anchored") else "made against older tracks")
+            continue
+        if k in AUTO:
+            retire(e, "auto-fix: run it again on the new tracks")
             continue
         if k in ("box", "delete", "split"):
             pl = e.get("player") or {}

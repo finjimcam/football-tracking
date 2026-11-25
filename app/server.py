@@ -30,6 +30,8 @@
     GET  /api/matches/{match_id}/tracking/frames?start=&end=        boxes + pitch spots per frame
     POST /api/matches/{match_id}/tracking/edits         save one hand fix (config/<id>_track_edits.json)
     DELETE /api/matches/{match_id}/tracking/edits/{id}  undo one fix
+    POST /api/matches/{match_id}/tracking/autofix       Auto-fix: referee look-alikes off, gaps bridged, tracks named by elimination
+    DELETE /api/matches/{match_id}/tracking/autofix     undo the auto-fix
     GET  /api/system                      disk space + whether heavy jobs are held
 
 Everything else under / is the single-page app in app/static/.
@@ -324,6 +326,14 @@ def create_app(root, runner=None, busy_check=None, warm=False):
     @app.post("/api/matches/{match_id}/tracking/edits", status_code=201)
     def tracking_add(match_id: str, req: TrackEdit):
         return _tracking_call(_tracking(match_id).add_edit, req.edit)
+
+    @app.post("/api/matches/{match_id}/tracking/autofix")
+    def tracking_autofix(match_id: str):
+        return _tracking_call(_tracking(match_id).autofix)
+
+    @app.delete("/api/matches/{match_id}/tracking/autofix")
+    def tracking_autofix_undo(match_id: str):
+        return _tracking_call(_tracking(match_id).undo_autofix)
 
     @app.delete("/api/matches/{match_id}/tracking/edits/{edit_id}")
     def tracking_remove(match_id: str, edit_id: int):

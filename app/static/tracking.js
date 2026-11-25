@@ -205,8 +205,9 @@ export async function viewTracking(view, parts, params, ui) {
     [['open', 'Open'], ['swap', 'Open swaps'], ['lost', 'Open long losses'], ['fixed', 'Fixed / checked']].map(([v, t]) => h('option', { value: v }, t)));
   const probCount = h('span', { class: 'muted', style: 'font-size:12px' });
   const probList = h('div', { class: 'scroll trk-list' });
+  const autoBtn = h('button', { type: 'button', class: 'btn small', title: 'Take referee look-alikes off players, bridge gaps along the line from last seen to next seen, and name orphan tracks when only one player of that team is missing', onclick: () => autofix() }, 'Auto-fix');
   const probPanel = h('section', { class: 'panel' },
-    h('div', { class: 'panel-head' }, h('h2', {}, 'Problems'), probCount, h('div', { class: 'spacer' }), probFilter), probList);
+    h('div', { class: 'panel-head' }, h('h2', {}, 'Problems'), probCount, h('div', { class: 'spacer' }), autoBtn, probFilter), probList);
   const editCount = h('span', { class: 'muted', style: 'font-size:12px' });
   const editList = h('div', { class: 'scroll trk-list' });
   const staleNote = h('div', { class: 'note', style: 'padding:8px 14px', hidden: true });
@@ -289,6 +290,36 @@ export async function viewTracking(view, parts, params, ui) {
       msg.replaceChildren(h('span', {}, t + ' '), h('button', { type: 'button', class: 'linkish', onclick: () => undo(saved) }, 'Undo'));
       await refresh();
     } catch (e) { msg.textContent = ''; toast(e.message, true); } finally { st.busy = false; }
+  }
+  async function autofix() {
+    if (st.busy) return;
+    st.busy = true;
+    autoBtn.disabled = true;
+    autoBtn.textContent = 'Auto-fixing…';
+    msg.textContent = 'Auto-fixing the whole half (about half a minute)…';
+    try {
+      const r = await api(`/matches/${mid}/tracking/autofix`, { method: 'POST' });
+      const parts = [];
+      if (r.line_pieces) parts.push(`${r.line_pieces} gaps bridged`);
+      if (r.elim_pieces) parts.push(`${r.elim_pieces} tracks named by elimination`);
+      if (r.ref_runs) parts.push(`${r.ref_runs} referee stretches taken off players`);
+      else if (!r.ref_learned) parts.push('mark the referee "not a player" once and it will take him off players too');
+      const mins = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+      const t = parts.length ? `Auto-fix: ${parts.join(', ')} · lost time ${mins(r.lost_s_before)} → ${mins(r.lost_s_after)}` : 'Auto-fix found nothing it could fix safely';
+      msg.replaceChildren(h('span', {}, t + ' '), parts.length ? h('button', { type: 'button', class: 'linkish', onclick: () => undoAutofix() }, 'Undo') : '');
+      await refresh();
+    } catch (e) { msg.textContent = ''; toast(e.message, true); } finally {
+      st.busy = false;
+      autoBtn.disabled = false;
+      autoBtn.textContent = 'Auto-fix';
+    }
+  }
+  async function undoAutofix() {
+    try {
+      await api(`/matches/${mid}/tracking/autofix`, { method: 'DELETE' });
+      msg.textContent = 'Auto-fix undone';
+      await refresh();
+    } catch (e) { toast(e.message, true); }
   }
   async function relink() {
     try {
@@ -815,6 +846,8 @@ export async function viewTracking(view, parts, params, ui) {
       case 'split': return `${who(e.tid)}: not him from here`;
       case 'delete': return `Deleted ${who(e.tid)}'s box`;
       case 'not_player': return keyOfTid[e.tid] ? `${who(e.tid)}'s box marked not a player` : `Box ${e.tid} marked not a player`;
+      case 'autoref':
+      case 'autofill': return e.note || `Auto-fix (${e.n_items || 0})`;
       case 'ok': {
         const p = sum.problems.find((q) => q.key === e.problem);
         return 'Checked: ' + (p ? p.text : e.problem);
