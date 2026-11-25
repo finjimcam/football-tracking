@@ -1,5 +1,6 @@
 // Stopframe front end: plain ES module, no build step. Talks to app/server.py.
 import { viewLines } from './lines.js';
+import { viewTracking } from './tracking.js';
 import { viewPlayers } from './players.js';
 import { viewLibrary } from './library.js';
 import { viewCode } from './code.js';
@@ -9,6 +10,7 @@ const TABS = [
   { id: 'matches', name: 'Matches' },
   { id: 'jobs', name: 'Jobs' },
   { id: 'lines', name: 'Lines' },
+  { id: 'tracking', name: 'Tracking' },
   { id: 'players', name: 'Players' },
   { id: 'library', name: 'Library' },
   { id: 'code', name: 'Code' },
@@ -398,6 +400,7 @@ async function viewMatch(view, matchId, params) {
           h('span', { class: 'tag' }, match.pipeline === 'broadcast' ? 'broadcast' : 'match report'),
           match.pipeline === 'broadcast' ? h('div', { class: 'spacer' }) : null,
           match.pipeline === 'broadcast' ? h('a', { class: 'btn small primary', href: '#/lines/' + encodeURIComponent(match.match_id) }, 'Pick lines') : null,
+          match.pipeline === 'broadcast' ? h('a', { class: 'btn small', href: '#/tracking/' + encodeURIComponent(match.match_id) }, 'Fix tracking') : null,
           match.pipeline === 'broadcast' ? h('a', { class: 'btn small', href: '#/players/' + encodeURIComponent(match.match_id) }, 'Players') : null,
           h('span', { class: 'muted mono', style: 'font-size:11px' }, match.match_id)),
         stageList),
@@ -541,6 +544,11 @@ async function route() {
   if (parts[0] === 'match' && parts[1]) await viewMatch(view, parts[1], params);
   else if (parts[0] === 'lines') {
     await viewLines(view, parts, params, {
+      h, api, toast, every, renderTabs, setCrumb, pill, onLeave: (fn) => leaveHooks.push(fn),
+    });
+  }
+  else if (parts[0] === 'tracking') {
+    await viewTracking(view, parts, params, {
       h, api, toast, every, renderTabs, setCrumb, pill, onLeave: (fn) => leaveHooks.push(fn),
     });
   }
