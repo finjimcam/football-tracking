@@ -53,6 +53,7 @@ ELIM_EDGE_PX = 4      # ... and are not mostly cut off at the edge of the pictur
 ELIM_CONF = 0.4       # ... nor faint detections (median confidence below this)
 ELIM_CROWD = 0.4      # ... nor mostly tangled with another box (IoU > 0.3 in this share of frames)
 ELIM_OFF_M = 1.0      # ... nor off the pitch (median spot this far outside the lines)
+LAST_MIN_S = 0.5      # last one left: runs of frames at least this long
 AUTO_DUP = 0.6        # box this much inside a labelled player's box: a second detection of him
 AUTO_VMAX = 9.0       # m/s: a line faster than this means one end is wrong
 AUTO_ROUNDS = 3
@@ -717,17 +718,12 @@ class MatchTracking:
         dup[ci[cover > AUTO_DUP]] = True
         return dup
 
-    def _fill_boxes(self, df, X, ref):
-        """Box search, frame by frame. While a player is missing, he is somewhere
-        in the rectangle between his last box and his next one. Every box on
-        that frame that nobody has (not labelled, not a second box on someone
-        labelled, not the referee), in his colours and inside his rectangle,
-        is his, unless it is also inside the rectangle of a team-mate missing
-        at the same time (then it could be either of them and is left). When
-        more than one box qualifies, the one nearest the line from his last
-        box to his next one. Returns [[tid, f0, f1, to], ...]."""
+    def _free_boxes(self, df, X, ref):
+        """The boxes Auto-fix may give to a missing player: nobody has them
+        (not labelled, not a second box on someone labelled, not the referee),
+        on the pitch, not faint, not cut off at the edge of the picture.
+        Returns (mask over df rows, colour_ok(rows, group))."""
         ids = df["track_id"].to_numpy()
-        fr = df["frame"].to_numpy()
         px, py = df["pitch_x"].to_numpy(float), df["pitch_y"].to_numpy(float)
         kit = df["kit"].to_numpy() if "kit" in df.columns else np.full(len(df), "unknown")
         known = np.isin(ids, list(self.key_of))
@@ -748,7 +744,122 @@ class MatchTracking:
         tv = tv[tv["k"] != "unknown"].groupby("t")["k"].agg(lambda k: (k == "official").mean())
         refish = tv.index[tv >= BOX_REF_SHARE].to_numpy()
         cand &= ~np.isin(ids, refish)
-        cand &= ~self._dups(df, cand, known)
+        if cand.any():
+            cand &= ~self._dups(df, cand, known)
+
+        # colours: a box with an unread kit counts if it looks like his team's kit
+        own = {}
+        if X is not None and np.isfinite(X).any():
+            for c in ("team_a", "team_b", "gk_a", "gk_b"):
+                own[c] = self._profile(X[known & (kit == c)])
+
+        def colour_ok(rows, grp):
+            ok = kit[rows] == grp
+            unk = kit[rows] == "unknown"
+            prof = own.get(grp)
+            if prof is not None and unk.any():
+                d = self._dist(X[rows], prof)
+                others = [own[c] for c in own if c != grp and own[c] is not None]
+                if ref is not None:
+                    others.append(ref)
+                closer = np.ones(len(rows), bool)
+                for o in others:
+                    closer &= d < self._dist(X[rows], o)
+                ok |= unk & np.isfinite(d) & (d < BOX_COL_D) & closer
+            return ok
+
+        return cand, colour_ok
+
+    def _last_player(self, df, X, ref):
+        """Last one left, frame by frame. When every outfield player of a team
+        but one has a box, and exactly one free box (see _free_boxes) in that
+        team's colours is on the pitch, that box is him. Only while he is in
+        the game (seen before and after that frame, and the rest of his team
+        too, so a substitute isn't taken for him), only where he could have
+        run from his last box and on to his next one, and only runs of at
+        least LAST_MIN_S. Goalkeepers are left out.
+        Returns [[tid, f0, f1, to], ...]."""
+        ids = df["track_id"].to_numpy()
+        fr = df["frame"].to_numpy()
+        px, py = df["pitch_x"].to_numpy(float), df["pitch_y"].to_numpy(float)
+        cand, colour_ok = self._free_boxes(df, X, ref)
+        if not cand.any():
+            return []
+        lo_f, n_f = self.lo, self.N
+        ci = np.flatnonzero(cand)
+        picks_r, picks_k = [], []
+        for team in ("team_a", "team_b"):
+            outf = [q for q in self.players if q["team"] == team and q.get("role") != "GK"]
+            if len(outf) < 2:
+                continue
+            have = np.zeros((len(outf), n_f), bool)
+            inplay = np.ones(n_f, bool)
+            seen = []
+            for i, q in enumerate(outf):
+                m = np.isin(ids, q["ids"]) & np.isfinite(px)
+                g = pd.DataFrame({"f": fr[m], "x": px[m], "y": py[m]}).drop_duplicates("f").sort_values("f")
+                f = g["f"].to_numpy()
+                seen.append((f, g["x"].to_numpy(), g["y"].to_numpy()))
+                if not len(f):
+                    inplay[:] = False
+                    break
+                have[i, f - lo_f] = True
+                span = np.zeros(n_f, bool)
+                span[f[0] - lo_f:f[-1] - lo_f + 1] = True
+                inplay &= span
+            one = inplay & ((~have).sum(axis=0) == 1)
+            if not one.any():
+                continue
+            who = np.argmin(have, axis=0)          # the one without a box
+            rows = ci[colour_ok(ci, team)]
+            rf = fr[rows] - lo_f
+            rows, rf = rows[one[rf]], rf[one[rf]]
+            cnt = np.bincount(rf, minlength=n_f)
+            rows, rf = rows[cnt[rf] == 1], rf[cnt[rf] == 1]    # the only box of his colours there
+            if not len(rows):
+                continue
+            w = who[rf]
+            keep = np.zeros(len(rows), bool)
+            for i in np.unique(w):
+                sel = np.flatnonzero(w == i)
+                f, x, y = seen[i]
+                fq = fr[rows[sel]]
+                j = np.searchsorted(f, fq)          # next box; j - 1 is the last one
+                dt_a, dt_b = (fq - f[j - 1]) / self.fps, (f[j] - fq) / self.fps
+                near_a = np.hypot(px[rows[sel]] - x[j - 1], py[rows[sel]] - y[j - 1]) <= AUTO_END_M + AUTO_VMAX * dt_a
+                near_b = np.hypot(px[rows[sel]] - x[j], py[rows[sel]] - y[j]) <= AUTO_END_M + AUTO_VMAX * dt_b
+                keep[sel] = near_a & near_b
+            picks_r.append(rows[keep])
+            picks_k.append(np.array([outf[i]["key"] for i in w[keep]], dtype=object))
+        if not picks_r:
+            return []
+        rows = np.concatenate(picks_r)
+        keys = np.concatenate(picks_k)
+        if not len(rows):
+            return []
+        t, f = ids[rows], fr[rows]
+        o = np.lexsort((f, t, keys))
+        keys, t, f = keys[o], t[o], f[o]
+        brk = np.r_[True, (keys[1:] != keys[:-1]) | (t[1:] != t[:-1]) | (f[1:] - f[:-1] > 1)]
+        starts = np.flatnonzero(brk)
+        ends = np.r_[starts[1:], len(t)] - 1
+        min_n = int(round(LAST_MIN_S * self.fps))
+        return [[int(t[s0]), int(f[s0]), int(f[e0]), int(self.by_key[keys[s0]]["tid"])]
+                for s0, e0 in zip(starts, ends) if e0 - s0 + 1 >= min_n]
+
+    def _fill_boxes(self, df, X, ref):
+        """Box search, frame by frame. While a player is missing, he is somewhere
+        in the rectangle between his last box and his next one. Every box on
+        that frame that nobody has (not labelled, not a second box on someone
+        labelled, not the referee), in his colours and inside his rectangle,
+        is his, unless it is also inside the rectangle of a team-mate missing
+        at the same time (then it could be either of them and is left). When
+        more than one box qualifies, the one nearest the line from his last
+        box to his next one. Returns [[tid, f0, f1, to], ...]."""
+        ids = df["track_id"].to_numpy()
+        fr = df["frame"].to_numpy()
+        px, py = df["pitch_x"].to_numpy(float), df["pitch_y"].to_numpy(float)
+        cand, colour_ok = self._free_boxes(df, X, ref)
         if not cand.any():
             return []
         ci = np.flatnonzero(cand)
@@ -787,27 +898,6 @@ class MatchTracking:
                 Lx[sl] = x[k] + w * (x[k + 1] - x[k])
                 Ly[sl] = y[k] + w * (y[k + 1] - y[k])
             rect[q["key"]], line[q["key"]] = R, (Lx, Ly)
-
-        # colours: a box with an unread kit counts if it looks like his team's kit
-        own = {}
-        if X is not None and np.isfinite(X).any():
-            for c in ("team_a", "team_b", "gk_a", "gk_b"):
-                own[c] = self._profile(X[known & (kit == c)])
-
-        def colour_ok(rows, grp):
-            ok = kit[rows] == grp
-            unk = kit[rows] == "unknown"
-            prof = own.get(grp)
-            if prof is not None and unk.any():
-                d = self._dist(X[rows], prof)
-                others = [own[c] for c in own if c != grp and own[c] is not None]
-                if ref is not None:
-                    others.append(ref)
-                closer = np.ones(len(rows), bool)
-                for o in others:
-                    closer &= d < self._dist(X[rows], o)
-                ok |= unk & np.isfinite(d) & (d < BOX_COL_D) & closer
-            return ok
 
         groups = {}
         for q in self.players:
@@ -983,7 +1073,10 @@ class MatchTracking:
            inside the rectangle between his last box and his next one are his
            (see _fill_boxes);
         3. elimination: a whole orphan track goes to the only player of that
-           team who could be it (see _eliminate).
+           team who could be it (see _eliminate);
+        4. last one left: on a frame where only one outfield player of a team
+           has no box and only one free box is in that team's colours, it is
+           him (see _last_player).
         Saved as one or two edits tagged with a batch id: undo removes them."""
         t0 = time.time()
         with self.lock:
@@ -1009,7 +1102,7 @@ class MatchTracking:
             data["match_id"] = self.match_id
             report = {"batch": batch, "ref_runs": len(ref_items), "ref_learned": ref is not None,
                       "ref_seconds": round(sum(b - a + 1 for _t, a, b in ref_items) / self.fps)}
-            fill, n_box, n_elim = [], 0, 0
+            fill, n_box, n_elim, n_last = [], 0, 0, 0
             try:
                 if ref_items:
                     e = te.add_edit(data, {"kind": "autoref", "frame": min(i[1] for i in ref_items),
@@ -1022,20 +1115,24 @@ class MatchTracking:
                     df = te._autofill(df, {"items": line}) if line else df
                     elim = self._eliminate(df, X, ref)
                     df = te._autofill(df, {"items": elim}) if elim else df
-                    if not line and not elim:
+                    last = self._last_player(df, X, ref)
+                    df = te._autofill(df, {"items": last}) if last else df
+                    if not line and not elim and not last:
                         break
-                    fill += line + elim
+                    fill += line + elim + last
                     n_box += len(line)
                     n_elim += len(elim)
+                    n_last += len(last)
                 if fill:
                     te.add_edit(data, {"kind": "autofill", "frame": min(i[1] for i in fill),
                                        "items": fill[:te.MAX_ITEMS], "batch": batch,
-                                       "note": f"Auto-fix: {n_box} runs of boxes found in a missing player's rectangle, {n_elim} tracks named by elimination"},
+                                       "note": f"Auto-fix: {n_box} runs of boxes found in a missing player's rectangle, "
+                                               f"{n_elim} tracks named by elimination, {n_last} runs for the last player left"},
                                 base=self.base_fp)
             except te.EditError as e:
                 raise TrackingError(str(e)) from None
             report["fill_pieces"] = len(fill)
-            report["box_pieces"], report["elim_pieces"] = n_box, n_elim
+            report["box_pieces"], report["elim_pieces"], report["last_pieces"] = n_box, n_elim, n_last
             if ref_items or fill:
                 te.save_edits(self.edits_path, data)
                 self._rebuild()

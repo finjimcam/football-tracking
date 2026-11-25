@@ -178,6 +178,72 @@ def test_boxes_off_the_pitch_or_cut_off_are_not_searched(tmp_path):
     assert (mt.df["track_id"] == 80).sum() == 260
 
 
+def _edit_tracks(tmp_path, fn):
+    p = tmp_path / ".tmp" / MID / "tracks.parquet"
+    df = fn(pd.read_parquet(p))
+    df.to_parquet(p, index=False)
+
+
+def _box_rows(tid, frames, spot, kit="team_a"):
+    x1, y1, x2, y2 = box(*spot)
+    return pd.DataFrame([{"frame": f, "t_s": f / FPS, "track_id": tid, "class": "player", "x1": x1, "y1": y1,
+                          "x2": x2, "y2": y2, "foot_x": (x1 + x2) / 2, "foot_y": y2, "conf": 0.9,
+                          "pitch_x": spot[0], "pitch_y": spot[1], "tracklet": float(tid), "kit": kit}
+                         for f in frames])
+
+
+def _a2_missing(df, *extra):
+    """a2 (id 1, at (10, 10)) has no box on frames 100-180; meanwhile id 91
+    (team_a kit) stands 4 m away, outside his rectangle, and carries on
+    after he is back (so it isn't one whole orphan track either)."""
+    df = df[~((df["track_id"] == 1) & df["frame"].between(100, 180))]
+    return pd.concat([df, _box_rows(91, range(100, 251), (10, 14)), *extra], ignore_index=True)
+
+
+def test_last_player_left_gets_the_only_free_box(tmp_path):
+    """Only a2 is missing on frames 100-180 and id 91 is the only free box in
+    team_a's colours: it is him (once he could have run there)."""
+    from app.tracking import MatchTracking
+
+    build(tmp_path)
+    _edit_tracks(tmp_path, _a2_missing)
+    mt = MatchTracking(tmp_path, MID)
+    r = mt.autofix()
+    assert r["last_pieces"] >= 1
+    ids, fr = mt.df["track_id"].to_numpy(), mt.df["frame"].to_numpy()
+    gap = (fr >= 100) & (fr <= 180)
+    assert ((ids == 1) & gap).sum() >= 75          # all but the first / last frames he couldn't reach yet
+    assert ((ids == 91) & (fr > 180)).sum() == 70  # after he's back, 91 is someone else: untouched
+    assert "last player left" in te.load_edits(mt.edits_path)["edits"][-1]["note"]
+
+
+def test_last_player_left_two_free_boxes_are_left(tmp_path):
+    """A second free team_a box (id 92) at the same time: it could be either, leave both."""
+    from app.tracking import MatchTracking
+
+    build(tmp_path)
+    _edit_tracks(tmp_path, lambda df: _a2_missing(df, _box_rows(92, range(100, 181), (12, 14))))
+    mt = MatchTracking(tmp_path, MID)
+    mt.autofix()
+    ids, fr = mt.df["track_id"].to_numpy(), mt.df["frame"].to_numpy()
+    assert ((ids == 1) & (fr >= 100) & (fr <= 180)).sum() == 0
+    assert (ids == 91).sum() == 151 and (ids == 92).sum() == 81
+
+
+def test_last_player_left_not_after_he_goes_off(tmp_path):
+    """a2 is last seen on frame 500 (substituted); id 93 in team_a kit comes on
+    for him. a4 is missing then too, but 93 must not be given to anyone."""
+    from app.tracking import MatchTracking
+
+    build(tmp_path)
+    _edit_tracks(tmp_path, lambda df: pd.concat(
+        [df[~((df["track_id"] == 1) & (df["frame"] > 500))], _box_rows(93, range(501, N), (10, 10))],
+        ignore_index=True))
+    mt = MatchTracking(tmp_path, MID)
+    mt.autofix()
+    assert (mt.df["track_id"] == 93).sum() == N - 501
+
+
 def test_autofix_api(root):
     from fastapi.testclient import TestClient
 
