@@ -40,6 +40,7 @@ import pandas as pd
 from _common import (apply_calibration, load_calibration, load_meta, load_player_map,
                      load_team_map, load_tracks, match_dir, pitch_dims,
                      resolve_track_teams, write_json)
+from gap_status import observed
 
 
 def main():
@@ -62,7 +63,9 @@ def main():
     meta = load_meta(args.match_id, args.tmp_dir)
     team_map = load_team_map(args.match_id, args.tmp_dir)
     calib = load_calibration(args.match_id, args.config_dir, args.calibration)
-    tracks, unit = apply_calibration(load_tracks(args.match_id, args.tmp_dir), calib)
+    # Real detections only: a filled (interpolated/absorbed) position must
+    # not win the ball (gap_status.py).
+    tracks, unit = apply_calibration(observed(load_tracks(args.match_id, args.tmp_dir)), calib)
 
     radius = args.radius_m if calib is not None else args.radius_px
     switch_frames = max(1, math.ceil(args.switch_s * meta["fps"]))

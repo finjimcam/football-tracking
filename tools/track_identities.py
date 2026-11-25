@@ -57,6 +57,7 @@ from scipy.optimize import linear_sum_assignment
 
 from _common import (apply_calibration, load_calibration, load_meta, match_config, match_dir,
                      pitch_dims, read_json, reference_path, write_json)
+from gap_status import PIPELINE_DEFAULTS, homography_to_image, label_tracks, pipeline_fillers
 from identity_anchors import anchors_path, load_anchors  # noqa: E402
 from identity_anchors import apply as apply_anchors  # noqa: E402
 from identity_anchors import resolve as resolve_anchors  # noqa: E402
@@ -637,6 +638,10 @@ def main():
                         help="Metres added for a kit mismatch (pass 1, rule-based kits)")
     parser.add_argument("--kit-penalty-2", type=float, default=2.5,
                         help="Kit mismatch cost in pass 2, once kits come from the learned colour model")
+    parser.add_argument("--dup-iou", type=float, default=0.6,
+                        help="Same-frame person boxes overlapping more than this are one player (keep the "
+                             "most confident). Raise together with detect_frames.py --iou, or the hidden "
+                             "player that looser NMS kept in a duel is dropped here (issue #47)")
     parser.add_argument("--max-miss", type=int, default=12, help="Frames a tracklet may coast")
     parser.add_argument("--vmax", type=float, default=8.5, help="Max average speed across a gap, m/s")
     parser.add_argument("--reach-m", type=float, default=3.0, help="Slack on the reachability test, metres")
@@ -671,6 +676,14 @@ def main():
     parser.add_argument("--w-vel", type=float, default=0.0,
                         help="Cost per 3 m/s of velocity change across links with gaps < 1 s")
     parser.add_argument("--no-stability", action="store_true", help="Skip the perturbed re-solves")
+    parser.add_argument("--no-gap-status", action="store_true",
+                        help="Write detections only (no status column / gap fill rows, see gap_status.py)")
+    parser.add_argument("--fill-max-s", type=float, default=PIPELINE_DEFAULTS["max_fill_s"],
+                        help="Fill non-duel identity gaps up to this long with the RTS smoother (interp_gaps.py)")
+    parser.add_argument("--absorbed-max-s", type=float, default=PIPELINE_DEFAULTS["max_absorbed_s"],
+                        help="Fill duel (absorbed) gaps up to this long along the partner's path (duel_gaps.py)")
+    parser.add_argument("--linear-fill", action="store_true",
+                        help="Old straight-line fill for every gap kind instead of the smoother / duel filler")
     parser.add_argument("--reuse-tracklets", action="store_true",
                         help="Reuse tracklets_cache.parquet from the last run: re-run only linking + outputs "
                              "(for tuning the linker in minutes instead of ~15)")
@@ -707,7 +720,7 @@ def main():
     else:
         p = det[(det["class"] == "player") & (det["conf"] >= a.min_conf)].reset_index(drop=True)
         n_before = len(p)
-        p = suppress_duplicates(p)
+        p = suppress_duplicates(p, a.dup_iou)
         print(f"[{a.match_id}] dropped {n_before - len(p)} duplicate person boxes "
               f"({(n_before - len(p)) / n_before:.1%})")
         p, _ = apply_calibration(p, calib)
@@ -828,6 +841,20 @@ def main():
     tracks = pd.concat([p[cols + ["pitch_x", "pitch_y", "tracklet", "kit", "p_team_a"]], balls[cols]],
                        ignore_index=True)
     tracks = tracks.sort_values(["frame", "class", "track_id"]).reset_index(drop=True)
+    if not a.no_gap_status:
+        # Gap labelling (issue #47): status column + fill rows for short gaps,
+        # one row per gap in gaps.parquet. Re-runnable alone: tools/gap_status.py.
+        not_players = {10000 + int(t) for t, c in zip(tl["tracklet"], tl["cls"])
+                       if c in ("official", "off_pitch", "gk_b")}
+        idents = [*range(1, 12), *range(101, 112)]
+        tracks, gaps = label_tracks(tracks, fps, track_ids=idents, window=(f_lo, f_hi),
+                                    to_image=homography_to_image(calib), exclude_partners=not_players,
+                                    **pipeline_fillers(a.fill_max_s, ignore=not_players, linear=a.linear_fill),
+                                    max_fill_s=a.fill_max_s, max_absorbed_s=a.absorbed_max_s)
+        gaps.to_parquet(mdir / "gaps.parquet", index=False)
+        print("  gap status: " + ", ".join(f"{k} {v}" for k, v in gaps["kind"].value_counts().items())
+              + " gaps; fill rows " + ", ".join(f"{k} {v}" for k, v in tracks["status"].value_counts().items()
+                                                 if k != "detected"))
     tracks.to_parquet(mdir / "tracks.parquet", index=False)
 
     # 6. player_map / team_map (names from step 4b)

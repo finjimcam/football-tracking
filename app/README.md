@@ -50,7 +50,8 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   in reach: it jumps to the first, and `n` steps through them. Nothing is
   saved until Save + next. It doesn't catch swaps where the two players are
   touching (no jump): use Fix swap for those. A strip under the frame shows each chain as green (detected), amber
-  (filled) or red (lost), with white ticks at hand-offs. Picks are saved to
+  (filled), violet (filled inside a duel gap, `absorbed` in `gaps.parquet`) or
+  red (lost), with white ticks at hand-offs. Picks are saved to
   the same `config/<id>_<team>_out_of_possession_shape_selection.json` the
   CLI picker uses, so either one can carry on from the other.
   **Render picked lines** queues `cut_phase_clips.py --shape-selection`.
@@ -99,7 +100,9 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   sit at their last-seen spot as a dashed red ring, and players off camera
   are faded. **Tracks** has one lane per player over a 1-15 min window:
   tracked / predicted / lost (no box while the last spot is in view) / off
-  camera / your box. Diamonds above the lanes mark problems: possible swaps
+  camera / your box / in a duel (purple). Positions the identity
+  pipeline filled itself (`gap_status.py`, #47) show as predicted (short
+  gaps) or in a duel (hidden in an opponent's box), never as lost. Diamonds above the lanes mark problems: possible swaps
   from `contact_swaps.json`, and losses of 3 s or more. When the playhead is
   on one, a banner offers the fix: *Swap them from here*, *Draw box for #N*,
   or *Not a swap* / *Ignore*. Other fixes:

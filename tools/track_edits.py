@@ -248,17 +248,27 @@ def _box_row(df, e, fps):
 INTERP_COLS = ("x1", "y1", "x2", "y2", "pitch_x", "pitch_y")
 
 
+def _pipeline_fill(df):
+    """Rows the pipeline filled in (gap_status.py, issue #47): not boxes."""
+    if "status" not in df.columns:
+        return np.zeros(len(df), bool)
+    return df["status"].isin(["interpolated", "absorbed"]).to_numpy()
+
+
 def _fill_hand(df, fps):
     """Interpolate between each hand box and tid's nearest boxes (hand or
     tracked) when nothing lies between them and they're <= INTERP_S apart;
-    hold a hand box HOLD_S on a side with no such neighbour."""
+    hold a hand box HOLD_S on a side with no such neighbour. The pipeline's
+    own fill rows (#47) don't count as boxes, and are replaced where a hand
+    fill covers them."""
     hand = df[df["source"] == "hand"]
     if hand.empty:
         return df
+    pfill = _pipeline_fill(df)
     max_gap, hold = int(round(INTERP_S * fps)), int(round(HOLD_S * fps))
     new = []
     for tid, hrows in hand.groupby("track_id"):
-        mine = df[_players(df) & (df["track_id"].to_numpy() == tid)].sort_values("frame")
+        mine = df[_players(df) & (df["track_id"].to_numpy() == tid) & ~pfill].sort_values("frame")
         frames = mine["frame"].to_numpy()
         vals = mine[list(INTERP_COLS)].to_numpy(float)
         kit = hrows["kit"].iloc[0] if "kit" in hrows.columns else None
@@ -295,10 +305,16 @@ def _fill_hand(df, fps):
     add["tracklet"] = np.nan
     add["source"] = "hand_fill"
     # a filled frame never overrides a real box of that player
-    mine = df[_players(df) & df["track_id"].isin(add["track_id"].unique()).to_numpy()]
+    who = _players(df) & df["track_id"].isin(add["track_id"].unique()).to_numpy()
+    mine = df[who & ~pfill]
     have = set(zip(mine["frame"].tolist(), mine["track_id"].tolist()))
     keep = [(f, t) not in have for f, t in zip(add["frame"].tolist(), add["track_id"].tolist())]
     add = add[keep]
+    # ...but it does replace the pipeline's guess for those frames
+    made = set(zip(add["frame"].tolist(), add["track_id"].tolist()))
+    sub = df[who & pfill]
+    stale = [(f, t) in made for f, t in zip(sub["frame"].tolist(), sub["track_id"].tolist())]
+    df = df.drop(index=sub.index[np.asarray(stale, bool)]) if any(stale) else df
     return _concat(df, add)
 
 
