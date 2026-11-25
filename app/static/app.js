@@ -1,12 +1,19 @@
 // Stopframe front end: plain ES module, no build step. Talks to app/server.py.
 import { viewLines } from './lines.js';
+import { viewTracking } from './tracking.js';
+import { viewPlayers } from './players.js';
+import { viewLibrary } from './library.js';
+import { viewCode } from './code.js';
 const REPO = 'https://github.com/finjimcam/football-tracking/issues/';
 const WORKFLOW = 'https://github.com/finjimcam/football-tracking/blob/master/workflows/';
 const TABS = [
   { id: 'matches', name: 'Matches' },
   { id: 'jobs', name: 'Jobs' },
   { id: 'lines', name: 'Lines' },
-  { id: 'code', name: 'Code', issue: 3, blurb: 'Configurable code buttons for tagging instances while the video plays.' },
+  { id: 'tracking', name: 'Tracking' },
+  { id: 'players', name: 'Players' },
+  { id: 'library', name: 'Library' },
+  { id: 'code', name: 'Code' },
   { id: 'review', name: 'Review', issue: 1, blurb: 'Frame-accurate video player with the tagged timeline underneath.' },
   { id: 'sorter', name: 'Sorter', issue: 4, blurb: 'Every tagged instance in one list: edit, relabel, trim and delete.' },
   { id: 'matrix', name: 'Matrix', issue: 11, blurb: 'Filter and cross-tabulate instances by code and label.' },
@@ -393,6 +400,8 @@ async function viewMatch(view, matchId, params) {
           h('span', { class: 'tag' }, match.pipeline === 'broadcast' ? 'broadcast' : 'match report'),
           match.pipeline === 'broadcast' ? h('div', { class: 'spacer' }) : null,
           match.pipeline === 'broadcast' ? h('a', { class: 'btn small primary', href: '#/lines/' + encodeURIComponent(match.match_id) }, 'Pick lines') : null,
+          match.pipeline === 'broadcast' ? h('a', { class: 'btn small', href: '#/tracking/' + encodeURIComponent(match.match_id) }, 'Fix tracking') : null,
+          match.pipeline === 'broadcast' ? h('a', { class: 'btn small', href: '#/players/' + encodeURIComponent(match.match_id) }, 'Players') : null,
           h('span', { class: 'muted mono', style: 'font-size:11px' }, match.match_id)),
         stageList),
       h('section', { class: 'panel', 'aria-labelledby': 'h-out' },
@@ -536,6 +545,18 @@ async function route() {
   else if (parts[0] === 'lines') {
     await viewLines(view, parts, params, {
       h, api, toast, every, renderTabs, setCrumb, pill, onLeave: (fn) => leaveHooks.push(fn),
+    });
+  }
+  else if (parts[0] === 'tracking') {
+    await viewTracking(view, parts, params, {
+      h, api, toast, every, renderTabs, setCrumb, pill, onLeave: (fn) => leaveHooks.push(fn),
+    });
+  }
+  else if (parts[0] === 'players') await viewPlayers(view, parts, params, { h, api, toast, renderTabs, setCrumb, pill });
+  else if (parts[0] === 'library') await viewLibrary(view, parts, params, { h, api, toast, renderTabs, setCrumb, pill });
+  else if (parts[0] === 'code') {
+    await viewCode(view, parts, params, {
+      h, api, toast, renderTabs, setCrumb, pill, onLeave: (fn) => leaveHooks.push(fn),
     });
   }
   else if (parts[0] === 'jobs') await viewJobs(view, parts[1]);
