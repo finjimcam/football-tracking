@@ -296,7 +296,7 @@ export async function viewTracking(view, parts, params, ui) {
     st.busy = true;
     autoBtn.disabled = true;
     autoBtn.textContent = 'Auto-fixing…';
-    msg.textContent = 'Auto-fixing the whole half (about half a minute)…';
+    msg.textContent = 'Auto-fixing the whole half (a minute or two)…';
     try {
       const r = await api(`/matches/${mid}/tracking/autofix`, { method: 'POST' });
       const parts = [];
