@@ -128,3 +128,29 @@ def test_identity_map_prefers_analyst_names_then_shape():
     # 2 was named #14 (first-half id 4); 3 and 4 are matched by shape to the remaining 2 and 3
     assert m[1] == 1 and m[2] == 4 and how[2] == "named in this half"
     assert {m[3], m[4]} == {2, 3}
+
+
+def test_chain_homographies_recovers_a_pan_and_zoom():
+    import cv2
+
+    import chain_homographies as C
+
+    rng = np.random.default_rng(0)
+    tex = cv2.GaussianBlur((rng.random((700, 1100)) * 255).astype(np.uint8), (0, 0), 1.5)
+
+    def view(s, dx):  # zoom s about the centre, pan dx (half-resolution pixels)
+        A = np.array([[s, 0, 480 * (1 - s) + dx], [0, s, 270 * (1 - s)], [0, 0, 1.0]])
+        return cv2.warpPerspective(tex, A, (960, 540)), A
+
+    shots = [view(1.0 + 0.01 * i, 3.0 * i) for i in range(6)]  # zooming in and panning; last = anchor
+    frames = [im for im, _ in shots]
+    H_anchor = np.diag([0.1, 0.1, 1.0])  # image->pitch at the anchor (full resolution)
+    H, inl = C.chain(frames, {}, H_anchor, min_inliers=50, refresh=10)
+    assert sorted(H) == [0, 1, 2, 3, 4]
+    S = np.diag([C.SCALE, C.SCALE, 1.0])
+    for i in range(5):  # truth: frame i pixel -> anchor pixel -> pitch
+        A_i, A_n = shots[i][1], shots[5][1]
+        truth = H_anchor @ np.linalg.inv(S) @ A_n @ np.linalg.inv(A_i) @ S
+        p = np.array([800.0, 500.0, 1.0])
+        got, want = H[i] @ p, truth @ p
+        assert np.allclose(got[:2] / got[2], want[:2] / want[2], atol=0.05)
