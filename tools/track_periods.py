@@ -333,7 +333,7 @@ def remap_period(tracks, links, gaps, mapping, offset):
     return tracks, links, gaps
 
 
-def apply_substitutions(tracks, gaps, players, t2p, subs, team_of_key):
+def apply_substitutions(tracks, gaps, players, t2p, subs):
     """Split the outgoing player's identity at each substitution. Mutates
     players / t2p; returns (tracks, gaps, report)."""
     by_num = {(pl["team"], pl.get("number")): key for key, pl in players.items()}
@@ -458,7 +458,7 @@ def stage_combine(a, cfg, mdir):
 
     tracks = pd.concat(T, ignore_index=True)
     gaps = pd.concat(Gp, ignore_index=True) if Gp else None
-    tracks, gaps, sub_report = apply_substitutions(tracks, gaps, players, t2p, subs, None)
+    tracks, gaps, sub_report = apply_substitutions(tracks, gaps, players, t2p, subs)
     tracks = tracks.sort_values(["frame", "class", "track_id"]).reset_index(drop=True)
 
     # per-player totals over the match
@@ -501,8 +501,6 @@ def stage_combine(a, cfg, mdir):
         "frames_in_window": win,
     })
     team_map = {}
-    for o, (_, _, _, _) in zip(outs, pers):
-        pass
     for t in tracks.loc[tracks["class"] == "player", "track_id"].unique():
         t = int(t)
         team_map[str(t)] = ("team_a" if 1 <= t < 100 else "team_b" if 101 <= t < 1000 else "unknown")
