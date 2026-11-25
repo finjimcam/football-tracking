@@ -1,7 +1,7 @@
-"""Tracking tab Auto-fix (app/tracking.py MatchTracking.autofix): a lost
-player's gap bridged by the line from his last box to his next one, an orphan
-track named by elimination when only one player of that team is missing, and
-the decoys it must leave alone. Plus the two edit kinds it saves
+"""Tracking tab Auto-fix (app/tracking.py MatchTracking.autofix): while a
+player is missing, the free boxes in his colours inside the rectangle from his
+last box to his next one are his (unless a missing team-mate's rectangle holds
+them too), and the decoys it must leave alone. Plus the two edit kinds it saves
 (tools/track_edits.py autoref / autofill)."""
 import json
 import sys
@@ -36,8 +36,8 @@ def build(tmp_path, extra=()):
     """a2 (id 1) stands at (10, 10). a3 (id 2) walks (20, 20) -> (30, 20) and
     is lost on frames 200-299: unlabelled id 50 (team_a kit) walks his line,
     id 60 (team_b kit) walks it too, id 70 (team_a) runs 25 m away. a4 (id 3)
-    walks (40, 30) -> (50, 30) and is lost on frames 400-699 (12 s, too long
-    to bridge): unlabelled id 80 (team_a) walks where he went. b5 (id 4) is
+    walks (40, 30) -> (50, 30) and is lost on frames 400-699 (12
+    s): unlabelled id 80 (team_a) walks where he went. b5 (id 4) is
     always seen at (55, 5)."""
     mdir = tmp_path / ".tmp" / MID
     mdir.mkdir(parents=True)
@@ -92,13 +92,13 @@ def root(tmp_path):
     return build(tmp_path)
 
 
-def test_autofix_bridges_the_gap_and_names_by_elimination(root):
+def test_autofix_finds_the_boxes_in_his_rectangle(root):
     from app.tracking import MatchTracking
 
     mt = MatchTracking(root, MID)
     lost_before = mt._lost_seconds()
     r = mt.autofix()
-    assert r["line_pieces"] >= 1 and r["elim_pieces"] == 1 and r["ref_learned"] is False
+    assert r["box_pieces"] >= 2 and r["ref_learned"] is False
     assert r["lost_s_after"] < lost_before
     ids = mt.df["track_id"].to_numpy()
     fr = mt.df["frame"].to_numpy()
@@ -107,7 +107,7 @@ def test_autofix_bridges_the_gap_and_names_by_elimination(root):
     assert not np.isin(ids, [50]).any()
     assert ((ids == 60) & in_gap).sum() == 90 and ((ids == 70) & in_gap).sum() == 90
     assert ((ids == 2) & in_gap).sum() == 90
-    # 80 became a4 (id 3) by elimination
+    # 80 became a4 (id 3): the only team_a player missing, and it is in his rectangle
     assert not (ids == 80).any() and ((ids == 3) & (fr >= 420) & (fr < 680)).sum() == 260
     kinds = [e["kind"] for e in te.load_edits(mt.edits_path)["edits"]]
     assert kinds == ["autofill"]
@@ -130,14 +130,15 @@ def test_autofix_again_replaces_and_undo_removes(root):
         mt.undo_autofix()
 
 
-def test_elimination_needs_a_single_candidate(tmp_path):
-    """A second team_a player (id 5) also lost for the whole of id 80's run:
-    80 could be either of them, so it is left for you."""
+def test_a_box_in_two_missing_rectangles_is_left(tmp_path):
+    """A second team_a player (id 5) is missing for the whole of id 80's run
+    and his rectangle covers it too: 80 could be either of them, so it is
+    left for you."""
     from app.tracking import MatchTracking
 
     def a6(f, add):
         if not 380 <= f < 720:
-            add(f, 5, (45, 25), "team_a")
+            add(f, 5, (46, 29), "team_a")
 
     build(tmp_path, extra=[a6])
     pm_path = tmp_path / ".tmp" / MID / "player_map.json"
@@ -145,13 +146,12 @@ def test_elimination_needs_a_single_candidate(tmp_path):
     pm["players"]["a6"] = {"team": "team_a", "number": 6, "name": "E", "track_ids": [5], "role": "OUT"}
     pm_path.write_text(json.dumps(pm))
     mt = MatchTracking(tmp_path, MID)
-    r = mt.autofix()
-    assert r["elim_pieces"] == 0
+    mt.autofix()
     assert (mt.df["track_id"] == 80).sum() == 260
 
 
-def test_elimination_skips_faint_and_off_pitch_tracks(tmp_path):
-    """Only one player missing, but the orphan is a faint detection: leave it."""
+def test_faint_boxes_are_not_searched(tmp_path):
+    """Only one player missing, but the box is a faint detection: leave it."""
     from app.tracking import MatchTracking
 
     build(tmp_path)
@@ -160,7 +160,22 @@ def test_elimination_skips_faint_and_off_pitch_tracks(tmp_path):
     df.loc[df["track_id"] == 80, "conf"] = 0.2
     df.to_parquet(p, index=False)
     mt = MatchTracking(tmp_path, MID)
-    assert mt.autofix()["elim_pieces"] == 0
+    mt.autofix()
+    assert (mt.df["track_id"] == 80).sum() == 260
+
+
+def test_boxes_off_the_pitch_or_cut_off_are_not_searched(tmp_path):
+    """id 80 moved behind the touchline (boards / bench): leave it."""
+    from app.tracking import MatchTracking
+
+    build(tmp_path)
+    p = tmp_path / ".tmp" / MID / "tracks.parquet"
+    df = pd.read_parquet(p)
+    df.loc[df["track_id"] == 80, "pitch_y"] = -4.0
+    df.to_parquet(p, index=False)
+    mt = MatchTracking(tmp_path, MID)
+    mt.autofix()
+    assert (mt.df["track_id"] == 80).sum() == 260
 
 
 def test_autofix_api(root):
@@ -172,10 +187,10 @@ def test_autofix_api(root):
     c = TestClient(create_app(root, runner=JobRunner(root, nice_heavy=False)))
     r = c.post(f"/api/matches/{MID}/tracking/autofix")
     assert r.status_code == 200, r.text
-    assert r.json()["elim_pieces"] == 1
+    assert r.json()["box_pieces"] >= 2
     s = c.get(f"/api/matches/{MID}/tracking").json()
     e = next(e for e in s["edits"] if e["kind"] == "autofill")
-    assert "items" not in e and e["n_items"] >= 2 and "elimination" in e["note"]
+    assert "items" not in e and e["n_items"] >= 2 and "rectangle" in e["note"]
     assert c.delete(f"/api/matches/{MID}/tracking/autofix").status_code == 200
     assert c.delete(f"/api/matches/{MID}/tracking/autofix").status_code == 400
 

@@ -38,13 +38,14 @@ LOST_MIN_S = 3.0      # a lost run this long is a problem worth checking
 SWAP_NEAR_S = 3.0     # a swap fix this close to a flagged swap resolves it
 MAX_CHUNK = 750       # frames per /frames request (30 s at 25 fps)
 KIT_CODE = {"team_a": "a", "team_b": "b", "gk_a": "a", "gk_b": "b", "official": "r"}
-AUTO_GAP_S = 10.0     # Auto-fix bridges gaps up to this long
-AUTO_PAD_M = 3.0      # the box between where he vanished and reappeared, padded by this (pitch noise)
-AUTO_IN_BOX = 0.8     # share of a piece's rows that must sit in that box
-AUTO_SAME_M = 2.5     # overhang rows this close to the player's own box are him, tracked twice
-AUTO_END_M = 3.0      # a piece starts/ends within this (+ running distance) of where he vanished/reappears
-AUTO_MIN_ROWS = 3     # pieces shorter than this inside the gap are noise
-AUTO_OVER_S = 1.0     # a piece may run on past the gap by at most this (else it is someone else's)
+AUTO_END_M = 3.0      # elimination: a track starts/ends within this (+ running distance) of where he vanished/reappears
+BOX_GAP_S = 300.0     # box search: gaps up to this long get a rectangle
+BOX_PAD_M = 3.0       # ... the rectangle from his last box to his next one, padded by this
+BOX_COL_D = 2.5       # ... an unread-kit box counts as his colours this close to his team's
+BOX_CONF = 0.3        # ... boxes fainter than this are not searched
+BOX_OFF_M = 2.0       # ... nor boxes further than this outside the lines (boards, bench, stands)
+BOX_EDGE_PX = 4       # ... nor boxes cut off at the edge of the picture (colours unreadable)
+BOX_REF_SHARE = 0.3   # ... nor boxes of a track that reads as the referee this often
 ELIM_MIN_S = 1.0      # elimination: orphan tracks at least this long
 ELIM_KIT = 0.8        # ... whose readable kit votes are at least this much one team
 ELIM_GAP_S = 60.0     # ... go to a player lost for at most this long around them
@@ -716,16 +717,15 @@ class MatchTracking:
         dup[ci[cover > AUTO_DUP]] = True
         return dup
 
-    def _fill_lines(self, df, X, ref):
-        """One round of line-filling. For every player gap up to AUTO_GAP_S,
-        draw the line (on the pitch) from the last box to the next one. A piece
-        of unlabelled track inside the gap is a candidate when it starts within
-        running distance of where the player vanished, ends within running
-        distance of where he reappears, and keeps close to the line (looser in
-        the middle of long gaps: pitch positions are noisy). Players bid for
-        pieces; the best line fit wins, each piece goes to one player and a
-        player never gets two pieces at once.
-        Returns [[tid, f0, f1, to], ...]."""
+    def _fill_boxes(self, df, X, ref):
+        """Box search, frame by frame. While a player is missing, he is somewhere
+        in the rectangle between his last box and his next one. Every box on
+        that frame that nobody has (not labelled, not a second box on someone
+        labelled, not the referee), in his colours and inside his rectangle,
+        is his, unless it is also inside the rectangle of a team-mate missing
+        at the same time (then it could be either of them and is left). When
+        more than one box qualifies, the one nearest the line from his last
+        box to his next one. Returns [[tid, f0, f1, to], ...]."""
         ids = df["track_id"].to_numpy()
         fr = df["frame"].to_numpy()
         px, py = df["pitch_x"].to_numpy(float), df["pitch_y"].to_numpy(float)
@@ -735,88 +735,136 @@ class MatchTracking:
         if ref is not None:
             dr = self._dist(X, ref)
             cand &= ~(np.isfinite(dr) & (dr < REF_D))
+        L = float(self.cfg.get("pitch_length") or 105.0)
+        Wd = float(self.cfg.get("pitch_width") or 68.0)
+        cand &= (px >= -BOX_OFF_M) & (px <= L + BOX_OFF_M) & (py >= -BOX_OFF_M) & (py <= Wd + BOX_OFF_M)
+        if "conf" in df.columns:
+            cand &= df["conf"].to_numpy(float) >= BOX_CONF
+        x1, y1 = df["x1"].to_numpy(float), df["y1"].to_numpy(float)
+        x2, y2 = df["x2"].to_numpy(float), df["y2"].to_numpy(float)
+        e = BOX_EDGE_PX
+        cand &= (x1 > e) & (y1 > e) & (x2 < self.W - e) & (y2 < self.H - e)
+        tv = pd.DataFrame({"t": ids, "k": kit})
+        tv = tv[tv["k"] != "unknown"].groupby("t")["k"].agg(lambda k: (k == "official").mean())
+        refish = tv.index[tv >= BOX_REF_SHARE].to_numpy()
+        cand &= ~np.isin(ids, refish)
         cand &= ~self._dups(df, cand, known)
         if not cand.any():
             return []
-        # the kit votes of each candidate track decide whose it can be
-        ck = pd.DataFrame({"tid": ids[cand], "kit": kit[cand]})
-        votes = ck.groupby(["tid", "kit"]).size().unstack(fill_value=0)
-        for c in ("team_a", "team_b", "gk_a", "gk_b", "official"):
-            if c not in votes.columns:
-                votes[c] = 0
-        readable = votes[["team_a", "team_b", "gk_a", "gk_b", "official"]].sum(axis=1)
         ci = np.flatnonzero(cand)
-        ci = ci[np.lexsort((fr[ci], ids[ci]))]          # by track, then frame
-        cid, cfr = ids[ci], fr[ci]
-        by_f = ci[np.argsort(fr[ci], kind="stable")]     # by frame
-        bfr = fr[by_f]
-        maxg = int(AUTO_GAP_S * self.fps)
-        props = []
-        for q in self.players:
+        ci = ci[np.argsort(fr[ci], kind="stable")]
+        cfr = fr[ci]
+        lo_f = self.lo
+        n_f = self.N
+        maxg = int(BOX_GAP_S * self.fps)
+        INF = np.inf
+
+        def group_of(q):
             gk = q.get("role") == "GK"
-            mine = "gk_a" if (gk and q["team"] == "team_a") else "gk_b" if gk else q["team"]
-            ok = (readable < 3) | ((votes[mine] >= 0.5 * readable) & (votes["official"] < 0.4 * readable))
-            ok_t = set(votes.index[ok].tolist())
-            other = [c for c in ("team_a", "team_b", "gk_a", "gk_b", "official") if c != mine and not (
-                gk and c == q["team"]) and not (not gk and c == ("gk_a" if q["team"] == "team_a" else "gk_b"))]
-            m = np.flatnonzero(np.isin(ids, q["ids"]))
-            if len(m) < 2:
-                continue
-            g = pd.DataFrame({"f": fr[m], "x": px[m], "y": py[m]}).dropna().drop_duplicates("f").sort_values("f")
+            return ("gk_a" if q["team"] == "team_a" else "gk_b") if gk else q["team"]
+
+        # each player's rectangle per frame: NaN where he has a box (or is not
+        # on the pitch yet / any more), +-inf where he is missing too long to bound
+        rect, line = {}, {}
+        for q in self.players:
+            m = np.isin(ids, q["ids"]) & np.isfinite(px)
+            g = pd.DataFrame({"f": fr[m], "x": px[m], "y": py[m]}).drop_duplicates("f").sort_values("f")
             f, x, y = g["f"].to_numpy(), g["x"].to_numpy(), g["y"].to_numpy()
-            for k in np.flatnonzero((np.diff(f) > 1) & (np.diff(f) <= maxg)):
+            R = np.full((n_f, 4), np.nan)
+            Lx = np.full(n_f, np.nan)
+            Ly = np.full(n_f, np.nan)
+            if not len(f):
+                continue
+            for k in np.flatnonzero(np.diff(f) > 1):
                 fa, fb = int(f[k]), int(f[k + 1])
-                gap_s = (fb - fa) / self.fps
-                if np.hypot(x[k + 1] - x[k], y[k + 1] - y[k]) > AUTO_VMAX * gap_s + AUTO_END_M:
-                    continue  # one end is wrong: leave it to you
-                lo, hi = np.searchsorted(bfr, [fa + 1, fb])
-                for t in np.unique(ids[by_f[lo:hi]]):
-                    if int(t) not in ok_t:
-                        continue
-                    a, b = np.searchsorted(cid, t, "left"), np.searchsorted(cid, t, "right")
-                    tf = cfr[a:b]
-                    inside = (tf > fa) & (tf < fb)
-                    n_in = int(inside.sum())
-                    if n_in < AUTO_MIN_ROWS:
-                        continue
-                    # runs on past the gap: fine if that part sits on him (tracked
-                    # twice), else it is somebody else passing through
-                    out = ci[a:b][~inside]
-                    if len(out) > AUTO_OVER_S * self.fps:
-                        ox = np.interp(fr[out], f, x)
-                        oy = np.interp(fr[out], f, y)
-                        if np.median(np.hypot(px[out] - ox, py[out] - oy)) > AUTO_SAME_M:
-                            continue
-                    rows = ci[a:b][inside]
-                    rf = fr[rows]
-                    # crosses someone in the other kit part-way: not all of it is him
-                    if any(np.isin(kit[r3], other).sum() >= 2 for r3 in np.array_split(rows, 3)):
-                        continue
-                    # in the box between the two points
-                    bx0, bx1 = min(x[k], x[k + 1]) - AUTO_PAD_M, max(x[k], x[k + 1]) + AUTO_PAD_M
-                    by0, by1 = min(y[k], y[k + 1]) - AUTO_PAD_M, max(y[k], y[k + 1]) + AUTO_PAD_M
-                    inb = (px[rows] >= bx0) & (px[rows] <= bx1) & (py[rows] >= by0) & (py[rows] <= by1)
-                    if inb.mean() < AUTO_IN_BOX:
-                        continue
-                    w = (rf - fa) / (fb - fa)
-                    d = np.hypot(px[rows] - (x[k] + w * (x[k + 1] - x[k])), py[rows] - (y[k] + w * (y[k + 1] - y[k])))
-                    s_dt, e_dt = (rf[0] - fa) / self.fps, (fb - rf[-1]) / self.fps
-                    if np.hypot(px[rows[0]] - x[k], py[rows[0]] - y[k]) > AUTO_END_M + AUTO_VMAX * s_dt:
-                        continue
-                    if np.hypot(px[rows[-1]] - x[k + 1], py[rows[-1]] - y[k + 1]) > AUTO_END_M + AUTO_VMAX * e_dt:
-                        continue
-                    props.append((float(np.median(d)), q["key"], int(t), int(rf[0]), int(rf[-1])))
-        # best fit first; a piece once, a player one piece at a time
-        props.sort()
-        taken_t, taken_p, items = {}, {}, []
-        for _c, key, t, f0, f1 in props:
-            if any(a <= f1 and f0 <= b for a, b in taken_t.get(t, ())):
+                sl = slice(fa + 1 - lo_f, fb - lo_f)
+                if fb - fa > maxg:
+                    R[sl] = (-INF, INF, -INF, INF)
+                    continue
+                R[sl] = (min(x[k], x[k + 1]) - BOX_PAD_M, max(x[k], x[k + 1]) + BOX_PAD_M,
+                         min(y[k], y[k + 1]) - BOX_PAD_M, max(y[k], y[k + 1]) + BOX_PAD_M)
+                w = (np.arange(fa + 1, fb) - fa) / (fb - fa)
+                Lx[sl] = x[k] + w * (x[k + 1] - x[k])
+                Ly[sl] = y[k] + w * (y[k + 1] - y[k])
+            rect[q["key"]], line[q["key"]] = R, (Lx, Ly)
+
+        # colours: a box with an unread kit counts if it looks like his team's kit
+        own = {}
+        if X is not None and np.isfinite(X).any():
+            for c in ("team_a", "team_b", "gk_a", "gk_b"):
+                own[c] = self._profile(X[known & (kit == c)])
+
+        def colour_ok(rows, grp):
+            ok = kit[rows] == grp
+            unk = kit[rows] == "unknown"
+            prof = own.get(grp)
+            if prof is not None and unk.any():
+                d = self._dist(X[rows], prof)
+                others = [own[c] for c in own if c != grp and own[c] is not None]
+                if ref is not None:
+                    others.append(ref)
+                closer = np.ones(len(rows), bool)
+                for o in others:
+                    closer &= d < self._dist(X[rows], o)
+                ok |= unk & np.isfinite(d) & (d < BOX_COL_D) & closer
+            return ok
+
+        groups = {}
+        for q in self.players:
+            groups.setdefault(group_of(q), []).append(q["key"])
+        pick = {}      # row -> (dist, key)
+        for q in self.players:
+            key, grp = q["key"], group_of(q)
+            R = rect[key]
+            bounded = np.isfinite(R[:, 0])
+            if not bounded.any():
                 continue
-            if any(a <= f1 and f0 <= b for a, b in taken_p.get(key, ())):
+            fi = np.flatnonzero(bounded) + lo_f
+            a, b = np.searchsorted(cfr, fi[0]), np.searchsorted(cfr, fi[-1], "right")
+            rows = ci[a:b]
+            rf = fr[rows] - lo_f
+            r = R[rf]
+            inside = (bounded[rf] & (px[rows] >= r[:, 0]) & (px[rows] <= r[:, 1])
+                      & (py[rows] >= r[:, 2]) & (py[rows] <= r[:, 3]))
+            rows, rf = rows[inside], rf[inside]
+            if not len(rows):
                 continue
-            taken_t.setdefault(t, []).append((f0, f1))
-            taken_p.setdefault(key, []).append((f0, f1))
-            items.append([t, f0, f1, int(self.by_key[key]["tid"])])
+            ok = colour_ok(rows, grp)
+            rows, rf = rows[ok], rf[ok]
+            # not inside a missing team-mate's rectangle too
+            for mate in groups[grp]:
+                if mate == key or not len(rows):
+                    continue
+                M2 = rect[mate][rf]
+                with np.errstate(invalid="ignore"):
+                    also = ((px[rows] >= M2[:, 0]) & (px[rows] <= M2[:, 1])
+                            & (py[rows] >= M2[:, 2]) & (py[rows] <= M2[:, 3]))
+                rows, rf = rows[~also], rf[~also]
+            if not len(rows):
+                continue
+            Lx, Ly = line[key]
+            d = np.hypot(px[rows] - Lx[rf], py[rows] - Ly[rf])
+            # one box per frame for him: the nearest the line
+            o = np.lexsort((d, rf))
+            first = np.r_[True, rf[o][1:] != rf[o][:-1]]
+            for r_, d_ in zip(rows[o][first], d[o][first]):
+                if r_ not in pick or d_ < pick[r_][0]:
+                    pick[int(r_)] = (float(d_), key)
+        if not pick:
+            return []
+        rows = np.fromiter(pick, int)
+        keys = np.array([pick[r][1] for r in rows])
+        t = ids[rows]
+        f = fr[rows]
+        o = np.lexsort((f, t, keys))
+        rows, keys, t, f = rows[o], keys[o], t[o], f[o]
+        items = []
+        # contiguous runs of the same box track going to the same player
+        brk = np.r_[True, (keys[1:] != keys[:-1]) | (t[1:] != t[:-1]) | (f[1:] - f[:-1] > 1)]
+        starts = np.flatnonzero(brk)
+        ends = np.r_[starts[1:], len(rows)] - 1
+        for s0, e0 in zip(starts, ends):
+            items.append([int(t[s0]), int(f[s0]), int(f[e0]), int(self.by_key[keys[s0]]["tid"])])
         return items
 
     def _eliminate(self, df, X, ref):
@@ -931,8 +979,11 @@ class MatchTracking:
         """Go through the problems and fix what can be fixed without you:
         1. referee look-alikes in players' tracks (needs one box marked 'not a
            player' to learn the referee's colours) are ruled out;
-        2. every gap up to AUTO_GAP_S is bridged by a line from the last box to
-           the next one, and unlabelled boxes on that line join the player.
+        2. box search: while a player is missing, the free boxes in his colours
+           inside the rectangle between his last box and his next one are his
+           (see _fill_boxes);
+        3. elimination: a whole orphan track goes to the only player of that
+           team who could be it (see _eliminate).
         Saved as one or two edits tagged with a batch id: undo removes them."""
         t0 = time.time()
         with self.lock:
@@ -958,7 +1009,7 @@ class MatchTracking:
             data["match_id"] = self.match_id
             report = {"batch": batch, "ref_runs": len(ref_items), "ref_learned": ref is not None,
                       "ref_seconds": round(sum(b - a + 1 for _t, a, b in ref_items) / self.fps)}
-            fill, n_line, n_elim = [], 0, 0
+            fill, n_box, n_elim = [], 0, 0
             try:
                 if ref_items:
                     e = te.add_edit(data, {"kind": "autoref", "frame": min(i[1] for i in ref_items),
@@ -967,24 +1018,24 @@ class MatchTracking:
                                     base=self.base_fp)
                     df = te._autoref(df, e, e["id"])
                 for _ in range(AUTO_ROUNDS):
-                    line = self._fill_lines(df, X, ref)
+                    line = self._fill_boxes(df, X, ref)
                     df = te._autofill(df, {"items": line}) if line else df
                     elim = self._eliminate(df, X, ref)
                     df = te._autofill(df, {"items": elim}) if elim else df
                     if not line and not elim:
                         break
                     fill += line + elim
-                    n_line += len(line)
+                    n_box += len(line)
                     n_elim += len(elim)
                 if fill:
                     te.add_edit(data, {"kind": "autofill", "frame": min(i[1] for i in fill),
                                        "items": fill[:te.MAX_ITEMS], "batch": batch,
-                                       "note": f"Auto-fix: {n_line} gaps bridged, {n_elim} tracks named by elimination"},
+                                       "note": f"Auto-fix: {n_box} runs of boxes found in a missing player's rectangle, {n_elim} tracks named by elimination"},
                                 base=self.base_fp)
             except te.EditError as e:
                 raise TrackingError(str(e)) from None
             report["fill_pieces"] = len(fill)
-            report["line_pieces"], report["elim_pieces"] = n_line, n_elim
+            report["box_pieces"], report["elim_pieces"] = n_box, n_elim
             if ref_items or fill:
                 te.save_edits(self.edits_path, data)
                 self._rebuild()

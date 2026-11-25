@@ -75,7 +75,7 @@ import pandas as pd
 KINDS = ("swap", "assign", "box", "split", "delete", "not_player", "ok", "lock", "autoref", "autofill")
 AUTO = ("autoref", "autofill")
 AUTO_ID_BASE = 700000  # ids for auto-fix referee runs: AUTO_ID_BASE + 1000 * edit id + item
-MAX_ITEMS = 5000
+MAX_ITEMS = 200000
 CHAIN_MAX = 10000  # track ids below this are whole-half player chains (track_identities.py)
 NEW_ID_BASE = 900000  # ids for split / not-player pieces: NEW_ID_BASE + edit id
 INTERP_S = 5.0

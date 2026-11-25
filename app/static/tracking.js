@@ -205,7 +205,7 @@ export async function viewTracking(view, parts, params, ui) {
     [['open', 'Open'], ['swap', 'Open swaps'], ['lost', 'Open long losses'], ['fixed', 'Fixed / checked']].map(([v, t]) => h('option', { value: v }, t)));
   const probCount = h('span', { class: 'muted', style: 'font-size:12px' });
   const probList = h('div', { class: 'scroll trk-list' });
-  const autoBtn = h('button', { type: 'button', class: 'btn small', title: 'Take referee look-alikes off players, bridge gaps along the line from last seen to next seen, and name orphan tracks when only one player of that team is missing', onclick: () => autofix() }, 'Auto-fix');
+  const autoBtn = h('button', { type: 'button', class: 'btn small', title: 'Take referee look-alikes off players; while a player is missing, give him the free boxes in his colours inside the rectangle from his last box to his next one; name orphan tracks when only one player of that team could be them', onclick: () => autofix() }, 'Auto-fix');
   const probPanel = h('section', { class: 'panel' },
     h('div', { class: 'panel-head' }, h('h2', {}, 'Problems'), probCount, h('div', { class: 'spacer' }), autoBtn, probFilter), probList);
   const editCount = h('span', { class: 'muted', style: 'font-size:12px' });
@@ -300,13 +300,13 @@ export async function viewTracking(view, parts, params, ui) {
     try {
       const r = await api(`/matches/${mid}/tracking/autofix`, { method: 'POST' });
       const parts = [];
-      if (r.line_pieces) parts.push(`${r.line_pieces} gaps bridged`);
+      if (r.box_pieces) parts.push(`${r.box_pieces} runs of boxes found for missing players`);
       if (r.elim_pieces) parts.push(`${r.elim_pieces} tracks named by elimination`);
       if (r.ref_runs) parts.push(`${r.ref_runs} referee stretches taken off players`);
       else if (!r.ref_learned) parts.push('mark the referee "not a player" once and it will take him off players too');
       const mins = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-      const t = (r.line_pieces || r.elim_pieces || r.ref_runs) ? `Auto-fix: ${parts.join(', ')} · lost time ${mins(r.lost_s_before)} → ${mins(r.lost_s_after)}` : 'Auto-fix found nothing it could fix safely';
-      const did = r.line_pieces || r.elim_pieces || r.ref_runs;
+      const t = (r.box_pieces || r.elim_pieces || r.ref_runs) ? `Auto-fix: ${parts.join(', ')} · lost time ${mins(r.lost_s_before)} → ${mins(r.lost_s_after)}` : 'Auto-fix found nothing it could fix safely';
+      const did = r.box_pieces || r.elim_pieces || r.ref_runs;
       msg.replaceChildren(h('span', {}, t + ' '), did ? h('button', { type: 'button', class: 'linkish', onclick: () => undoAutofix() }, 'Undo') : '');
       await refresh();
     } catch (e) { msg.textContent = ''; toast(e.message, true); } finally {
