@@ -25,11 +25,13 @@ Usage:
 """
 import argparse
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from _common import load_meta, match_dir, write_json
+from _common import load_meta, load_tracks, match_dir, write_json
+from gap_status import observed
 
 TEAM_IDS = {"team_a": range(2, 12), "team_b": range(102, 112)}  # outfield identities
 
@@ -187,11 +189,13 @@ def main():
     a = ap.parse_args()
     meta = load_meta(a.match_id, a.tmp_dir)
     mdir = match_dir(a.match_id, a.tmp_dir)
-    tracks = pd.read_parquet(mdir / "tracks.parquet", columns=["frame", "track_id", "class", "pitch_x", "pitch_y"])
+    cols = ["frame", "track_id", "class", "pitch_x", "pitch_y"]
+    # with hand fixes (#42); detections only: fills would hide/skew contacts (#47)
+    tracks = observed(load_tracks(a.match_id, a.tmp_dir, Path(a.tmp_dir).parent / "config"))[cols]
     ref = None
-    if a.reference_tmp_dir:
-        rt = pd.read_parquet(match_dir(a.match_id, a.reference_tmp_dir) / "tracks.parquet",
-                             columns=["frame", "track_id", "class", "pitch_x", "pitch_y", "tracklet", "kit"])
+    if a.reference_tmp_dir:  # score variants on one fixed contact set (#35)
+        rt = observed(pd.read_parquet(match_dir(a.match_id, a.reference_tmp_dir) / "tracks.parquet"))[
+            ["frame", "track_id", "class", "pitch_x", "pitch_y", "tracklet", "kit"]]
         ref = (kit_contacts if a.reference_set == "kit" else reference_contacts)(rt, a.contact_m)
     res = evaluate(tracks, meta["fps"], contact_m=a.contact_m, margin_m=a.margin_m, reference=ref)
     write_json(mdir / ("contact_swaps_ref.json" if ref else "contact_swaps.json"), res)

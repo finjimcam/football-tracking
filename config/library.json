@@ -1,0 +1,414 @@
+{
+  "version": 1,
+  "teams": {
+    "man-city": {
+      "name": "Man City",
+      "short": "MCI",
+      "color": "#6CABDD",
+      "kit": "sky-blue shirts, white shorts"
+    },
+    "tottenham": {
+      "name": "Tottenham",
+      "short": "TOT",
+      "color": "#132257",
+      "kit": "white shirts, navy shorts"
+    }
+  },
+  "players": {
+    "ederson": {
+      "name": "Ederson",
+      "positions": [
+        "GK"
+      ]
+    },
+    "walker": {
+      "name": "Walker",
+      "positions": [
+        "DEF"
+      ]
+    },
+    "dias": {
+      "name": "Dias",
+      "positions": [
+        "DEF"
+      ]
+    },
+    "laporte": {
+      "name": "Laporte",
+      "positions": [
+        "DEF"
+      ]
+    },
+    "cancelo": {
+      "name": "Cancelo",
+      "positions": [
+        "DEF"
+      ]
+    },
+    "de-bruyne": {
+      "name": "De Bruyne",
+      "positions": [
+        "MID"
+      ]
+    },
+    "rodri": {
+      "name": "Rodri",
+      "positions": [
+        "MID"
+      ]
+    },
+    "gundogan": {
+      "name": "Gundogan",
+      "positions": [
+        "MID"
+      ]
+    },
+    "sterling": {
+      "name": "Sterling",
+      "positions": [
+        "FWD"
+      ]
+    },
+    "bernardo-silva": {
+      "name": "Bernardo Silva",
+      "positions": [
+        "FWD"
+      ]
+    },
+    "foden": {
+      "name": "Foden",
+      "positions": [
+        "FWD"
+      ]
+    },
+    "lloris": {
+      "name": "Lloris",
+      "positions": [
+        "GK"
+      ]
+    },
+    "romero": {
+      "name": "Romero",
+      "positions": [
+        "DEF"
+      ]
+    },
+    "dier": {
+      "name": "Dier",
+      "positions": [
+        "DEF"
+      ]
+    },
+    "davies": {
+      "name": "Davies",
+      "positions": [
+        "DEF"
+      ]
+    },
+    "emerson-royal": {
+      "name": "Emerson Royal",
+      "positions": [
+        "MID"
+      ]
+    },
+    "bentancur": {
+      "name": "Bentancur",
+      "positions": [
+        "MID"
+      ]
+    },
+    "hojbjerg": {
+      "name": "Hojbjerg",
+      "positions": [
+        "MID"
+      ]
+    },
+    "sessegnon": {
+      "name": "Sessegnon",
+      "positions": [
+        "MID"
+      ]
+    },
+    "kulusevski": {
+      "name": "Kulusevski",
+      "positions": [
+        "MID"
+      ]
+    },
+    "son": {
+      "name": "Son",
+      "positions": [
+        "MID"
+      ]
+    },
+    "kane": {
+      "name": "Kane",
+      "positions": [
+        "FWD"
+      ]
+    }
+  },
+  "competitions": {
+    "premier-league": {
+      "name": "Premier League"
+    }
+  },
+  "seasons": {
+    "premier-league-2021-22": {
+      "competition": "premier-league",
+      "name": "2021-22"
+    }
+  },
+  "squads": {
+    "premier-league-2021-22": {
+      "man-city": [
+        {
+          "player": "ederson",
+          "number": 31
+        },
+        {
+          "player": "walker",
+          "number": 2
+        },
+        {
+          "player": "dias",
+          "number": 3
+        },
+        {
+          "player": "laporte",
+          "number": 14
+        },
+        {
+          "player": "cancelo",
+          "number": 27
+        },
+        {
+          "player": "de-bruyne",
+          "number": 17
+        },
+        {
+          "player": "rodri",
+          "number": 16
+        },
+        {
+          "player": "gundogan",
+          "number": 8
+        },
+        {
+          "player": "sterling",
+          "number": 7
+        },
+        {
+          "player": "bernardo-silva",
+          "number": 20
+        },
+        {
+          "player": "foden",
+          "number": 47
+        }
+      ],
+      "tottenham": [
+        {
+          "player": "lloris",
+          "number": 1
+        },
+        {
+          "player": "romero",
+          "number": 4
+        },
+        {
+          "player": "dier",
+          "number": 15
+        },
+        {
+          "player": "davies",
+          "number": 33
+        },
+        {
+          "player": "emerson-royal",
+          "number": 12
+        },
+        {
+          "player": "bentancur",
+          "number": 30
+        },
+        {
+          "player": "hojbjerg",
+          "number": 5
+        },
+        {
+          "player": "sessegnon",
+          "number": 19
+        },
+        {
+          "player": "kulusevski",
+          "number": 21
+        },
+        {
+          "player": "son",
+          "number": 7
+        },
+        {
+          "player": "kane",
+          "number": 10
+        }
+      ]
+    }
+  },
+  "matches": {
+    "Man_City_vs_Spurs_3725_1000MB_9b38498c": {
+      "season": "premier-league-2021-22",
+      "round": "Gameweek 26",
+      "date": "2022-02-19",
+      "venue": "Etihad Stadium",
+      "result": "Man City 2-3 Tottenham (HT 1-1)",
+      "team_a": "man-city",
+      "team_b": "tottenham",
+      "home": "team_a",
+      "lineups": {
+        "team_a": [
+          {
+            "player": "ederson",
+            "number": 31,
+            "position": "GK",
+            "starter": true
+          },
+          {
+            "player": "walker",
+            "number": 2,
+            "position": "DEF",
+            "starter": true
+          },
+          {
+            "player": "dias",
+            "number": 3,
+            "position": "DEF",
+            "starter": true
+          },
+          {
+            "player": "laporte",
+            "number": 14,
+            "position": "DEF",
+            "starter": true
+          },
+          {
+            "player": "cancelo",
+            "number": 27,
+            "position": "DEF",
+            "starter": true
+          },
+          {
+            "player": "de-bruyne",
+            "number": 17,
+            "position": "MID",
+            "starter": true
+          },
+          {
+            "player": "rodri",
+            "number": 16,
+            "position": "MID",
+            "starter": true
+          },
+          {
+            "player": "gundogan",
+            "number": 8,
+            "position": "MID",
+            "starter": true
+          },
+          {
+            "player": "sterling",
+            "number": 7,
+            "position": "FWD",
+            "starter": true
+          },
+          {
+            "player": "bernardo-silva",
+            "number": 20,
+            "position": "FWD",
+            "starter": true
+          },
+          {
+            "player": "foden",
+            "number": 47,
+            "position": "FWD",
+            "starter": true
+          }
+        ],
+        "team_b": [
+          {
+            "player": "lloris",
+            "number": 1,
+            "position": "GK",
+            "starter": true
+          },
+          {
+            "player": "romero",
+            "number": 4,
+            "position": "DEF",
+            "starter": true
+          },
+          {
+            "player": "dier",
+            "number": 15,
+            "position": "DEF",
+            "starter": true
+          },
+          {
+            "player": "davies",
+            "number": 33,
+            "position": "DEF",
+            "starter": true
+          },
+          {
+            "player": "emerson-royal",
+            "number": 12,
+            "position": "MID",
+            "starter": true
+          },
+          {
+            "player": "bentancur",
+            "number": 30,
+            "position": "MID",
+            "starter": true
+          },
+          {
+            "player": "hojbjerg",
+            "number": 5,
+            "position": "MID",
+            "starter": true
+          },
+          {
+            "player": "sessegnon",
+            "number": 19,
+            "position": "MID",
+            "starter": true
+          },
+          {
+            "player": "kulusevski",
+            "number": 21,
+            "position": "MID",
+            "starter": true
+          },
+          {
+            "player": "son",
+            "number": 7,
+            "position": "MID",
+            "starter": true
+          },
+          {
+            "player": "kane",
+            "number": 10,
+            "position": "FWD",
+            "starter": true
+          }
+        ]
+      },
+      "video": "/srv/football-data/videos/Man_City_vs_Spurs_3725_1000MB.mp4",
+      "data": [
+        "config/Man_City_vs_Spurs_3725_1000MB_9b38498c_match.json",
+        "config/Man_City_vs_Spurs_3725_1000MB_9b38498c_reference.json",
+        "config/Man_City_vs_Spurs_3725_1000MB_9b38498c_calibration.json"
+      ]
+    }
+  }
+}

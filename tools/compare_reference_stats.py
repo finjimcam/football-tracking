@@ -30,7 +30,9 @@ import argparse
 import numpy as np
 import pandas as pd
 
-from _common import (OUTPUTS_DIR, load_player_map, match_config, match_dir, read_json, reference_path)
+from _common import (OUTPUTS_DIR, load_player_map, load_tracks, match_config, match_dir, read_json,
+                     reference_path)
+from gap_status import observed
 
 
 def pct(a, b):
@@ -70,7 +72,8 @@ def main():
 
     # field tilt: which attacking third the ball is in. Direction from the keepers.
     gk = {k: v for k, v in pm["players"].items() if v.get("role") == "GK"}
-    tracks = pd.read_parquet(mdir / "tracks.parquet", columns=["frame", "track_id", "class", "pitch_x"])
+    tracks = observed(load_tracks(args.match_id, args.tmp_dir, args.config_dir))[  # hand fixes (#42), detections only (#47)
+        ["frame", "track_id", "class", "pitch_x"]]
     gk_a = tracks[(tracks["class"] == "player") & tracks["track_id"].isin(
         [t for v in gk.values() if v["team"] == "team_a" for t in v["track_ids"]])]["pitch_x"].median()
     a_attacks_right = gk_a < 52.5

@@ -29,18 +29,30 @@ Usage:
     python tools/cut_phase_clips.py --match-id <id> --team team_a --shape
     python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection
     python tools/cut_phase_clips.py --match-id <id> --team team_a --phase in_possession
+    python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection --export-selection --separate
+
+--export-selection (issue #37) reads config/<id>_<team>_<phase>_export.json,
+written by the Stopframe Lines tab: per phase (keyed by start frame) whether
+to keep it and where to trim its start and end. Dropped phases are left out
+and kept ones are trimmed. A phase missing from the file is kept untrimmed.
+--separate writes one MP4 per kept phase (phase_NN_MMmSS.mp4, NN = the
+phase number in the picker) and packs them, with the phase index CSV, into
+outputs/videos/<id>_<suffix>_clips.zip for PowerPoint. Clips from an
+earlier export are replaced, so dropped phases disappear.
 """
 import argparse
 import json
+import shutil
+import zipfile
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pandas as pd
 
-from _common import (CONFIG_DIR, OUTPUTS_DIR, VideoWriter, clock_label, load_calibration, load_meta,
-                     load_player_map, match_config,
-                     match_dir)
+from _common import (CONFIG_DIR, OUTPUTS_DIR, Progress, VideoWriter, clock_label, load_calibration, load_meta,
+                     load_player_map, load_tracks, match_config, match_dir)
+from gap_status import observed
 
 BAR_H = 30
 
@@ -151,6 +163,46 @@ def save_selection(path, phases_sel):
     tmp.replace(path)
 
 
+def export_path(match_id, team, phase, config_dir=CONFIG_DIR):
+    return Path(config_dir) / f"{match_id}_{team}_{phase}_export.json"
+
+
+def load_export(path):
+    """{start_frame: {"keep": bool, "in": frame|None, "out": frame|None}} (missing file -> {})."""
+    path = Path(path)
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return {int(k): v for k, v in json.load(f)["phases"].items()}
+
+
+def save_export(path, phases_exp):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"phases": {str(k): v for k, v in sorted(phases_exp.items())}}, f, indent=1)
+    tmp.replace(path)
+
+
+def export_range(seg, entry):
+    """(keep, first_frame, last_frame) of one phase under its export entry:
+    the trim points clamped to the phase, ignored if they cross."""
+    s, e = int(seg[0]), int(seg[1])
+    if not entry:
+        return True, s, e
+    a = s if entry.get("in") is None else min(max(int(entry["in"]), s), e)
+    b = e if entry.get("out") is None else min(max(int(entry["out"]), s), e)
+    if b <= a:
+        a, b = s, e
+    return bool(entry.get("keep", True)), a, b
+
+
+def clip_name(n, c0, cfg, fps):
+    clk = clock_label(c0, cfg, fps)
+    return f"phase_{n:02d}" + (f"_{clk.replace(':', 'm')}s" if clk else "") + ".mp4"
+
+
 def load_team_rows(mdir, tmp_dir, match_id, team, segs):
     """(rows_by_frame, own_goal_x): every visible outfield player of `team`
     inside the phases - identified, or an unlinked fragment in the team's kit."""
@@ -159,10 +211,12 @@ def load_team_rows(mdir, tmp_dir, match_id, team, segs):
     gk_ids = {int(t) for v in pm["players"].values()
               if v["team"] == team and v.get("role") == "GK" for t in v["track_ids"]}
     ignored = {int(i["track_id"]) for i in pm.get("ignored_tracks", [])}
-    tracks = pd.read_parquet(Path(mdir) / "tracks.parquet",
-                             columns=["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y",
-                                      "pitch_x", "pitch_y", "kit"])
-    tracks = tracks[tracks["class"] == "player"]
+    cols = ["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x", "foot_y", "pitch_x", "pitch_y", "kit"]
+    # with the hand fixes from the Tracking tab (config/<id>_track_edits.json, issue #42)
+    tracks = load_tracks(match_id, tmp_dir, Path(tmp_dir).parent / "config")
+    # Chains follow real detections and fill their own gaps (fill_gaps); the
+    # pipeline's fill rows (gap_status.py) only colour those fills in the UI.
+    tracks = observed(tracks[tracks["class"] == "player"])[cols]
     gk = tracks[tracks["track_id"].isin(list(gk_ids))]
     own_goal_x = 0.0 if (gk["pitch_x"].median() if len(gk) else 0.0) < 52.5 else 105.0
     mine = (tracks["track_id"].isin(list(team_ids - gk_ids))
@@ -373,6 +427,159 @@ def build_chains(rows_idx, slots, lo, hi, fps, H_at, max_rounds=6):
             for sl, raw in zip(slots, raws)]
 
 
+# ---- auto-fix unrealistic jumps (issue #44) ---------------------------------
+JUMP_M, JUMP_VMAX = 2.0, 10.0  # a step a -> b is a jump if it's > JUMP_M + JUMP_VMAX * dt metres
+
+
+def jump_reach(dt_s, jump_m=JUMP_M, vmax=JUMP_VMAX, cap=15.0):
+    """Furthest a player can plausibly get in dt_s seconds, plus pitch-position jitter.
+    (Frame-to-frame jitter on broadcast homographies is < ~1.1 m at the 99.9th percentile.)"""
+    return min(cap, jump_m + vmax * abs(dt_s))
+
+
+def find_jump(raw, anchors, fps, jump_m=JUMP_M, vmax=JUMP_VMAX):
+    """First unrealistic step in one chain's detections, walking out from its
+    first (earliest) anchor - the label the analyst set, taken as ground truth.
+    Walks forwards to the end of the phase, then backwards from the first
+    anchor (for a chain labelled after the phase start). A step that lands on
+    one of the analyst's own anchor frames, or hands back onto a track id the
+    analyst labelled as this player, is trusted. (The same id teleporting is
+    not: that's the tracker giving the id to someone else.)
+    Returns (a, b, dist): `a` last good sighting, `b` the jump, or None."""
+    if not raw or not anchors:
+        return None
+    trusted = {a[0] for a in anchors}
+    own = {a[1] for a in anchors}
+    f0 = anchors[0][0]
+    fr = sorted(raw)
+    # Both walks start at the anchor (the backward one is empty for a chain
+    # labelled on the phase's first frame).
+    fwd = [f for f in fr if f >= f0]
+    back = [f for f in reversed(fr) if f <= f0]
+    for walk in (fwd, back):
+        for a, b in zip(walk, walk[1:]):
+            if b in trusted or (raw[b][0] in own and raw[a][0] != raw[b][0]):
+                continue  # onto your own anchor, or back onto a track you labelled as this player
+            d = float(np.hypot(raw[b][1] - raw[a][1], raw[b][2] - raw[a][2]))
+            if d > jump_reach((b - a) / fps, jump_m, vmax):
+                return a, b, d
+    return None
+
+
+def _velocity(raw, a, b, fps, vmax, look_s=0.5):
+    """Pitch velocity (m per frame) at sighting `a`, from the sightings on the
+    trusted side of it (the side away from `b`), over up to look_s seconds."""
+    step = 1 if b > a else -1
+    ref = None
+    for k in range(a - step, a - step * int(look_s * fps) - step, -step):
+        if k in raw:
+            ref = k
+    if ref is None:
+        return 0.0, 0.0
+    n = a - ref
+    vx, vy = (raw[a][1] - raw[ref][1]) / n, (raw[a][2] - raw[ref][2]) / n
+    sp = float(np.hypot(vx, vy)) * fps
+    if sp > vmax:
+        vx, vy = vx * vmax / sp, vy * vmax / sp
+    return vx, vy
+
+
+def relabel_candidate(rows_idx, raw, a, b, fps, owned, excluded, look_s=1.0, min_run_s=0.2,
+                      jump_m=JUMP_M, vmax=JUMP_VMAX):
+    """The track the chain should have been on after its jump a -> b.
+
+    Candidates are detections over b .. b+look_s (in the walk's direction)
+    that NO chain owns on that frame, within plausible reach of the last good
+    sighting `a`, and that keep going for >= min_run_s (so a one-frame
+    flicker isn't taken). If the track the chain was on at `a` comes back in
+    that window it wins (the player was only missed for a few frames).
+    Otherwise the one closest to where the player should be - the position at
+    `a` carried on at its velocity from the frames before - relative to how
+    far he could have got by then; ties go to the earlier sighting.
+    `owned(f)` -> track ids on chains at frame f; `excluded` -> ids never to
+    take (the one the chain jumped onto, other chains' anchors).
+    Returns (frame first seen, tid, metres from prediction) or None."""
+    step = 1 if b > a else -1
+    vx, vy = _velocity(raw, a, b, fps, vmax)
+    ax, ay = raw[a][1], raw[a][2]
+    min_run, run_win = max(1, int(round(min_run_s * fps))), int(round(2 * min_run_s * fps))
+    first = {}  # tid -> (score, frame, metres from prediction)
+    for f in range(b, b + step * int(look_s * fps) + step, step):
+        cur = rows_idx.get(f)
+        if not cur:
+            continue
+        reach = jump_reach((f - a) / fps, jump_m, vmax)
+        px, py = ax + vx * (f - a), ay + vy * (f - a)
+        taken = owned(f)
+        for t, r in cur.items():
+            if t in first or t in taken or t in excluded:
+                continue
+            if float(np.hypot(r.pitch_x - ax, r.pitch_y - ay)) > reach:
+                continue
+            if sum(1 for k in range(f, f + step * run_win, step) if t in rows_idx.get(k, {})) < min_run:
+                continue
+            d = float(np.hypot(r.pitch_x - px, r.pitch_y - py))
+            first[t] = (d / reach, abs(f - b), d, f)
+    if not first:
+        return None
+    prev = raw[a][0]
+    t = prev if prev in first else min(first, key=lambda k: first[k][:2])
+    return first[t][3], t, first[t][2]
+
+
+def auto_fix_jumps(rows_idx, slots, lo, hi, fps, H_at, max_fixes=40, jump_m=JUMP_M, vmax=JUMP_VMAX):
+    """Issue #44. The analyst labels the players (slots' first anchors); this
+    finds every point where a chain moves further than a player can between
+    two sightings and puts it back on the nearest unlabelled player, by adding
+    a cut anchor [jump frame, tid, 1] (gap until he's seen is filled in pitch
+    space as usual). Jumps with nobody plausible in reach are left as they are
+    and reported. Never removes or moves the analyst's own anchors.
+    Returns (slots, fixes, unresolved, chains):
+      fixes: [{"chain", "frame", "from_tid", "to_tid", "jump_m"}]
+      unresolved: [{"chain", "frame", "tid", "jump_m"}]"""
+    slots = [{"line": sl["line"], "anchors": norm_anchors(sl["anchors"])} for sl in slots]
+    fixes, unresolved, done, tried = [], [], set(), set()
+    chains = build_chains(rows_idx, slots, lo, hi, fps, H_at)
+    while len(fixes) < max_fixes:
+        found = []
+        for i, (sl, ch) in enumerate(zip(slots, chains)):
+            if i in done:
+                continue
+            j = find_jump(ch["raw"], sl["anchors"], fps, jump_m, vmax)
+            if j is None:
+                done.add(i)
+            else:
+                found.append((i, *j))
+        if not found:
+            break
+        owners = {}  # (frame) -> {tid: [chains on it]}
+        for k, ch in enumerate(chains):
+            for f, o in ch["raw"].items():
+                owners.setdefault(f, {}).setdefault(o[0], []).append(k)
+        anchor_tids = [{a[1] for a in sl["anchors"]} for sl in slots]
+        claimed = set()
+        for i, a, b, d in found:
+            raw = chains[i]["raw"]
+            others = set().union(*(t for k, t in enumerate(anchor_tids) if k != i)) if len(slots) > 1 else set()
+            excluded = {raw[b][0]} | others | claimed
+            def owned(f, i=i):  # tracks other chains are on (this chain's own wrong path doesn't count)
+                return {t for t, ks in owners.get(f, {}).items() if ks != [i]}
+
+            cand = relabel_candidate(rows_idx, raw, a, b, fps, owned, excluded, jump_m=jump_m, vmax=vmax)
+            if cand is None or (i, b) in tried:  # nobody in reach, or the last fix here didn't take
+                unresolved.append({"chain": i, "frame": int(b), "tid": int(raw[b][0]), "jump_m": round(d, 1)})
+                done.add(i)  # past an unfixed jump the chain is on someone else: don't chase it further
+                continue
+            _f, tid, _dist = cand
+            tried.add((i, b))
+            claimed.add(tid)
+            slots[i]["anchors"] = norm_anchors(slots[i]["anchors"] + [[int(b), int(tid), 1]])
+            fixes.append({"chain": i, "frame": int(b), "from_tid": int(raw[b][0]), "to_tid": int(tid),
+                          "jump_m": round(d, 1)})
+        chains = build_chains(rows_idx, slots, lo, hi, fps, H_at)
+    return slots, fixes, unresolved, chains
+
+
 def chains_by_frame(chains):
     """{frame: [(line, foot_x, foot_y, pitch_y, tid, status)]}"""
     out = {}
@@ -424,8 +631,13 @@ def main():
                              "per-frame depth guess. Default file: config/<id>_<team>_<phase>_shape_selection.json")
     parser.add_argument("--unselected", default="none", choices=["none", "auto"],
                         help="Phases without a pick: draw nothing (default) or the old depth-based guess")
+    parser.add_argument("--export-selection", nargs="?", const="auto", default=None, metavar="JSON",
+                        help="Keep / trim phases as chosen in the Lines tab. Default file: "
+                             "config/<id>_<team>_<phase>_export.json")
+    parser.add_argument("--separate", action="store_true",
+                        help="One MP4 per phase, zipped (for PowerPoint), instead of one compilation")
     parser.add_argument("--crf", type=int, default=26)
-    parser.add_argument("--output", default=None)
+    parser.add_argument("--output", default=None, help="Compilation .mp4, or the .zip with --separate")
     parser.add_argument("--config-dir", default=str(CONFIG_DIR))
     parser.add_argument("--tmp-dir", default=".tmp")
     args = parser.parse_args()
@@ -440,6 +652,22 @@ def main():
     if not segs:
         raise SystemExit("No phases found - check possession_timeline.parquet")
 
+    # (phase number, start, end, core start, core end, first rendered frame, last rendered frame)
+    plan = [(k, s, e, c0, c1, s, e) for k, (s, e, c0, c1) in enumerate(segs, 1)]
+    if args.export_selection:
+        exp_path = (export_path(args.match_id, args.team, args.phase, args.config_dir)
+                    if args.export_selection == "auto" else Path(args.export_selection))
+        export = load_export(exp_path)
+        plan = []
+        for k, sg in enumerate(segs, 1):
+            keep, a, b = export_range(sg, export.get(int(sg[0])))
+            if keep:
+                plan.append((k, sg[0], sg[1], sg[2], sg[3], a, b))
+        print(f"Export selection: {len(plan)}/{len(segs)} phases kept, "
+              f"{sum(1 for p in plan if (p[5], p[6]) != (p[1], p[2]))} trimmed ({exp_path})")
+        if not plan:
+            raise SystemExit("Every phase is dropped in the export selection - keep at least one in the Lines tab")
+
     names = {"team_a": cfg.get("team_a_name", "team_a"), "team_b": cfg.get("team_b_name", "team_b")}
     other = "team_b" if args.team == "team_a" else "team_a"
     label = (f"{names[args.team].upper()} OUT OF POSSESSION" if args.phase == "out_of_possession"
@@ -447,54 +675,65 @@ def main():
     holder = names[other] if args.phase == "out_of_possession" else names[args.team]
     suffix = (f"{args.team}_{args.phase}"
               + ("_shape_selected" if args.shape_selection else "_shape" if args.shape else ""))
+    if args.separate:
+        zip_path = Path(args.output) if args.output else OUTPUTS_DIR / "videos" / f"{args.match_id}_{suffix}_clips.zip"
+        clips_dir = zip_path.with_suffix("")
     out_path = args.output or (OUTPUTS_DIR / "videos" / f"{args.match_id}_{suffix}.mp4")
 
     index = []
     total = 0.0
-    for k, (s, e, c0, c1) in enumerate(segs, 1):
-        dur = (e - s + 1) / fps
-        index.append({"phase": k, "start_frame": s, "end_frame": e,
-                      "video_start": f"{int(s / fps // 60):02d}:{s / fps % 60:04.1f}",
-                      "match_clock_start": clock_label(c0, cfg, fps), "match_clock_end": clock_label(c1, cfg, fps),
-                      "phase_s": round((c1 - c0 + 1) / fps, 1), "clip_s": round(dur, 1),
-                      "compilation_start": f"{int(total // 60):02d}:{total % 60:04.1f}"})
+    for k, s, e, c0, c1, a, b in plan:
+        dur = (b - a + 1) / fps
+        row = {"phase": k, "start_frame": a, "end_frame": b,
+               "video_start": f"{int(a / fps // 60):02d}:{a / fps % 60:04.1f}",
+               "match_clock_start": clock_label(c0, cfg, fps), "match_clock_end": clock_label(c1, cfg, fps),
+               "phase_s": round((c1 - c0 + 1) / fps, 1), "clip_s": round(dur, 1)}
+        if args.separate:
+            row["file"] = clip_name(k, c0, cfg, fps)
+        else:
+            row["compilation_start"] = f"{int(total // 60):02d}:{total % 60:04.1f}"
+        index.append(row)
         total += dur
-    idx_path = OUTPUTS_DIR / "stats" / f"{args.match_id}_{args.team}_{args.phase}_phases.csv"
+    idx_name = f"{args.match_id}_{args.team}_{args.phase}_phases" + ("_export" if args.export_selection else "")
+    idx_path = OUTPUTS_DIR / "stats" / f"{idx_name}.csv"
     idx_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(index).to_csv(idx_path, index=False)
-    core = sum((c1 - c0 + 1) for _, _, c0, c1 in segs) / fps
-    print(f"[{args.match_id}] {len(segs)} {args.phase.replace('_', ' ')} phases for {names[args.team]}: "
-          f"{core / 60:.1f} min of phase time, {total / 60:.1f} min with lead-in/run-out")
+    core = sum((c1 - c0 + 1) for _, _, _, c0, c1, _, _ in plan) / fps
+    print(f"[{args.match_id}] {len(plan)} {args.phase.replace('_', ' ')} phases for {names[args.team]}: "
+          f"{core / 60:.1f} min of phase time, {total / 60:.1f} min rendered")
 
     rows_by_frame, own_goal_x = {}, 0.0
     selection, followed = {}, {}
+    full = [(s, e, c0, c1) for _, s, e, c0, c1, _, _ in plan]
     if args.shape or args.shape_selection:
-        rows_by_frame, own_goal_x = load_team_rows(mdir, args.tmp_dir, args.match_id, args.team, segs)
+        rows_by_frame, own_goal_x = load_team_rows(mdir, args.tmp_dir, args.match_id, args.team, full)
     if args.shape_selection:
         sel_path = (selection_path(args.match_id, args.team, args.phase, args.config_dir)
                     if args.shape_selection == "auto" else Path(args.shape_selection))
         selection = load_selection(sel_path)
-        if not selection:
+        if not selection and not args.export_selection:
             raise SystemExit(f"No selection in {sel_path} - run tools/select_shape_players.py first")
         rows_idx = index_rows(rows_by_frame)
         H_at = homography_lookup(load_calibration(args.match_id, args.config_dir))
         if H_at is None:
             print("WARNING: no calibration - gaps are filled in pixel space (wrong while the camera pans)")
         n_sel = 0
-        for s, e, _, _ in segs:
+        for s, e, _, _ in full:  # chains run over the whole phase: anchors may sit outside a trim
             slots = entry_slots(selection[s]) if s in selection else []
             if slots:
                 n_sel += 1
                 followed.update(chains_by_frame(build_chains(rows_idx, slots, s, e, fps, H_at)))
-        print(f"Selection: {n_sel}/{len(segs)} phases have picked players ({sel_path})")
+        print(f"Selection: {n_sel}/{len(full)} phases have picked players ({sel_path})")
 
     color = (230, 190, 90) if args.team == "team_a" else (240, 240, 240)
-    writer = VideoWriter(out_path, fps, meta["width"], meta["height"], crf=args.crf)
     cap = cv2.VideoCapture(str(meta["video"]))
+    prog = Progress(sum(b - a + 1 for *_, a, b in plan), "rendering clips")
     written = 0
-    for k, (s, e, c0, c1) in enumerate(segs, 1):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, s)
-        for f in range(s, e + 1):
+
+    def render(writer, k, s, c0, c1, a, b):
+        nonlocal written
+        cap.set(cv2.CAP_PROP_POS_FRAMES, a)
+        for f in range(a, b + 1):
             ok, frame = cap.read()
             if not ok:
                 break
@@ -512,8 +751,35 @@ def main():
             draw_bar(frame, text, (f - lo) / max(hi - lo, 1), color)
             writer.write(frame)
             written += 1
-        if k % 10 == 0:
-            print(f"  {k}/{len(segs)} phases written", flush=True)
+            prog.update(written)
+
+    if args.separate:
+        if clips_dir.exists():
+            shutil.rmtree(clips_dir)
+        clips_dir.mkdir(parents=True)
+        for row, (k, s, e, c0, c1, a, b) in zip(index, plan):
+            writer = VideoWriter(clips_dir / row["file"], fps, meta["width"], meta["height"], crf=args.crf)
+            render(writer, k, s, c0, c1, a, b)
+            writer.close()
+        shutil.copy(idx_path, clips_dir / "phases.csv")
+        tmp_zip = zip_path.with_suffix(".zip.tmp")
+        with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_STORED) as z:  # MP4s don't compress further
+            for p in sorted(clips_dir.iterdir()):
+                z.write(p, arcname=p.name)
+        tmp_zip.replace(zip_path)
+        shutil.rmtree(clips_dir)  # the zip is the deliverable; don't keep two copies on the 15 GB disk
+        prog.done()
+        cap.release()
+        print(f"Wrote {zip_path}: {len(plan)} clips, {written / fps / 60:.1f} min, "
+              f"{zip_path.stat().st_size / 1e6:.0f} MB, and {idx_path}")
+        return
+
+    writer = VideoWriter(out_path, fps, meta["width"], meta["height"], crf=args.crf)
+    for i, (k, s, e, c0, c1, a, b) in enumerate(plan, 1):
+        render(writer, k, s, c0, c1, a, b)
+        if i % 10 == 0:
+            print(f"  {i}/{len(plan)} phases written", flush=True)
+    prog.done()
     cap.release()
     writer.close()
     print(f"Wrote {out_path} ({written / fps / 60:.1f} min, {writer.codec}) and {idx_path}")

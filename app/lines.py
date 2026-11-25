@@ -24,10 +24,18 @@ TOOLS = Path(__file__).resolve().parent.parent / "tools"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
-from _common import clock_label, load_calibration, load_meta, match_config  # noqa: E402
-from cut_phase_clips import (build_chains, entry_slots, homography_lookup, index_rows,  # noqa: E402
-                             load_selection, load_team_rows, norm_anchors, phases, save_selection,
-                             selection_path)
+import json  # noqa: E402
+import time  # noqa: E402
+import uuid  # noqa: E402
+
+from _common import clock_label, load_calibration, load_meta, load_player_map, match_config  # noqa: E402
+from identity_anchors import anchors_path, iou, load_anchors, save_anchors  # noqa: E402
+from library import LibraryError, library_path, match_lineup  # noqa: E402
+from library import load as load_library  # noqa: E402
+from cut_phase_clips import (auto_fix_jumps, build_chains, entry_slots, export_path, export_range,  # noqa: E402
+                             homography_lookup, index_rows, load_export, load_selection, load_team_rows,
+                             norm_anchors, phases, save_export, save_selection, selection_path)
+from gap_status import absorbed_lookup, read_detections  # noqa: E402
 from select_shape_players import auto_slots, pick_keyframe, relink_target  # noqa: E402
 
 PHASE = "out_of_possession"
@@ -35,6 +43,35 @@ TEAMS = ("team_a", "team_b")
 # Same defaults as cut_phase_clips.py / select_shape_players.py: phases are
 # keyed by start frame, so these must match or saved picks won't line up.
 MERGE_S, MIN_S, PRE_S, POST_S = 2.0, 3.0, 1.5, 1.0
+ANCHOR_LOCK = threading.Lock()  # one anchors file per match, shared by both teams' pickers
+
+
+def team_lineup(config_dir, match_id, team):
+    """[{number, name, gk[, sub]}] for one team: the library's squad for this
+    match (issue #16, so subs can be named too), else the lineup in
+    config/<id>_reference.json."""
+    config_dir = Path(config_dir)
+    try:
+        lib = load_library(library_path(config_dir))
+        lu = match_lineup(lib, match_id, team)
+    except (OSError, LibraryError):
+        lu = []
+    if lu:
+        return lu
+    try:
+        ref = json.loads((config_dir / f"{match_id}_reference.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    lu = (ref.get("lineups") or {}).get(team) or {}
+    out = []
+    for li, line in enumerate(lu.get("lines") or []):
+        for person in line:
+            if isinstance(person, dict) and person.get("number") is not None:
+                out.append({"number": int(person["number"]), "name": person.get("name"), "gk": li == 0})
+    for person in lu.get("subs") or lu.get("substitutes") or []:
+        if isinstance(person, dict) and person.get("number") is not None:
+            out.append({"number": int(person["number"]), "name": person.get("name"), "gk": False, "sub": True})
+    return out
 
 
 class LinesError(ValueError):
@@ -65,8 +102,15 @@ class MatchLines:
         self.rows_by_frame, self.own_goal_x = load_team_rows(mdir, self.tmp_dir, match_id, team, self.segs)
         self.rows_idx = index_rows(self.rows_by_frame)
         self.H_at = homography_lookup(load_calibration(match_id, self.config_dir))
+        gaps_p = mdir / "gaps.parquet"  # gap_status.py: which fills are duel gaps
+        self.is_absorbed = absorbed_lookup(pd.read_parquet(gaps_p) if gaps_p.exists() else None)
         self.sel_path = selection_path(match_id, team, PHASE, self.config_dir)
+        self.exp_path = export_path(match_id, team, PHASE, self.config_dir)
+        self.anchor_path = anchors_path(match_id, self.config_dir)
+        self.tracks_path = mdir / "tracks.parquet"
+        self.names = self._names(load_player_map(match_id, self.tmp_dir) or {})
         self.lock = threading.Lock()
+        self._span_cache = {}
 
     # ---- helpers ------------------------------------------------------
     def _seg(self, start):
@@ -91,13 +135,16 @@ class MatchLines:
 
     def _chains_json(self, chains, s, e):
         """Per chain: line, and per frame [tid, foot_x, foot_y, pitch_y, status]
-        (status s=seen, l=link (hand-off), f=filled). Missing frame = lost."""
+        (status s=seen, l=link (hand-off), f=filled, a=filled inside a duel gap
+        where the player was hidden by another (gap_status.py "absorbed")).
+        Missing frame = lost (gap_status "unknown")."""
         out = []
         for ch in chains:
             pts = {}
             for f, (tid, _px, py, fx, fy, st) in ch["pts"].items():
                 if s <= f <= e:
-                    pts[f] = [int(tid), round(fx, 1), round(fy, 1), round(py, 2), st[0]]
+                    code = "a" if st == "filled" and self.is_absorbed(tid, f) else st[0]
+                    pts[f] = [int(tid), round(fx, 1), round(fy, 1), round(py, 2), code]
             out.append({"line": ch["line"], "pts": pts})
         return out
 
@@ -107,13 +154,153 @@ class MatchLines:
         return "picked" if entry_slots(entry) else "skipped"
 
     # ---- API ----------------------------------------------------------
+    def _export_json(self, seg, entry):
+        keep, a, b = export_range(seg, entry)
+        return {"keep": keep, "in": a, "out": b, "trimmed": (a, b) != (seg[0], seg[1]),
+                "clip_s": round((b - a + 1) / self.fps, 1)}
+
+    # ---- identify (issue #16) ------------------------------------------
+    @property
+    def lineup(self):
+        """Read on every use (a small file), so library edits show without reloading the tracks."""
+        return self._lineup()
+
+    def _lineup(self):
+        return team_lineup(self.config_dir, self.match_id, self.team)
+
+    def _names(self, pm, team=None):
+        """{track_id: {number, name, manual}} for one team (default: this picker's),
+        or for both teams with a "team" key when team="all"."""
+        out = {}
+        for pl in pm.get("players", {}).values():
+            if team != "all" and pl.get("team") != (team or self.team):
+                continue
+            for t in pl.get("track_ids", []):
+                out[int(t)] = {"number": pl.get("number"), "name": pl.get("name"),
+                               "manual": str(pl.get("name_source", "")).startswith("manual")}
+                if team == "all":
+                    out[int(t)]["team"] = pl.get("team")
+        return out
+
+    def _players_near(self, frame, half):
+        """Every player detection within `half` frames of `frame` (any team, or none)."""
+        # real detections only: an anchor is re-found by detection box (#47 fill rows have none)
+        rows = read_detections(self.tracks_path, ["frame", "track_id", "class", "x1", "y1", "x2", "y2", "foot_x",
+                                                  "foot_y", "tracklet"],
+                               filters=[("frame", ">=", int(frame) - half), ("frame", "<=", int(frame) + half)])
+        return rows[rows["class"] == "player"]
+
+    def others(self, frame):
+        """Detected players at `frame` the picker doesn't show for this team: the
+        other team, goalkeepers, and fragments the tracker never put on a team.
+        Identify mode draws them so any detection can be named."""
+        mine = self.rows_by_frame.get(int(frame))
+        shown = set(int(t) for t in mine["track_id"]) if mine is not None else set()
+        allnames = self._names(load_player_map(self.match_id, self.tmp_dir) or {}, "all")
+        out = []
+        for r in self._players_near(frame, 0).itertuples():
+            if int(r.track_id) in shown:
+                continue
+            nm = allnames.get(int(r.track_id))
+            out.append([int(r.track_id), round(r.x1), round(r.y1), round(r.x2), round(r.y2), round(r.foot_x, 1),
+                        round(r.foot_y, 1), (nm or {}).get("team"), (nm or {}).get("number")])
+        return {"frame": int(frame), "rows": out}
+
+    def _spans(self, tracklets):
+        """First and last frame of each tracklet (cached; tracklet ids are global)."""
+        want = [int(t) for t in tracklets if t is not None and int(t) not in self._span_cache]
+        if want:
+            try:
+                d = pd.read_parquet(self.tracks_path, filters=[("tracklet", "in", want)], columns=["frame", "tracklet"])
+                for t, g in d.groupby("tracklet"):
+                    self._span_cache[int(t)] = [int(g["frame"].min()), int(g["frame"].max())]
+            except (OSError, ValueError, KeyError):
+                pass
+            for t in want:
+                self._span_cache.setdefault(t, None)
+        return self._span_cache
+
+    def _anchors_json(self):
+        stamp = self.tracks_path.stat().st_mtime if self.tracks_path.exists() else 0
+        mine = [a for a in load_anchors(self.anchor_path) if a.get("team") == self.team]
+        spans = self._spans(a.get("tracklet") for a in mine)
+        for a in mine:
+            a["pending"] = a.get("created", 0) > stamp
+            # until "Apply to tracking" runs, the picker shows the anchored number on
+            # this stretch of the track (the anchored tracklet, or just the frame)
+            t = a.get("tracklet")
+            a["span"] = (spans.get(int(t)) if t is not None else None) or [int(a["frame"]), int(a["frame"])]
+            a["phase"] = next((sg[0] for sg in self.segs if sg[0] <= a["frame"] <= sg[1]), None)
+            a["clock"] = clock_label(int(a["frame"]), self.cfg, self.fps) or ""
+        return sorted(mine, key=lambda a: a["frame"])
+
+    def identify(self, frame, box, number):
+        """Anchor "the detected player in `box` at `frame` is No. `number`".
+        The box can be a clicked detection's own box or a rough box dragged
+        round a player: the detection whose feet are inside it (best overlap
+        first) is the one anchored."""
+        person = next((p for p in self.lineup if p["number"] == int(number)), None)
+        if person is None:
+            raise LinesError(f"No. {number} isn't in the {self.team} lineup (config/<id>_reference.json)")
+        if not box or len(box) != 4:
+            raise LinesError("box must be [x1, y1, x2, y2]")
+        x1, y1, x2, y2 = (float(v) for v in box)
+        box = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
+        half = max(1, int(round(self.fps)))  # look up to 1 s either side if the detector missed them here
+        near = self._players_near(frame, half)
+        best, score = None, 0.0
+        for r in near[near["frame"] == int(frame)].itertuples():
+            v = iou([r.x1, r.y1, r.x2, r.y2], box)
+            inside = box[0] <= r.foot_x <= box[2] and box[1] <= r.foot_y <= box[3]
+            sc = v + (1.0 if inside else 0.0)
+            if (inside or v >= 0.3) and sc > score:
+                best, score = r, sc
+        if best is None:
+            # nearest frame where a player's feet are in (or just around) the box
+            pad = max(25.0, 0.5 * max(box[2] - box[0], box[3] - box[1]))
+            cx, cy = (box[0] + box[2]) / 2, box[3]
+            cand = near[(near["foot_x"] >= box[0] - pad) & (near["foot_x"] <= box[2] + pad)
+                        & (near["foot_y"] >= box[1] - pad) & (near["foot_y"] <= box[3] + pad)]
+            if len(cand):
+                d = (cand["frame"] - int(frame)).abs() * 1000 + ((cand["foot_x"] - cx) ** 2 + (cand["foot_y"] - cy) ** 2) ** 0.5
+                best = next(cand.loc[[d.idxmin()]].itertuples())
+        if best is None:
+            raise LinesError("The detector didn't find anyone in that box within a second either side, so "
+                             "there's no track to name. Try a moment where the player is in the open")
+        frame = int(best.frame)
+        anchor = {"id": uuid.uuid4().hex[:10], "team": self.team, "number": person["number"],
+                  "name": person["name"], "frame": int(frame),
+                  "box": [round(float(v), 1) for v in (best.x1, best.y1, best.x2, best.y2)],
+                  "track_id": int(best.track_id),
+                  "tracklet": int(best.tracklet) if pd.notna(best.tracklet) and best.tracklet >= 0 else None,
+                  "created": time.time()}
+        with ANCHOR_LOCK:
+            anchors = load_anchors(self.anchor_path)
+            # one anchor per detection: re-identifying the same box replaces it
+            anchors = [a for a in anchors if not (int(a["frame"]) == anchor["frame"]
+                                                  and iou(a.get("box") or [0, 0, 0, 0], anchor["box"]) > 0.7)]
+            anchors.append(anchor)
+            save_anchors(self.anchor_path, anchors)
+        return {"anchor": anchor, "anchors": self._anchors_json()}
+
+    def unidentify(self, anchor_id):
+        with ANCHOR_LOCK:
+            anchors = load_anchors(self.anchor_path)
+            keep = [a for a in anchors if a.get("id") != anchor_id]
+            if len(keep) == len(anchors):
+                raise LinesError("No such anchor")
+            save_anchors(self.anchor_path, keep)
+        return {"anchors": self._anchors_json()}
+
     def summary(self):
         sel = load_selection(self.sel_path)
+        exp = load_export(self.exp_path)
         out = []
         for k, (s, e, c0, c1) in enumerate(self.segs):
             entry = sel.get(s)
             slots = entry_slots(entry) if entry else []
             out.append({
+                "export": self._export_json((s, e), exp.get(s)),
                 "n": k + 1, "start": s, "end": e, "core_start": c0, "core_end": c1,
                 "clock": clock_label(c0, self.cfg, self.fps) or "",
                 "secs": round((c1 - c0 + 1) / self.fps, 1),
@@ -127,7 +314,10 @@ class MatchLines:
                 "opponent_name": names["team_b" if self.team == "team_a" else "team_a"],
                 "color": colors.get(self.team) or ("#6CABDD" if self.team == "team_a" else "#F0F0F0"),
                 "fps": self.fps, "width": self.meta["width"], "height": self.meta["height"],
-                "calibrated": self.H_at is not None, "selection_file": self.sel_path.name, "phases": out}
+                "calibrated": self.H_at is not None, "selection_file": self.sel_path.name,
+                "export_file": self.exp_path.name, "phases": out,
+                "lineup": self.lineup, "names": {str(k): v for k, v in self.names.items()},
+                "anchors": self._anchors_json(), "anchors_file": self.anchor_path.name}
 
     def phase(self, start):
         k, (s, e, c0, c1) = self._seg(start)
@@ -219,9 +409,28 @@ class MatchLines:
                 msg += "; swapped the other picked chain back too"
         return slots, msg
 
+    def _autofix_msg(self, fixes, unresolved, slots, s):
+        clk = lambda f: f"{(f - s) / self.fps:.1f} s"
+        if not fixes and not unresolved:
+            msg = "No unrealistic jumps: every chain moves like a player"
+        else:
+            msg = f"Fixed {len(fixes)} jump{'' if len(fixes) == 1 else 's'}"
+            if fixes:
+                msg += " (at " + ", ".join(clk(x["frame"]) for x in fixes[:6]) + (", ..." if len(fixes) > 6 else "") + ")"
+            if unresolved:
+                msg += (f"; {len(unresolved)} need{'s' if len(unresolved) == 1 else ''} you, nobody unlabelled in reach"
+                        " (at " + ", ".join(clk(x["frame"]) for x in unresolved) + "): press n to go there")
+            msg += ". Check, then Save + next"
+        late = [i for i, sl in enumerate(slots) if sl["anchors"][0][0] - s > 2 * self.fps]
+        if late:
+            msg += f". {len(late)} chain{'s were' if len(late) > 1 else ' was'} first labelled >2 s into the phase: label at the start for the best result"
+        return msg
+
     def edit(self, start, slots, action, frame=None, tid=None, chain=None):
         """Apply one picker action to a draft (nothing saved). Actions:
         cycle (left-click: none -> back -> mid -> none), relink (right-click),
+        autofix (issue #44: put chains that jump further than a player can back
+        on the nearest unlabelled player; adds fixes/unresolved to the reply),
         swap (fix an identity swap: chain `chain` belongs on `tid`), auto
         (reset to the automatic guess at `frame`), clear, chains (just
         recompute). Returns the new slots + chains + a message."""
@@ -268,6 +477,13 @@ class MatchLines:
             rows = self.rows_by_frame.get(f)
             slots = auto_slots(rows, f, self.own_goal_x) if rows is not None else []
             msg = "Reset to the automatic guess" if slots else "No automatic guess on this frame (too few players)"
+        elif action == "autofix":
+            if not slots:
+                raise LinesError("Label the players first (ideally on the phase's first frame), then auto-fix")
+            slots, fixes, unresolved, chains = auto_fix_jumps(self.rows_idx, slots, s, e, self.fps, self.H_at)
+            return {"slots": slots, "chains": self._chains_json(chains, s, e),
+                    "msg": self._autofix_msg(fixes, unresolved, slots, s),
+                    "fixes": fixes, "unresolved": unresolved}
         elif action == "clear":
             slots = []
         elif action != "chains":
@@ -285,6 +501,46 @@ class MatchLines:
         return {"status": self._status(sel[s]), "start": s}
 
 
+    def set_export(self, start, keep=None, trim_in=None, trim_out=None, reset_trim=False):
+        """Issue #37: keep/drop one phase for the clip export and/or trim its
+        start/end (frames inside the phase). Saved straight away to
+        config/<id>_<team>_<phase>_export.json, which cut_phase_clips.py
+        --export-selection reads."""
+        _, (s, e, _c0, _c1) = self._seg(start)
+        for v in (trim_in, trim_out):
+            if v is not None and not s <= int(v) <= e:
+                raise LinesError("Trim points must be inside the phase")
+        with self.lock:
+            exp = load_export(self.exp_path)
+            cur = dict(exp.get(s) or {"keep": True, "in": None, "out": None})
+            if keep is not None:
+                cur["keep"] = bool(keep)
+            if reset_trim:
+                cur["in"] = cur["out"] = None
+            if trim_in is not None:
+                cur["in"] = None if int(trim_in) == s else int(trim_in)
+            if trim_out is not None:
+                cur["out"] = None if int(trim_out) == e else int(trim_out)
+            a = cur["in"] if cur["in"] is not None else s
+            b = cur["out"] if cur["out"] is not None else e
+            if b - a < self.fps:  # at least a second
+                raise LinesError("The clip's end must be at least 1 s after its start")
+            exp[s] = cur
+            save_export(self.exp_path, exp)
+        return {"start": s, "export": self._export_json((s, e), cur)}
+
+    def set_export_all(self, keep):
+        """Keep or drop every phase (trims are kept)."""
+        with self.lock:
+            exp = load_export(self.exp_path)
+            for s, *_ in self.segs:
+                cur = dict(exp.get(s) or {"in": None, "out": None})
+                cur["keep"] = bool(keep)
+                exp[s] = cur
+            save_export(self.exp_path, exp)
+        return {"kept": len(self.segs) if keep else 0}
+
+
 class LinesCache:
     """MatchLines per (match, team), rebuilt when the tracking artifacts change."""
 
@@ -297,6 +553,7 @@ class LinesCache:
         paths = [self.root / ".tmp" / match_id / n for n in
                  ("tracks.parquet", "possession_timeline.parquet", "player_map.json")]
         paths.append(self.root / "config" / f"{match_id}_calibration.json")
+        paths.append(self.root / "config" / f"{match_id}_track_edits.json")  # Tracking-tab fixes (#42)
         return tuple(p.stat().st_mtime if p.exists() else 0 for p in paths)
 
     def get(self, match_id, team):

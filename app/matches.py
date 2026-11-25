@@ -33,6 +33,7 @@ def artifact_paths(root, match_id, team="team_a"):
         "player_map": tmp / "player_map.json",
         "ball_track": tmp / "ball_track.parquet",
         "possession": tmp / "possession.json",
+        "events": tmp / "events.json",
         "positions": tmp / "positions.json",
         "physical": tmp / "physical.json",
         "verification": tmp / "verification.json",
@@ -41,19 +42,26 @@ def artifact_paths(root, match_id, team="team_a"):
         "phase_video": out / "videos" / f"{match_id}_{team}_{PHASE}.mp4",
         "shape_selection": cfg / f"{match_id}_{team}_{PHASE}_shape_selection.json",
         "shape_video": out / "videos" / f"{match_id}_{team}_{PHASE}_shape_selected.mp4",
+        "clip_export": cfg / f"{match_id}_{team}_{PHASE}_export.json",
+        "clips_zip": out / "videos" / f"{match_id}_{team}_{PHASE}_shape_selected_clips.zip",
         "stats": out / "stats" / f"{match_id}_stats.csv",
         "report": out / "reports" / f"{match_id}_report.pdf",
         "tracking_video": out / "videos" / f"{match_id}_tracking.mp4",
+        "track_edits": cfg / f"{match_id}_track_edits.json",
     }
 
 
 # Outputs the browser may download, by artifact key (served read-only).
 DOWNLOADABLE = ("stats", "report", "tracking_video", "vs_reference", "phase_index",
-                "phase_video", "shape_video")
+                "phase_video", "shape_video", "clips_zip")
 
 # Artifacts that are inputs, never "produced" by a stage: committed configs
 # can be older than everything else without making stages stale.
-INPUTS = {"match_config", "reference", "calibration", "roster", "shape_selection"}
+INPUTS = {"match_config", "reference", "calibration", "roster", "shape_selection", "clip_export", "track_edits"}
+# Stages that read tracks through the hand fixes (Tracking tab, #42): saving a
+# fix makes their outputs stale. (Ball tracking and verification check the
+# tracker itself, so they ignore the fixes.)
+EDIT_AWARE = {"possession", "b_possession", "positions", "physical", "b_physical", "render"}
 
 
 def _read_json(path):
@@ -107,6 +115,8 @@ def _stage_status(stage, artifacts):
     produced = [artifacts[k] for k in stage.produces if k not in stage.needs]
     if stage.produces and produced and all(a["exists"] for a in produced):
         ins = [artifacts[k]["mtime"] for k in stage.needs if k not in INPUTS]
+        if stage.id in EDIT_AWARE and artifacts.get("track_edits", {}).get("exists"):
+            ins.append(artifacts["track_edits"]["mtime"])
         # slack: track_ball.py rewrites tracks.parquet just after writing its own output
         if ins and min(a["mtime"] for a in produced) < max(ins) - STALE_SLACK_S:
             return {"state": "stale"}
