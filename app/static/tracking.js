@@ -305,8 +305,9 @@ export async function viewTracking(view, parts, params, ui) {
       if (r.ref_runs) parts.push(`${r.ref_runs} referee stretches taken off players`);
       else if (!r.ref_learned) parts.push('mark the referee "not a player" once and it will take him off players too');
       const mins = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-      const t = parts.length ? `Auto-fix: ${parts.join(', ')} · lost time ${mins(r.lost_s_before)} → ${mins(r.lost_s_after)}` : 'Auto-fix found nothing it could fix safely';
-      msg.replaceChildren(h('span', {}, t + ' '), parts.length ? h('button', { type: 'button', class: 'linkish', onclick: () => undoAutofix() }, 'Undo') : '');
+      const t = (r.line_pieces || r.elim_pieces || r.ref_runs) ? `Auto-fix: ${parts.join(', ')} · lost time ${mins(r.lost_s_before)} → ${mins(r.lost_s_after)}` : 'Auto-fix found nothing it could fix safely';
+      const did = r.line_pieces || r.elim_pieces || r.ref_runs;
+      msg.replaceChildren(h('span', {}, t + ' '), did ? h('button', { type: 'button', class: 'linkish', onclick: () => undoAutofix() }, 'Undo') : '');
       await refresh();
     } catch (e) { msg.textContent = ''; toast(e.message, true); } finally {
       st.busy = false;
