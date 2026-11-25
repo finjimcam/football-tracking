@@ -197,7 +197,18 @@ def duplicate_pairs(det, iou_thresh=0.6):
     return n
 
 
-def frame_rows(res, frame_idx, fps, frame, person_conf, soft_sigma=0.0):
+def class_ids(names):
+    """(person, ball) class ids from a model's names: COCO (0, 32) for the
+    pretrained weights, (0, 1) for one fine-tuned on person + ball (#7)."""
+    inv = {str(v).lower(): int(k) for k, v in dict(names).items()}
+    person = inv.get("person")
+    ball = inv.get("sports ball", inv.get("ball"))
+    if person is None or ball is None:
+        raise SystemExit(f"Model classes {dict(names)} need a 'person' and a 'sports ball'/'ball' class")
+    return person, ball
+
+
+def frame_rows(res, frame_idx, fps, frame, person_conf, soft_sigma=0.0, person_class=PERSON_CLASS):
     rows = []
     if res.boxes is None or len(res.boxes) == 0:
         return rows
@@ -208,7 +219,7 @@ def frame_rows(res, frame_idx, fps, frame, person_conf, soft_sigma=0.0):
         keep, confs = soft_nms(boxes, confs, classes, sigma=soft_sigma)
         boxes, classes = boxes[keep], classes[keep]
     for (x1, y1, x2, y2), c, k in zip(boxes, confs, classes):
-        if k == PERSON_CLASS:
+        if k == person_class:
             if c < person_conf:
                 continue
             kit = kit_features(frame, (x1, y1, x2, y2))
@@ -283,6 +294,7 @@ def main():
 
     if todo:
         model = load_model(args.weights, args.device, input_hw)
+        person_cls, ball_cls = class_ids(model.names)
         conf = min(args.person_conf, args.ball_conf)
         cap = cv2.VideoCapture(str(video))
         if not cap.isOpened():
@@ -303,9 +315,9 @@ def main():
                 if not ok:
                     print(f"WARNING: decode failed at frame {fi}; stopping this chunk early")
                     break
-                res = model.predict(frame, imgsz=input_hw, classes=[PERSON_CLASS, SPORTS_BALL_CLASS],
+                res = model.predict(frame, imgsz=input_hw, classes=[person_cls, ball_cls],
                                     conf=conf, verbose=False, device=args.device, **pred_kw)[0]
-                rows.extend(frame_rows(res, fi, fps, frame, args.person_conf, args.soft_nms_sigma))
+                rows.extend(frame_rows(res, fi, fps, frame, args.person_conf, args.soft_nms_sigma, person_cls))
                 done += 1
                 prog.update(done)
                 if done % 500 == 0:

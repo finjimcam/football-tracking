@@ -75,6 +75,15 @@ def observed(df):
     return df[status_of(df).to_numpy() == "detected"]
 
 
+def read_detections(path, columns, **kw):
+    """`columns` of tracks.parquet at `path`, detected rows only (fill rows
+    dropped) - for readers that want the tracker's real boxes."""
+    import pyarrow.parquet as pq
+    has = "status" in pq.read_schema(path).names
+    df = pd.read_parquet(path, columns=list(columns) + (["status"] if has else []), **kw)
+    return observed(df)[list(columns)]
+
+
 def status_weights(df, weights=None):
     """Per-row weight from the status (unknown / unlisted statuses -> 0)."""
     w = {**DEFAULT_WEIGHTS, **(weights or {})}
