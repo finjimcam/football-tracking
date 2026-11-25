@@ -99,6 +99,13 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   (top-hat filter, truncated chamfer distance). Re-anchoring every frame to
   the painted lines is what keeps it drift-free for 47 minutes. Check the
   `--check-frames` overlays in `.tmp/<id>/calib_check/`.
+  If the log says "self-calibration on 1 searched views" (or few), the global
+  search is locking onto false fits - typically steep, zoomed-out views at the
+  top of the tilt range. Read the seed view's tilt / focal length and narrow
+  the search around them with `--search-tilt MIN,MAX --search-focal MIN,MAX`
+  (Korea v Czechia, seed tilt 20.7 deg / f 2866 px: `14,28` and `1400,5000`
+  took the hit rate from 1/16 to ~2/3; the misses are midfield views with
+  only the halfway line and circle, which is harmless).
 - **Identities** (`track_identities.py`): duplicate-box suppression ->
   pitch-space tracklets -> a self-trained team colour model (gradient-boosted
   on pure tracklets) relabels flickering kits -> re-track -> cut tracklets at
@@ -415,9 +422,14 @@ Use this when the automatic identities are wrong in places you care about. The
 tab lists every possible swap (`contact_swaps.json`) and every loss of 3 s or
 more in view. Step through them with n/p. Each fix is one line in
 `config/<id>_track_edits.json`:
-- `swap`: ids trade from a frame on.
-- `assign`: an unlabelled fragment becomes a player, and trades with whoever
-  had that player on those frames.
+- `swap`: two players trade names from a frame to the end of the half
+  (the *Swap labels* tool, `s`: click two boxes).
+- `assign`: "this box is X". On a labelled box it is a swap (the whole track
+  follows, not just the clicked tracklet). On an unlabelled fragment, that
+  tracklet becomes X and every tracklet X had overlapping it is unlabelled in
+  full. (Until 2026-11-24 it traded only for the clicked tracklet's life, which
+  was 8 frames on Korea v Czechia's kick-off frame, so relabels cascaded.)
+- `lock` (`l`): every name on this frame is right.
 - `box`: a hand-drawn box, interpolated up to 5 s to the player's nearest
   boxes.
 - `split`, `delete`, `not_player`.
@@ -438,6 +450,36 @@ physical → phase clips (the match page marks them stale).
   fingerprint.
 - A Lines-tab *Fix swap* and a Tracking-tab swap at the same collision undo
   each other. Fix identities in the Tracking tab first, then pick lines.
+
+### Labels carry through the half: pins and Re-link
+A swap, a rename or a lock also writes an identity anchor for each named
+(detected, not hand-drawn) box on that frame into
+`config/<id>_identity_anchors.json`, tagged `"source": "tracking", "edit": <id>`
+(Undo removes them). The boxes show a ✓. The fix shows at once from that frame
+on, but the linker only uses the pins when **Re-link whole half** runs (the
+calibration-run chain: identities, ball, possession, physical, positions,
+verify). With pins the linker solves one chain per player through every
+pinned tracklet, so labelling the lineup on the first frame and pressing Lock,
+then Re-link, rebuilds each whole track from it.
+- After the re-run `track_identities.py` rebases the edits file (old copy kept
+  as `<id>_track_edits.before-rerun-<time>.json`): naming edits are retired
+  (they're in the tracking now), hand boxes / deletes / splits follow their
+  player (stored as team + number + name) to his new id, and not-player edits
+  follow their tracklet.
+- Pins need shirt numbers: fill them into `config/<id>_reference.json`
+  lineups. Without a number a player can't be pinned (the tab says so).
+
+### Start the half at the kick-off, even on a wide shot
+The kick-off is the best frame to name everyone (lined up in their own half),
+so don't start the window after it because the camera is zoomed out. On
+Korea v Czechia (frames 20-269, players ~30 px):
+- detect those frames at `--imgsz 1920` (1280 found ~14 of 25 people on the
+  pitch, 1920 found ~21);
+- `calibrate_auto.py` locked onto the stands there; chaining frame-to-frame
+  image homographies (SIFT, players masked, RANSAC) back from the first
+  calibrated tactical frame worked (fixed camera: pan/tilt/zoom only);
+- `track_identities.py` treats frames whose median box is < 0.65 x the
+  match's as wide view and starts tracklets from conf 0.15 there (else 0.35).
 
 ## Outputs
 Committed (the repo is public; nothing cut from footage):

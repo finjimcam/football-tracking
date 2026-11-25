@@ -58,11 +58,54 @@ def test_assign_fragment_trades_with_the_wrong_owner():
     assert ids_at(df, 50)[1] == 10.0
     # from the click on only: frames 40-44 stay the fragment
     assert 50 in ids_at(df, 44)
-    # assigning a fragment to 2 while 2 is tracked: they trade on those frames
+    # assigning a fragment to 2 while 2 is tracked: 2's box there was someone
+    # else, and so is the rest of that tracklet (one tracklet = one person)
     df = te.apply_edits(tracks, [{"kind": "assign", "frame": 40, "tid": 50, "to": 2}], FPS)
     at = ids_at(df, 45)
     assert at[2] == 10.0 and at[50] == 20.0
-    assert ids_at(df, 70)[2] == 20.0  # outside the fragment's frames nothing moves
+    assert ids_at(df, 70) == {1: 10.0, 50: 20.0}
+    assert ids_at(df, 39)[2] == 20.0  # before the click nothing moves
+
+
+def test_assign_on_a_labelled_box_renames_the_whole_track():
+    """"This box (player 1) is really 2" trades the names to the end of the
+    half, across every tracklet - not just the clicked one (tracklet 1 ends at
+    frame 49, but 1's chain goes on in tracklet 3)."""
+    df = te.apply_edits(make_tracks(), [{"kind": "assign", "frame": 10, "tid": 1, "to": 2}], FPS)
+    assert ids_at(df, 9) == {1: 10.0, 2: 20.0}
+    assert ids_at(df, 10) == {2: 10.0, 1: 20.0}
+    assert ids_at(df, 99) == {2: 10.0, 1: 20.0}
+
+
+def test_lock_changes_nothing():
+    tracks = make_tracks()
+    df = te.apply_edits(tracks, [{"kind": "lock", "frame": 5}], FPS)
+    assert len(df) == len(tracks) and ids_at(df, 5) == ids_at(tracks, 5)
+
+
+def test_rebase_after_a_rerun():
+    """Naming fixes retire (their anchors are in the new linking); a hand box
+    follows its player to his new id; not-player follows its tracklet."""
+    old = make_tracks()
+    box = {"kind": "box", "frame": 50, "tid": 1, "x1": 145, "y1": 80, "x2": 155, "y2": 100,
+           "pitch_x": 15.0, "pitch_y": 10.0, "player": {"team": "team_a", "number": 7, "name": "Son"}}
+    data = te.empty("m")
+    for e in ({"kind": "swap", "frame": 0, "a": 1, "b": 2, "anchored": 2}, {"kind": "lock", "frame": 0},
+              box, {"kind": "not_player", "frame": 45, "tid": 50, "tracklet": 9}, {"kind": "ok", "problem": "x"}):
+        te.add_edit(data, e, base=te.fingerprint(old))
+    new = old.copy()
+    new.loc[new["track_id"] == 1, "track_id"] = 5   # Son is id 5 now
+    new.loc[new["track_id"] == 50, "track_id"] = 10009
+    pm = {"players": {"a7": {"team": "team_a", "number": 7, "name": "Son", "track_ids": [5]}}}
+    data, rep = te.rebase(data, new, pm)
+    assert rep == {"kept": 2, "retired": 1, "baked": 1}
+    kinds = {e["kind"]: e for e in data["edits"]}
+    assert kinds["box"]["tid"] == 5 and kinds["not_player"]["tid"] == 10009 and "ok" in kinds
+    assert data["base"] == te.fingerprint(new)
+    assert {r["kind"]: r["retired"] for r in data["retired"]} == {"swap": "in the tracking",
+                                                                 "lock": "made against older tracks"}
+    df = te.apply_edits(new, data["edits"], FPS)
+    assert ids_at(df, 50)[5] == 10.0
 
 
 def test_hand_box_interpolates_to_neighbours():
@@ -152,6 +195,14 @@ def test_loader_applies_saved_fixes_and_checks_fingerprint(tmp_path):
     assert data["edits"] == [] and data["base"] is None
 
 
+def test_whole_game_swap():
+    """Labels wrong from the very start: swap every frame, wherever you saw it."""
+    df = te.apply_edits(make_tracks(), [{"kind": "swap", "frame": 70, "a": 1, "b": 2, "whole": True}], FPS)
+    assert ids_at(df, 0) == {2: 10.0, 1: 20.0}
+    assert ids_at(df, 99) == {2: 10.0, 1: 20.0}
+    df = te.apply_edits(make_tracks(), [{"kind": "assign", "frame": 70, "tid": 1, "to": 2, "whole": True}], FPS)
+    assert ids_at(df, 0) == {2: 10.0, 1: 20.0}
+    assert te.clean_edit({"kind": "swap", "frame": 3, "a": 1, "b": 2, "whole": 1})["whole"] is True
 def test_hand_box_replaces_pipeline_fill():
     """#47 fill rows aren't boxes: a hand box in a filled gap interpolates to
     the real boxes either side, replacing the pipeline's guess there."""
