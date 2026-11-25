@@ -312,3 +312,30 @@ def test_api_runs_a_job_end_to_end(client, root, monkeypatch):
     assert body["status"] == "done" and f"--match-id {mid}" in body["log"]
     tail = client.get(f"/api/jobs/{job['id']}?offset={body['offset']}").json()
     assert tail["log"] == ""
+
+
+def test_chained_jobs_run_in_order_and_stop_on_failure(root):
+    """Issue #46: Run tracking queues identities with the later stages chained after it."""
+    stages = {"stub": STUB_STAGE, "stubh": HEAVY_STAGE}
+    r = JobRunner(root, nice_heavy=False, stage_lookup=stages.get)
+    first = r.submit(STUB_STAGE, ["--a"], then=[{"stage": "stubh", "args": ["--b"]}, {"stage": "stub", "args": ["--c"]}])
+    first = wait_for(r, first["id"], {"done", "failed"})
+    second = wait_for(r, wait_for_key(r, first["id"], "next_job"), {"done", "failed"})
+    third = wait_for(r, wait_for_key(r, second["id"], "next_job"), {"done", "failed"})
+    assert [first["args"], second["args"], third["args"]] == [["--a"], ["--b"], ["--c"]]
+    assert second["started"] >= first["finished"] and third["started"] >= second["finished"]
+    bad = wait_for(r, r.submit(STUB_STAGE, ["--fail"], then=[{"stage": "stub", "args": ["--never"]}])["id"],
+                   {"done", "failed"})
+    time.sleep(0.2)
+    bad = r.get(bad["id"])
+    assert "next_job" not in bad and "not run" in (bad["note"] or "")
+
+
+def wait_for_key(runner, job_id, key, timeout=15):
+    end = time.time() + timeout
+    while time.time() < end:
+        v = runner.get(job_id).get(key)
+        if v:
+            return v
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} never got {key}")

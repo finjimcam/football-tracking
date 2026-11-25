@@ -447,3 +447,29 @@ button.job-row { font: inherit; cursor: pointer; }
   .pl-list { max-height: 34vh; }
   .pl-sliders input[type=range] { width: 120px; }
 }
+
+/* ---------- Calibration clips (issue #46) ---------- */
+.cal-clip { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; background: transparent;
+  border: 0; border-bottom: 1px solid var(--row-line); color: var(--text); text-align: left; font: inherit; cursor: pointer; padding: 8px 14px; }
+.cal-clip:hover { background: var(--raised-2); }
+.cal-clip.sel { background: var(--hover); box-shadow: inset 3px 0 0 var(--accent); }
+.cal-roster { display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 14px; }
+.cal-team-head { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+.cal-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; border: 1px solid rgba(255,255,255,.25); }
+.cal-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.cal-chip { min-width: 26px; height: 24px; padding: 0 4px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 5px; border: 1px dashed var(--line-2); font: 600 11px var(--mono); color: var(--muted); }
+.cal-chip.on { border: 1px solid var(--accent); background: var(--accent); color: var(--bg); }
+.cal-picker { border: 1px solid var(--accent); border-radius: 8px; padding: 10px; background: var(--raised); display: flex; flex-direction: column; gap: 10px; }
+.cal-picker-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; }
+.cal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
+.cal-num { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 8px; border-radius: 6px; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--line-2); color: var(--text); font: inherit; text-align: left; }
+.cal-num b { font-family: var(--mono); min-width: 22px; }
+.cal-num span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.cal-num:hover { border-color: var(--accent); }
+.cal-num.used { opacity: .55; }
+.cal-num.me { background: var(--accent); color: var(--bg); opacity: 1; }
+.linkish { background: none; border: 0; padding: 0; color: var(--accent, #FFD84D); text-decoration: underline; cursor: pointer; font: inherit; }
+.trk-scope { display: inline-flex; gap: 2px; flex-wrap: wrap; }
+.trk-scope .trk-toggle[aria-pressed="true"] { background: var(--accent, #FFD84D); color: #0E1013; }

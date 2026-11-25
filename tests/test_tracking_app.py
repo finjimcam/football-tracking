@@ -173,6 +173,33 @@ def test_api(root):
     assert c.get("/api/matches/nope/tracking").status_code == 404
 
 
+def test_names_become_anchors(root):
+    """A swap, a rename or a lock pins the names on that frame as identity
+    anchors (for the re-link); undo takes them away again."""
+    from app.tracking import MatchTracking, TrackingError
+
+    apath = root / "config" / f"{MID}_identity_anchors.json"
+    mt = MatchTracking(root, MID)
+    e = mt.add_edit({"kind": "swap", "frame": 20, "a": 1, "b": 2})
+    assert e["anchored"] == 2
+    anchors = json.loads(apath.read_text())["anchors"]
+    got = {(a["number"], a["track_id"]) for a in anchors}
+    assert got == {(3, 2), (2, 1)}  # after the swap the box at (10, 10) is Dias (#3, id 2) and vice versa
+    assert all(a["source"] == "tracking" and a["edit"] == e["id"] for a in anchors)
+    assert next(a for a in anchors if a["number"] == 3)["box"] == list(box(10, 10))
+    assert len(mt.summary()["anchors"]) == 2
+    lock = mt.add_edit({"kind": "lock", "frame": 30})
+    assert lock["anchored"] == 3  # all three players have a box on frame 30
+    assert len(json.loads(apath.read_text())["anchors"]) == 5
+    saved = json.loads((root / "config" / f"{MID}_track_edits.json").read_text())
+    assert [x.get("anchored") for x in saved["edits"]] == [2, 3]
+    mt.remove_edit(e["id"])
+    assert {a["edit"] for a in json.loads(apath.read_text())["anchors"]} == {lock["id"]}
+    with pytest.raises(TrackingError):
+        mt.add_edit({"kind": "lock", "frame": 10_000})
+    # a box fix records who it was for, so it survives a re-run
+    b = mt.add_edit({"kind": "box", "frame": 250, "tid": 2, "x1": 194, "y1": 170, "x2": 206, "y2": 200})
+    assert b["player"] == {"team": "team_a", "number": 3, "name": "Dias"}
 def test_pipeline_fill_rows(root):
     """#47 fill rows (status interpolated / absorbed, foot point only) show
     as predicted / in a duel with a box, and don't count as lost."""

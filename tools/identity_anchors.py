@@ -176,3 +176,63 @@ def apply(tl, names, resolved):
         tl.loc[changed & (new.to_numpy() >= 0), "team"] = np.where(new[changed & (new.to_numpy() >= 0)] >= 100,
                                                                     "team_b", "team_a")
     return rep
+
+
+def split_conflicts(p, resolved, next_id):
+    """A tracklet the analyst named as two different players changed player
+    somewhere inside it (the frame-to-frame tracker jumped to a neighbour):
+    cut it halfway between each pair of differently named frames, so each
+    piece can follow its own player (issue #46).
+    p: detections with frame + tracklet (modified copy returned).
+    Returns (p, number of cuts, {new tracklet: parent})."""
+    by_tl = {}
+    for a, t in resolved:
+        if t is not None and a.get("team") in TEAM_BASE and a.get("number") is not None:
+            by_tl.setdefault(int(t), []).append((int(a["frame"]), (a["team"], int(a["number"]))))
+    p = p.copy()
+    trk = p["tracklet"].to_numpy().copy()
+    fr = p["frame"].to_numpy()
+    cuts, tails = 0, {}
+    for t, items in by_tl.items():
+        items.sort()
+        cut_at = [(f1 + f2) // 2 + 1 for (f1, w1), (f2, w2) in zip(items, items[1:]) if w1 != w2 and f2 > f1]
+        if not cut_at:
+            continue
+        rows = np.flatnonzero(trk == t)
+        for c in cut_at:
+            m = rows[fr[rows] >= c]
+            m = m[trk[m] == t]
+            if not len(m):
+                continue
+            trk[m] = next_id
+            tails[next_id] = t
+            next_id += 1
+            cuts += 1
+    p["tracklet"] = trk
+    return p, cuts, tails
+
+
+def team_pins(resolved, team, numbers, span):
+    """{tracklet: index into numbers} for one team's anchors, plus how many
+    were dropped. numbers: the shirt numbers the chains stand for (in chain
+    order). A tracklet named as two players keeps the newer name; two
+    tracklets named as one player that overlap in time (he can't be twice on
+    the frame) keep the newer one."""
+    idx = {int(n): k for k, n in enumerate(numbers)}
+    mine = sorted(((a, t) for a, t in resolved
+                   if t is not None and a.get("team") == team and a.get("number") is not None
+                   and int(a["number"]) in idx and int(t) in span),
+                  key=lambda at: -float(at[0].get("created") or 0))  # newest first
+    pins, dropped = {}, 0
+    for a, t in mine:
+        k = idx[int(a["number"])]
+        t = int(t)
+        if t in pins:
+            dropped += pins[t] != k
+            continue
+        s, e = span[t]
+        if any(kk == k and span[u][0] <= e - 3 and span[u][1] >= s + 3 for u, kk in pins.items()):
+            dropped += 1
+            continue
+        pins[t] = k
+    return pins, dropped

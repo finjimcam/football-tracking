@@ -345,6 +345,11 @@ def main():
                         help="Views sampled across the window to pin down the camera position (0 = skip)")
     parser.add_argument("--check-frames", default="",
                         help="Comma-separated frames to save overlay JPEGs for (.tmp/<id>/calib_check/)")
+    parser.add_argument("--search-tilt", default="12,36",
+                        help="MIN,MAX tilt in degrees for the global view search (narrow it around the seed "
+                             "keyframes when the search keeps locking onto steep zoomed-out false fits)")
+    parser.add_argument("--search-focal", default="800,3200",
+                        help="MIN,MAX focal length in px for the global view search")
     parser.add_argument("--wait-min", type=float, default=30.0,
                         help="How long to wait for a detection chunk that detect_frames.py hasn't written yet")
     parser.add_argument("--config-dir", default="config")
@@ -360,6 +365,12 @@ def main():
     end = args.end_frame if args.end_frame is not None else int(window.get("end_frame", meta["frame_count"] - 1))
     if args.max_frames:
         end = min(end, start + args.max_frames - 1)
+    tilt_rng = tuple(float(v) for v in args.search_tilt.split(","))
+    f_rng = tuple(float(v) for v in args.search_focal.split(","))
+
+    def search(dt, valid):
+        return search_view(dt, valid, cam, model_coarse, model, tilt_deg=tilt_rng, f_px=f_rng)
+
     calib_file = Path(args.calibration) if args.calibration else calibration_path(args.match_id, args.config_dir)
     calib = read_json(calib_file)
     L, W = float(calib.get("pitch_length", 105.0)), float(calib.get("pitch_width", 68.0))
@@ -400,7 +411,7 @@ def main():
             if fr is None:
                 continue
             dt, valid = frame_evidence(fr, overlay_ok, boxes.peek(int(fi)))
-            x, q = search_view(dt, valid, cam, model_coarse, model)
+            x, q = search(dt, valid)
             if q["frac2"] >= GOOD_FRAC2 and q["n"] >= 80:
                 samples.append((dt, valid, x, model))
         before = cam.C.copy()
@@ -435,7 +446,7 @@ def main():
         st = 0
         if x_prev is None:
             dt, valid = frame_evidence(fr, overlay_ok, bx)
-            x, q = search_view(dt, valid, cam, model_coarse, model)
+            x, q = search(dt, valid)
             searches += 1
             st = 2
         else:
@@ -458,7 +469,7 @@ def main():
                 bad_run = 0
             if Hfl is None or bad_run >= 3:
                 dt_full, valid_full = frame_evidence(fr, overlay_ok, bx)
-                xs, qs = search_view(dt_full, valid_full, cam, model_coarse, model)
+                xs, qs = search(dt_full, valid_full)
                 searches += 1
                 if qs["frac2"] >= GOOD_FRAC2 and qs["n"] >= 60:
                     x, q, st, bad_run = xs, qs, 2, 0

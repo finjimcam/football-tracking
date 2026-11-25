@@ -15,7 +15,10 @@ const LABEL_W = 116, RULER_H = 24, ROW_H = 13, HEAD_H = 18;
 const WINDOWS = [[60, '1 min'], [120, '2 min'], [300, '5 min'], [900, '15 min']];
 const KEYS_HELP = [
   ['Click a box', 'select that player (or say who an unlabelled box is)'],
-  ['b / Draw box', 'drag a box round a player the tracker missed'],
+  ['s / Swap labels', 'click two boxes: they trade names (from here on, or for the whole game)'],
+  ['w', 'switch swaps between "from here on" (a clash) and "whole game" (wrong from the start)'],
+  ['b / Draw box', 'drag a box round a player the tracker missed, or redraw a bad one'],
+  ['l', 'lock every name on this frame (do it on the first frame once the lineup is right)'],
   ['k', 'play / pause'], [', / .', '−/+ 1 frame'], ['a / d', '−/+ 2 s'],
   ['n / p', 'next / previous open problem'], ['Esc', 'cancel drawing / deselect'],
 ];
@@ -82,12 +85,39 @@ export async function viewTracking(view, parts, params, ui) {
   const label = (p) => (p ? (p.number != null ? `#${p.number} ${p.name}` : p.name) : '?');
   const who = (tid) => (keyOfTid[tid] ? label(byKey[keyOfTid[tid]]) : `box ${tid}`);
   const clamp = (f) => Math.max(sum.start, Math.min(sum.end, Math.round(f)));
+  const boxIou = (a, b) => {
+    const ix = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])), iy = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+    const u = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - ix * iy;
+    return u > 0 ? (ix * iy) / u : 0;
+  };
+  let anchorMap = new Map();
+  function indexAnchors() {
+    anchorMap = new Map();
+    for (const a of sum.anchors || []) {
+      if (!anchorMap.has(a.frame)) anchorMap.set(a.frame, []);
+      anchorMap.get(a.frame).push(a);
+    }
+  }
+  indexAnchors();
+  // the anchor (a name you pinned) on this box on frame f, if any
+  const pinOn = (f, box) => (anchorMap.get(f) || []).find((a) => boxIou(a.box, box) > 0.5) || null;
+  const untilEnd = () => (st.scope === 'all' ? 'for the whole game (they were wrong from the start)' : `from ${clockOf(st.cur)} to the end of the half`);
+  const scopeEdit = () => (st.scope === 'all' ? { whole: true } : {});
+  // "From here on | Whole game": how far back a swap / rename goes
+  function scopeToggle() {
+    const opt = (k, t, tip) => h('button', { type: 'button', class: 'trk-toggle', 'aria-pressed': String(st.scope === k), title: tip,
+      onclick: () => { st.scope = k; draw(); } }, t);
+    return h('div', { class: 'trk-scope', role: 'group', 'aria-label': 'How far the swap goes (w)' },
+      opt('here', 'From here on', 'Mixed up in a clash: fix from this frame to the end'),
+      opt('all', 'Whole game', 'Wrong from the very start: fix every frame'));
+  }
+  const clockOf = (f) => { const r = rec(f); return r && r.c ? r.c : `frame ${f}`; };
 
   const firstOpen = sum.problems.find((p) => p.fixed == null);
   const st = {
     cur: clamp(+params.get('f') || (firstOpen ? firstOpen.frame : sum.start)),
     sel: params.get('sel') && byKey[params.get('sel')] ? params.get('sel') : (firstOpen && firstOpen.keys[0]) || null,
-    playing: false, tool: 'select', drawFor: null, drawProblem: null, pending: null, drag: null,
+    playing: false, tool: 'select', drawFor: null, drawProblem: null, pending: null, drag: null, swapFirst: null, scope: 'here',
     showBoxes: true, showNames: true, showTrails: false, showOthers: true,
     winLen: 120, win: null, lanes: null, filter: 'open', busy: false,
   };
@@ -111,15 +141,18 @@ export async function viewTracking(view, parts, params, ui) {
   const btn = (label_, aria, fn, cls) => h('button', { type: 'button', class: 'btn small ' + (cls || ''), 'aria-label': aria, onclick: fn }, label_);
   const playBtn = btn('▶', 'Play (k)', () => togglePlay());
   const selectBtn = btn('Select', 'Select tool', () => setTool('select'), 'primary');
+  const swapBtn = btn('⇄ Swap labels', 'Swap labels: click two boxes and they trade names from here to the end of the half (s)',
+    () => setTool(st.tool === 'swap' ? 'select' : 'swap'));
   const drawBtn = btn('Draw box', 'Draw a box round a missed player (b)', () => setTool(st.tool === 'draw' ? 'select' : 'draw'));
   selectBtn.setAttribute('aria-pressed', 'true');
+  swapBtn.setAttribute('aria-pressed', 'false');
   drawBtn.setAttribute('aria-pressed', 'false');
   const msg = h('div', { class: 'note', role: 'status', 'aria-live': 'polite', style: 'min-height:18px' });
   const transport = h('div', { class: 'lines-tools' },
     btn('−2s', 'Back 2 seconds (a)', () => step(-2 * FPS)), btn('−1f', 'Previous frame (,)', () => step(-1)), playBtn,
     btn('+1f', 'Next frame (.)', () => step(1)), btn('+2s', 'Forward 2 seconds (d)', () => step(2 * FPS)),
     btn('‹ Problem', 'Previous open problem (p)', () => jumpProblem(-1)), btn('Problem ›', 'Next open problem (n)', () => jumpProblem(1)),
-    h('div', { class: 'spacer' }), h('div', { class: 'lines-tools', role: 'group', 'aria-label': 'Tool' }, selectBtn, drawBtn));
+    h('div', { class: 'spacer' }), h('div', { class: 'lines-tools', role: 'group', 'aria-label': 'Tool' }, selectBtn, swapBtn, drawBtn));
 
   const winSel = h('select', { class: 'mini-select', 'aria-label': 'Timeline window', onchange: () => {
     st.winLen = +winSel.value; st.win = null; draw();
@@ -174,8 +207,9 @@ export async function viewTracking(view, parts, params, ui) {
     [['open', 'Open'], ['swap', 'Open swaps'], ['lost', 'Open long losses'], ['fixed', 'Fixed / checked']].map(([v, t]) => h('option', { value: v }, t)));
   const probCount = h('span', { class: 'muted', style: 'font-size:12px' });
   const probList = h('div', { class: 'scroll trk-list' });
+  const autoBtn = h('button', { type: 'button', class: 'btn small', title: 'Take referee look-alikes off players; while a player is missing, give him the free boxes in his colours inside the rectangle from his last box to his next one; name orphan tracks when only one player of that team could be them; with 1-3 outfield players of a team missing, give each the box in their colours only he could reach (fainter boxes count the fewer are missing); put labels that jump away and back on the missing team-mate', onclick: () => autofix() }, 'Auto-fix');
   const probPanel = h('section', { class: 'panel' },
-    h('div', { class: 'panel-head' }, h('h2', {}, 'Problems'), probCount, h('div', { class: 'spacer' }), probFilter), probList);
+    h('div', { class: 'panel-head' }, h('h2', {}, 'Problems'), probCount, h('div', { class: 'spacer' }), autoBtn, probFilter), probList);
   const editCount = h('span', { class: 'muted', style: 'font-size:12px' });
   const editList = h('div', { class: 'scroll trk-list' });
   const staleNote = h('div', { class: 'note', style: 'padding:8px 14px', hidden: true });
@@ -187,7 +221,8 @@ export async function viewTracking(view, parts, params, ui) {
   const keysHelp = h('details', { class: 'panel', style: 'padding:10px 14px' }, h('summary', {}, 'Keys'),
     h('dl', { class: 'kv', style: 'margin-top:8px' }, KEYS_HELP.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])));
 
-  const right = h('div', { class: 'col-side' }, topPanel, pendingPanel, selPanel, probPanel, editPanel, keysHelp);
+  const labelPanel = h('section', { class: 'panel', style: 'padding:12px 14px;display:flex;flex-direction:column;gap:8px' });
+  const right = h('div', { class: 'col-side' }, labelPanel, topPanel, pendingPanel, selPanel, probPanel, editPanel, keysHelp);
   view.replaceChildren(h('div', { class: 'cols' }, left, right));
 
   // ---------- data ----------
@@ -233,6 +268,7 @@ export async function viewTracking(view, parts, params, ui) {
   }
   async function refresh() {
     sum = await api(`/matches/${mid}/tracking`);
+    indexAnchors();
     chunks.clear();
     st.lanes = null;
     loadLanes();
@@ -247,11 +283,109 @@ export async function viewTracking(view, parts, params, ui) {
     st.busy = true;
     msg.textContent = 'Saving…';
     try {
-      await api(`/matches/${mid}/tracking/edits`, { method: 'POST', body: { edit } });
+      const saved = await api(`/matches/${mid}/tracking/edits`, { method: 'POST', body: { edit } });
       st.pending = null;
-      msg.textContent = okText || 'Saved';
+      st.swapFirst = null;
+      let t = okText || 'Saved';
+      if (saved.anchored) t += ` · ${saved.anchored} name${saved.anchored === 1 ? '' : 's'} pinned for the re-link`;
+      if (saved.unanchored && saved.unanchored.length) t += ` · no shirt number for ${saved.unanchored.join(', ')}, so not pinned`;
+      msg.replaceChildren(h('span', {}, t + ' '), h('button', { type: 'button', class: 'linkish', onclick: () => undo(saved) }, 'Undo'));
       await refresh();
     } catch (e) { msg.textContent = ''; toast(e.message, true); } finally { st.busy = false; }
+  }
+  async function autofix() {
+    if (st.busy) return;
+    st.busy = true;
+    autoBtn.disabled = true;
+    autoBtn.textContent = 'Auto-fixing…';
+    msg.textContent = 'Auto-fixing the whole half (a minute or two)…';
+    try {
+      const r = await api(`/matches/${mid}/tracking/autofix`, { method: 'POST' });
+      const parts = [];
+      if (r.box_pieces) parts.push(`${r.box_pieces} runs of boxes found for missing players`);
+      if (r.elim_pieces) parts.push(`${r.elim_pieces} tracks named by elimination`);
+      if (r.last_pieces) parts.push(`${r.last_pieces} runs given to the last players left`);
+      if (r.hop_pieces) parts.push(`${r.hop_pieces} label jumps put back on the missing player`);
+      if (r.ref_runs) parts.push(`${r.ref_runs} referee stretches taken off players`);
+      else if (!r.ref_learned) parts.push('mark the referee "not a player" once and it will take him off players too');
+      const mins = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+      const did = r.box_pieces || r.elim_pieces || r.last_pieces || r.hop_pieces || r.ref_runs;
+      const t = did ? `Auto-fix: ${parts.join(', ')} · lost time ${mins(r.lost_s_before)} → ${mins(r.lost_s_after)}` : 'Auto-fix found nothing it could fix safely';
+      msg.replaceChildren(h('span', {}, t + ' '), did ? h('button', { type: 'button', class: 'linkish', onclick: () => undoAutofix() }, 'Undo') : '');
+      await refresh();
+    } catch (e) { msg.textContent = ''; toast(e.message, true); } finally {
+      st.busy = false;
+      autoBtn.disabled = false;
+      autoBtn.textContent = 'Auto-fix';
+    }
+  }
+  async function undoAutofix() {
+    try {
+      await api(`/matches/${mid}/tracking/autofix`, { method: 'DELETE' });
+      msg.textContent = 'Auto-fix undone';
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  }
+  async function relink() {
+    try {
+      await api(`/matches/${mid}/calibration-run`, { method: 'POST', body: {} });
+      toast('Re-link queued: identities re-run through your labels, then possession, physical and positions');
+      sum.run_jobs = (await api(`/matches/${mid}/tracking`)).run_jobs;
+      drawLabels();
+      watchRun();
+    } catch (e) { toast(e.message, true); }
+  }
+  const ACTIVE = ['queued', 'waiting', 'running', 'waiting for the step before'];
+  let runTimer = null, runIdDone = null;
+  function watchRun() {
+    if (runTimer) return;
+    const idJob = (sum.run_jobs || []).find((j) => j.stage === 'b_identities');
+    runIdDone = idJob && idJob.status === 'done' ? idJob.finished : null;
+    runTimer = setInterval(async () => {
+      try {
+        const s = await api(`/matches/${mid}/tracking`);
+        const j = (s.run_jobs || []).find((x) => x.stage === 'b_identities');
+        const doneNow = j && j.status === 'done' ? j.finished : null;
+        if (doneNow && doneNow !== runIdDone) {
+          runIdDone = doneNow;
+          await refresh();
+          msg.textContent = 'Re-link finished: every track now runs through your labels';
+        } else { sum.run_jobs = s.run_jobs; sum.anchors = s.anchors; indexAnchors(); drawLabels(); }
+        if (!(s.run_jobs || []).some((x) => ACTIVE.includes(x.status))) { clearInterval(runTimer); runTimer = null; }
+      } catch { /* keep polling */ }
+    }, 8000);
+  }
+  onLeave(() => { if (runTimer) clearInterval(runTimer); });
+
+  function drawLabels() {
+    const all = sum.anchors || [];
+    const mine = all.filter((a) => a.source === 'tracking').length;
+    const pending = all.filter((a) => a.pending).length;
+    const here = (anchorMap.get(st.cur) || []).length;
+    const jobs = (sum.run_jobs || []).slice().reverse();
+    const active = jobs.some((j) => ACTIVE.includes(j.status));
+    const relinkBtn = btn(active ? 'Re-linking…' : 'Re-link whole half', 'Re-run identities so every player\'s track passes through your labels', () => relink(),
+      pending && !active ? 'primary' : '');
+    relinkBtn.disabled = active || !all.length;
+    labelPanel.replaceChildren(...[
+      h('div', { style: 'display:flex;align-items:center;gap:8px' }, h('h2', { style: 'margin:0;font-size:13px' }, 'Labels'),
+        h('span', { class: 'muted', style: 'font-size:12px' }, `${all.length} pinned · ${pending} waiting`),
+        h('div', { class: 'spacer' }), relinkBtn),
+      h('div', { class: 'muted', style: 'font-size:12px;line-height:1.5' },
+        'A rename, a swap or a lock pins those names to their boxes (✓ on the video). Fixes show straight away from that frame on; ',
+        h('b', {}, 'Re-link'), ' then rebuilds every player\'s whole track through all your pins, so a label at the start carries through the half. ',
+        'Your drawn boxes carry over.'),
+      h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center' },
+        btn(`Lock names on this frame (l)`, 'Every name on this frame is right: pin them all', () => addEdit({ kind: 'lock', frame: st.cur }, `Locked the names at ${clockOf(st.cur)}`)),
+        h('span', { class: 'muted', style: 'font-size:12px' }, here ? `${here} pinned here` : ''),
+        h('div', { class: 'spacer' }),
+        h('a', { class: 'btn small', href: '#/calibrate/' + mid, title: 'Name players in 3 × 5 s clips per half' }, 'Calibration clips')),
+      jobs.length > 0 ? h('div', { style: 'display:flex;flex-direction:column;gap:3px;font-size:12px' }, jobs.map((j) =>
+        h('div', { style: 'display:flex;justify-content:space-between;gap:8px' }, h('span', {}, j.title),
+          h('span', { class: 'pill ' + (j.status === 'done' ? 'done' : j.status === 'failed' ? 'failed' : 'stale') },
+            j.status === 'waiting for the step before' ? 'next' : j.status)))) : null,
+      (mine || sum.retired) && pending === 0 && !active && all.length > 0 ? h('div', { class: 'muted', style: 'font-size:11px' },
+        'All pins are in the current tracking.') : null].filter(Boolean));
   }
   async function undo(e) {
     try {
@@ -319,7 +453,7 @@ export async function viewTracking(view, parts, params, ui) {
     if (r && st.showOthers && st.showBoxes) {
       for (const o of r.o) {
         if (o[2] == null) continue;
-        const isPend = st.pending && st.pending.other === o[0];
+        const isPend = (st.pending && st.pending.other === o[0]) || (st.swapFirst && st.swapFirst.kind === 'other' && st.swapFirst.id === o[0]);
         overlay.append(svg('rect', { x: o[2], y: o[3], width: o[4] - o[2], height: o[5] - o[3], class: 'trk-other' + (o[1] === 'r' ? ' ref' : ''),
           style: isPend ? `stroke:${SEL};stroke-width:3;stroke-opacity:1` : null }));
       }
@@ -340,12 +474,16 @@ export async function viewTracking(view, parts, params, ui) {
       const order = r.p.slice().sort((a, b) => (a[0] === st.sel) - (b[0] === st.sel));
       for (const p of order) {
         if (p[3] == null) continue;
-        const pl = byKey[p[0]], isSel = p[0] === st.sel;
+        const pl = byKey[p[0]];
+        const isFirst = st.swapFirst && st.swapFirst.kind === 'player' && st.swapFirst.id === p[0];
+        const isSel = p[0] === st.sel || isFirst;
         const c = isSel ? SEL : p[2] === 'h' ? SEL : p[2] === 'p' ? '#E8A33A' : p[2] === 'a' ? ABS_COL : pColor(pl);
         overlay.append(svg('rect', { x: p[3], y: p[4], width: p[5] - p[3], height: p[6] - p[4], fill: 'none', stroke: c,
           'stroke-width': isSel ? 3 : 2, 'stroke-dasharray': p[2] === 's' ? null : '5 4', rx: 2 }));
-        if (st.showNames || isSel || warn.has(p[0])) {
-          let t = st.showNames || isSel ? label(pl) : `#${pl.number}`;
+        const pin = p[2] === 's' ? pinOn(st.cur, p.slice(3, 7)) : null;
+        if (st.showNames || isSel || warn.has(p[0]) || pin) {
+          let t = st.showNames || isSel ? label(pl) : (pl.number != null ? `#${pl.number}` : pl.name);
+          if (pin) t = '✓ ' + t;
           if (p[2] === 'p' || p[2] === 'a') t += ' ·?';
           const cx = (p[3] + p[5]) / 2;
           const txt = svg('text', { x: cx, y: p[4] - 6, class: 'trk-label', fill: c });
@@ -372,6 +510,7 @@ export async function viewTracking(view, parts, params, ui) {
     if (r && r.b && r.b[0] != null) overlay.append(svg('circle', { cx: r.b[0], cy: r.b[1], r: 5, fill: 'none', stroke: '#FFFFFF', 'stroke-width': 2 }));
 
     drawBanner(prob);
+    drawLabels();
     drawTop(r);
     drawSel(r);
     drawPending(r);
@@ -381,7 +520,23 @@ export async function viewTracking(view, parts, params, ui) {
   }
 
   function drawBanner(prob) {
-    if (!prob || st.pending || st.tool === 'draw') { banner.hidden = true; return; }
+    if (st.tool === 'draw' || st.tool === 'swap') {
+      banner.hidden = false;
+      banner.style.borderColor = SEL;
+      let t;
+      if (st.tool === 'draw') {
+        t = st.drawFor ? `Redraw ${label(byKey[st.drawFor])}'s box on this frame: drag from head to feet. The old box is replaced here and blended into the frames either side.`
+          : 'Drag a box round the player, head to feet, then say who it is.';
+      } else {
+        const f = st.swapFirst;
+        t = !f ? `Swap labels: click the first box (wrong name), then the box that should have it. They trade names ${untilEnd()}.`
+          : `Now click the box that is really ${f.kind === 'player' ? label(byKey[f.id]) : 'box ' + f.id}. They trade names ${untilEnd()}.`;
+      }
+      banner.replaceChildren(h('span', { class: 'trk-dot', style: `background:${SEL}` }), h('span', { style: 'font-weight:600' }, t),
+        ...(st.tool === 'swap' ? [scopeToggle()] : []), btn('Cancel (Esc)', 'Cancel', () => setTool('select')));
+      return;
+    }
+    if (!prob || st.pending) { banner.hidden = true; return; }
     banner.hidden = false;
     banner.style.borderColor = PROB_COL[prob.kind];
     const acts = [];
@@ -391,7 +546,7 @@ export async function viewTracking(view, parts, params, ui) {
       acts.push(btn('Not a swap', 'Mark this as checked', () => addEdit({ kind: 'ok', frame: st.cur, problem: prob.key }, 'Marked as checked')));
     } else {
       const pl = byKey[prob.keys[0]];
-      const b = btn(`Draw box for #${pl ? pl.number : ''}`, 'Draw a box for this player', () => {
+      const b = btn(`Draw box for ${label(pl)}`, 'Draw a box for this player', () => {
         st.sel = prob.keys[0]; st.drawFor = prob.keys[0]; st.drawProblem = prob.key; setTool('draw');
       });
       b.classList.add('primary');
@@ -459,42 +614,56 @@ export async function viewTracking(view, parts, params, ui) {
     const s = p ? p[2] : null;
     const tid = p ? p[1] : pl.tid;
     const hasBox = s === 's' || s === 'h';
-    const mates = sum.players.filter((q) => q.team === pl.team && q.key !== pl.key);
-    const swapSel = h('select', { id: 'trk-swap', class: 'mini-select', style: 'flex:1 1 0;min-width:0;height:34px' },
-      mates.map((q) => h('option', { value: q.key }, label(q))));
+    const others = sum.players.filter((q) => q.key !== pl.key);
+    const mates = others.filter((q) => q.team === pl.team).concat(others.filter((q) => q.team !== pl.team));
+    const renameSel = h('select', { id: 'trk-rename', class: 'mini-select', style: 'flex:1 1 0;min-width:0;height:34px' },
+      h('option', { value: '' }, 'Pick the right player…'),
+      ['team_a', 'team_b'].map((t) => h('optgroup', { label: sum.teams[t].name },
+        mates.filter((q) => q.team === t).map((q) => h('option', { value: q.key }, label(q))))));
     const myProblems = sum.problems.filter((q) => q.fixed == null && q.keys.includes(pl.key)).length;
     const statusPill = h('span', { class: 'pill ' + (s === 's' ? 'done' : s === 'h' || s === 'p' || s === 'a' ? 'stale' : s === 'l' ? 'failed' : 'blocked') }, s ? STATUS[s] : '…');
-    const drawB = btn(hasBox ? 'Redraw box here' : 'Draw a box here', 'Draw this player\'s box on this frame', () => {
+    const pin = p && s === 's' ? pinOn(st.cur, p.slice(3, 7)) : null;
+    const rename = () => {
+      const other = byKey[renameSel.value];
+      if (!other) { toast('Pick who this box really is', true); return; }
+      const op = at(r, other.key);
+      addEdit({ kind: 'swap', frame: st.cur, a: tid, b: op ? op[1] : other.tid, ...scopeEdit() },
+        `This box is ${label(other)} now: ${label(pl)} and ${label(other)} trade names ${untilEnd()}`);
+    };
+    const drawB = btn(hasBox ? 'Redraw box' : 'Draw a box here', hasBox ? 'The box is the wrong size or on the wrong spot: drag a new one' : 'Draw this player\'s box on this frame', () => {
       st.drawFor = pl.key; st.drawProblem = null; setTool('draw');
     }, hasBox ? '' : 'primary');
+    const section = (title, help, ...body) => h('div', { style: 'display:flex;flex-direction:column;gap:6px' },
+      h('div', { class: 'section-label' }, title), ...body, help ? h('div', { class: 'muted', style: 'font-size:11px;line-height:1.45' }, help) : null);
     selPanel.replaceChildren(
       h('div', { class: 'panel-head' }, h('span', { class: 'chip', style: `background:${pColor(pl)};border-radius:50%` }),
         h('h2', {}, label(pl)), h('span', { class: 'muted' }, sum.teams[pl.team] ? sum.teams[pl.team].name : ''),
-        h('div', { class: 'spacer' }), statusPill),
-      h('div', { class: 'panel-body', style: 'display:flex;flex-direction:column;gap:10px' },
+        h('div', { class: 'spacer' }), pin ? h('span', { class: 'pill done', title: 'This name is pinned to this box for the re-link' }, '✓ pinned') : null, statusPill),
+      h('div', { class: 'panel-body', style: 'display:flex;flex-direction:column;gap:14px' },
         h('dl', { class: 'kv' }, h('dt', {}, 'Track id'), h('dd', {}, String(tid)),
           h('dt', {}, 'Role'), h('dd', {}, pl.role || '—'),
           h('dt', {}, 'Open problems'), h('dd', {}, String(myProblems))),
-        drawB,
-        h('label', { for: 'trk-swap', class: 'section-label' }, 'Swap with, from this frame on'),
-        h('div', { style: 'display:flex;gap:6px' }, swapSel, btn('Swap', 'Swap the two players from this frame on', () => {
-          const other = byKey[swapSel.value];
-          const op = at(r, other.key);
-          addEdit({ kind: 'swap', frame: st.cur, a: tid, b: op ? op[1] : other.tid }, `Swapped ${label(pl)} and ${label(other)} from here`);
-        }, 'primary')),
-        h('div', { class: 'trk-actions' },
-          btn('Not him from here', 'Split: from this frame to the end of this piece of track, the box is not this player', () => {
-            if (!hasBox) { toast('No box for this player on this frame', true); return; }
-            addEdit({ kind: 'split', frame: st.cur, tid }, `Split ${label(pl)}'s track here`);
-          }),
-          btn('Delete box', 'Delete this player\'s box on this frame only', () => {
-            if (!hasBox) { toast('No box for this player on this frame', true); return; }
-            addEdit({ kind: 'delete', frame: st.cur, tid }, `Deleted ${label(pl)}'s box here`);
-          }),
-          btn('Not a player', 'This piece of track is a referee, coach or fan', () => {
-            if (!hasBox) { toast('No box for this player on this frame', true); return; }
-            addEdit({ kind: 'not_player', frame: st.cur, tid }, 'Marked as not a player');
-          })),
+        section('Wrong name on this box?',
+          `They trade names ${untilEnd()}: this box gets the player you pick, and that player's box gets ${label(pl)}. Both names are pinned for the re-link.`,
+          scopeToggle(),
+          h('div', { style: 'display:flex;gap:6px' }, renameSel, btn('Rename', 'This box is really the player picked', rename, 'primary'))),
+        section('Box in the wrong place or the wrong size?',
+          hasBox ? 'Drag a new box head to feet. It replaces this one on this frame and blends into the frames either side.' : 'No box on this frame: draw one round the player.',
+          drawB),
+        h('details', {}, h('summary', { class: 'muted', style: 'font-size:12px;cursor:pointer' }, 'More fixes'),
+          h('div', { class: 'trk-actions', style: 'margin-top:8px' },
+            btn('Not him from here', 'Split: from this frame to the end of this piece of track, the box is not this player', () => {
+              if (!hasBox) { toast('No box for this player on this frame', true); return; }
+              addEdit({ kind: 'split', frame: st.cur, tid }, `Split ${label(pl)}'s track here`);
+            }),
+            btn('Delete box', 'Delete this player\'s box on this frame only', () => {
+              if (!hasBox) { toast('No box for this player on this frame', true); return; }
+              addEdit({ kind: 'delete', frame: st.cur, tid }, `Deleted ${label(pl)}'s box here`);
+            }),
+            btn('Not a player', 'This piece of track is a referee, coach or fan', () => {
+              if (!hasBox) { toast('No box for this player on this frame', true); return; }
+              addEdit({ kind: 'not_player', frame: st.cur, tid }, 'Marked as not a player');
+            }))),
         h('div', { style: 'display:flex;justify-content:flex-end' }, picker)));
   }
 
@@ -516,7 +685,8 @@ export async function viewTracking(view, parts, params, ui) {
         addEdit({ kind: 'box', frame: st.cur, tid: p ? p[1] : pl.tid, ...pd.box, ...(run ? { problem: run.key } : {}) },
           `Drew a box for ${label(pl)}`);
       } else {
-        addEdit({ kind: 'assign', frame: st.cur, tid: pd.other, to: (at(r, key) || [0, pl.tid])[1] }, `That box is ${label(pl)} now`);
+        addEdit({ kind: 'assign', frame: st.cur, tid: pd.other, to: (at(r, key) || [0, pl.tid])[1] },
+          `Box ${pd.other} is ${label(pl)} now; the box that had the name is unlabelled`);
       }
       st.sel = key;
     };
@@ -538,8 +708,9 @@ export async function viewTracking(view, parts, params, ui) {
           pd.other != null ? btn('Not a player', 'This box is a referee, coach or fan', () =>
             addEdit({ kind: 'not_player', frame: st.cur, tid: pd.other }, 'Marked as not a player')) : null,
           btn('Cancel', 'Cancel (Esc)', () => { st.pending = null; draw(); })),
-        pd.box ? h('span', { class: 'muted', style: 'font-size:11px;line-height:1.5' },
-          'The box is carried to nearby frames until the tracker finds the player again (up to 5 s).') : null));
+        h('span', { class: 'muted', style: 'font-size:11px;line-height:1.5' }, pd.box
+          ? 'The box is carried to nearby frames until the tracker finds the player again (up to 5 s).'
+          : 'This piece of track gets their name from here. If they had another box at the same time, that one loses the name (a player is never in two places). The name is pinned, so Re-link carries it through the half.')));
   }
 
   function rowLayout() {
@@ -673,12 +844,15 @@ export async function viewTracking(view, parts, params, ui) {
 
   function describe(e) {
     switch (e.kind) {
-      case 'swap': return `Swapped ${who(e.a)} and ${who(e.b)} from here${e.to != null ? ' (to ' + e.to + ')' : ''}`;
-      case 'assign': return `Box ${e.tid} → ${who(e.to)}`;
+      case 'swap': return `Swapped ${who(e.a)} ⇄ ${who(e.b)} ${e.whole ? 'for the whole game' : 'from here' + (e.to != null ? ' (to ' + e.to + ')' : ' to the end')}${e.anchored ? ' ✓' : ''}`;
+      case 'assign': return (keyOfTid[e.tid] ? `Renamed ${who(e.tid)} ⇄ ${who(e.to)} ${e.whole ? 'for the whole game' : 'from here'}` : `Box ${e.tid} is ${who(e.to)}`) + (e.anchored ? ' ✓' : '');
+      case 'lock': return `Locked ${e.anchored || 0} names on this frame ✓`;
       case 'box': return `Drew a box for ${who(e.tid)}`;
       case 'split': return `${who(e.tid)}: not him from here`;
       case 'delete': return `Deleted ${who(e.tid)}'s box`;
       case 'not_player': return keyOfTid[e.tid] ? `${who(e.tid)}'s box marked not a player` : `Box ${e.tid} marked not a player`;
+      case 'autoref':
+      case 'autofill': return e.note || `Auto-fix (${e.n_items || 0})`;
       case 'ok': {
         const p = sum.problems.find((q) => q.key === e.problem);
         return 'Checked: ' + (p ? p.text : e.problem);
@@ -737,12 +911,16 @@ export async function viewTracking(view, parts, params, ui) {
   }
   function setTool(tool) {
     st.tool = tool;
-    if (tool === 'select') { st.drawFor = null; st.drawProblem = null; }
+    st.swapFirst = null;
+    if (tool !== 'draw') { st.drawFor = null; st.drawProblem = null; }
     selectBtn.classList.toggle('primary', tool === 'select');
+    swapBtn.classList.toggle('primary', tool === 'swap');
     drawBtn.classList.toggle('primary', tool === 'draw');
     selectBtn.setAttribute('aria-pressed', String(tool === 'select'));
+    swapBtn.setAttribute('aria-pressed', String(tool === 'swap'));
     drawBtn.setAttribute('aria-pressed', String(tool === 'draw'));
-    if (tool === 'draw') {
+    if (tool === 'swap') { stopPlay(); st.pending = null; msg.textContent = ''; }
+    else if (tool === 'draw') {
       stopPlay();
       st.pending = null;
       msg.textContent = st.drawFor ? `Drag a box round ${label(byKey[st.drawFor])}, head to feet` : 'Drag a box round the player, head to feet';
@@ -804,6 +982,24 @@ export async function viewTracking(view, parts, params, ui) {
       }
       return;
     }
+    if (st.tool === 'swap') {
+      const hit = hitTest(...toVideo(ev));
+      if (!hit) return;
+      const f = st.swapFirst;
+      if (!f) { st.swapFirst = hit; draw(); return; }
+      if (f.kind === hit.kind && f.id === hit.id) { st.swapFirst = null; draw(); return; }
+      const r = rec(st.cur);
+      const tidOf = (x) => (x.kind === 'player' ? (at(r, x.id) || [0, byKey[x.id].tid])[1] : x.id);
+      if (f.kind === 'player' && hit.kind === 'player') {
+        const a = byKey[f.id], b = byKey[hit.id];
+        addEdit({ kind: 'swap', frame: st.cur, a: tidOf(f), b: tidOf(hit), ...scopeEdit() }, `Swapped ${label(a)} ⇄ ${label(b)} ${untilEnd()}`);
+      } else if (f.kind === 'player' || hit.kind === 'player') {
+        const [pl, box] = f.kind === 'player' ? [f, hit] : [hit, f];
+        addEdit({ kind: 'assign', frame: st.cur, tid: box.id, to: tidOf(pl), ...scopeEdit() },
+          `Box ${box.id} is ${label(byKey[pl.id])} now; the box that had the name is unlabelled`);
+      } else { toast('Neither box has a name: click one of them in Select mode and say who it is', true); st.swapFirst = null; draw(); }
+      return;
+    }
     if (st.tool !== 'select') return;
     const [x, y] = toVideo(ev);
     const hit = hitTest(x, y);
@@ -824,7 +1020,10 @@ export async function viewTracking(view, parts, params, ui) {
     else if (k === 'n') jumpProblem(1);
     else if (k === 'p') jumpProblem(-1);
     else if (k === 'b') setTool(st.tool === 'draw' ? 'select' : 'draw');
-    else if (k === 'Escape') { st.drag = null; st.pending = null; if (st.tool === 'draw') setTool('select'); else { st.sel = null; draw(); } }
+    else if (k === 's') setTool(st.tool === 'swap' ? 'select' : 'swap');
+    else if (k === 'w') { st.scope = st.scope === 'all' ? 'here' : 'all'; msg.textContent = st.scope === 'all' ? 'Swaps now fix the whole game' : 'Swaps now fix from this frame on'; draw(); }
+    else if (k === 'l') addEdit({ kind: 'lock', frame: st.cur }, `Locked the names at ${clockOf(st.cur)}`);
+    else if (k === 'Escape') { st.drag = null; st.pending = null; if (st.tool !== 'select') setTool('select'); else { st.sel = null; draw(); } }
   }
   document.addEventListener('keydown', onKey);
   const onResize = () => { st.lanes = null; loadLanes(); drawLanes(); };

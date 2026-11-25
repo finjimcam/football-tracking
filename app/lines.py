@@ -46,6 +46,34 @@ MERGE_S, MIN_S, PRE_S, POST_S = 2.0, 3.0, 1.5, 1.0
 ANCHOR_LOCK = threading.Lock()  # one anchors file per match, shared by both teams' pickers
 
 
+def team_lineup(config_dir, match_id, team):
+    """[{number, name, gk[, sub]}] for one team: the library's squad for this
+    match (issue #16, so subs can be named too), else the lineup in
+    config/<id>_reference.json."""
+    config_dir = Path(config_dir)
+    try:
+        lib = load_library(library_path(config_dir))
+        lu = match_lineup(lib, match_id, team)
+    except (OSError, LibraryError):
+        lu = []
+    if lu:
+        return lu
+    try:
+        ref = json.loads((config_dir / f"{match_id}_reference.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    lu = (ref.get("lineups") or {}).get(team) or {}
+    out = []
+    for li, line in enumerate(lu.get("lines") or []):
+        for person in line:
+            if isinstance(person, dict) and person.get("number") is not None:
+                out.append({"number": int(person["number"]), "name": person.get("name"), "gk": li == 0})
+    for person in lu.get("subs") or lu.get("substitutes") or []:
+        if isinstance(person, dict) and person.get("number") is not None:
+            out.append({"number": int(person["number"]), "name": person.get("name"), "gk": False, "sub": True})
+    return out
+
+
 class LinesError(ValueError):
     pass
 
@@ -138,28 +166,7 @@ class MatchLines:
         return self._lineup()
 
     def _lineup(self):
-        # the library (issue #16) knows the whole squad, so subs can be identified too
-        try:
-            lib = load_library(library_path(self.config_dir))
-            lu = match_lineup(lib, self.match_id, self.team)
-        except (OSError, LibraryError):
-            lu = []
-        if lu:
-            return lu
-        try:
-            ref = json.loads((self.config_dir / f"{self.match_id}_reference.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return []
-        lu = (ref.get("lineups") or {}).get(self.team) or {}
-        out = []
-        for li, line in enumerate(lu.get("lines") or []):
-            for person in line:
-                if isinstance(person, dict) and person.get("number") is not None:
-                    out.append({"number": int(person["number"]), "name": person.get("name"), "gk": li == 0})
-        for person in lu.get("subs") or lu.get("substitutes") or []:
-            if isinstance(person, dict) and person.get("number") is not None:
-                out.append({"number": int(person["number"]), "name": person.get("name"), "gk": False, "sub": True})
-        return out
+        return team_lineup(self.config_dir, self.match_id, self.team)
 
     def _names(self, pm, team=None):
         """{track_id: {number, name, manual}} for one team (default: this picker's),
