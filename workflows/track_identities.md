@@ -350,6 +350,25 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   same-team contacts so the global linker decides who is who. `--w-vel` adds
   velocity continuity to short links. Experiments, and the standing
   improvement loop, are tracked in issue #35.
+  To compare variants, score them all on one fixed contact set:
+  `contact_swaps.py --reference-tmp-dir <base run>`. By default the set is
+  contacts between same-kit tracklets of at least 25 detections, whether
+  any run identified them or not (`--reference-set kit`). Don't use
+  `--reference-set identity` for comparisons: it only holds the reference
+  run's own identified contacts, so that run scores 0 unlinked by
+  construction. A contact counts as *unlinked* when either player has no
+  identity at the contact frame. Fewer unlinked contacts is part of the
+  goal.
+  The cuts keep at least `--contact-min-side` detections in *every* piece.
+  Before 2026-11-04 only the two ends of the whole tracklet were checked,
+  and repeated contacts left tiny middle pieces that skipped the linker.
+  `--kit-split-other` (off by default) also cuts a tracklet at a sustained
+  flip to official or keeper kit. Without it, the frame-to-frame tracker
+  can slide from a player onto the referee and stay there as one team
+  tracklet. On Man City v Spurs H1 one City chain followed the ref for
+  about 28 s that way. The cut fixes that (official-kit detections on
+  outfield identities 0.6% -> 0.1%), but it doesn't win on the #35 scores
+  yet.
 - **Short-gap fill** (`interp_gaps.py`, issue #47 item 4): gap_status's
   `interpolated` filler (`make_filler`), up to `--fill-max-s` (default 3 s).
   Each gap is filled with a constant-velocity Kalman

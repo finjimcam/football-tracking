@@ -345,23 +345,31 @@ def relabel_teams(p, tl, lo=0.25, hi=0.75):
     return kit, prob
 
 
-def split_by_kit(p, next_id, window=15, min_run=15):
-    """Cut tracklets where the smoothed team signal flips for a sustained
+def split_by_kit(p, next_id, window=15, min_run=15, other=True):
+    """Cut tracklets where the smoothed kit signal flips for a sustained
     run (>= min_run frames each side): the tracker followed one player into
-    a crossing and came out on an opponent. Returns the next free id."""
-    s_all = np.select([p["kit"] == "team_a", p["kit"] == "team_b"], [1.0, -1.0], 0.0)
-    p = p.assign(_s=s_all)
+    a crossing and came out on an opponent. With other=True (issue #35) a
+    flip to non-outfield kit (official / keeper) is a cut too: the tracker
+    used to slide from a City player onto the referee and stay there for
+    half a minute as one 'team_a' tracklet, so a whole identity chain
+    followed the ref while a real City player was left out. Returns
+    (p, next_id, n_cuts)."""
+    cats = [("team_a",), ("team_b",)] + ([("official", "gk_a", "gk_b")] if other else [])
+    kit_all = p["kit"].to_numpy()
+    shares = np.stack([np.isin(kit_all, c).astype(float) for c in cats], axis=1)
     new_ids = p["tracklet"].to_numpy().copy()
     pos = {i: k for k, i in enumerate(p.index)}
     kernel = np.ones(window) / window
     n_cuts = 0
     for t, g in p[p["tracklet"] >= 0].groupby("tracklet"):
-        s = g["_s"].to_numpy()
-        if len(g) < 2 * min_run or not ((s > 0).any() and (s < 0).any()):
+        if len(g) < 2 * min_run:
             continue
         g = g.sort_values("frame")
-        r = np.convolve(g["_s"].to_numpy(), kernel, mode="same")
-        lab = np.where(r > 0.5, 1, np.where(r < -0.5, -1, 0))
+        sh = shares[[pos[i] for i in g.index]]
+        if (sh.sum(axis=0) > 0).sum() < 2:
+            continue
+        r = np.stack([np.convolve(sh[:, c], kernel, mode="same") for c in range(sh.shape[1])], axis=1)
+        lab = np.where(r.max(axis=1) > 0.5, r.argmax(axis=1) + 1, 0)
         runs, start = [], 0
         for k in range(1, len(lab) + 1):
             if k == len(lab) or lab[k] != lab[start]:
@@ -376,8 +384,8 @@ def split_by_kit(p, next_id, window=15, min_run=15):
             new_ids[rows[c0:c1]] = next_id
             next_id += 1
             n_cuts += 1
-    p["tracklet"] = new_ids
-    return p.drop(columns="_s"), next_id, n_cuts
+    p = p.assign(tracklet=new_ids)
+    return p, next_id, n_cuts
 
 
 def _flicker(tl):
@@ -429,14 +437,20 @@ def split_at_contacts(p, tl, next_id, contact_m, min_side=15):
         return p, next_id, 0, {}
     frames_of = {t: np.sort(g.to_numpy()) for t, g in q.groupby("tracklet")["frame"]}
     cuts = {}
-    for r in ep.itertuples():
-        ok = True
-        for t in (r.a, r.b):
-            fr = frames_of[t]
-            k = np.searchsorted(fr, r.frame, side="right")
-            if k < min_side or len(fr) - k < min_side:
-                ok = False
-        if ok:
+
+    def piece_ok(t, f):
+        # issue #35: every *piece* must keep min_side detections, not just the
+        # two ends of the whole tracklet - repeated contacts on one tracklet
+        # used to leave tiny middle pieces that fell under --min-len, skipped
+        # the linker and lost their identity exactly at the contact.
+        fr = frames_of[t]
+        bounds = sorted(cuts.get(int(t), set()) | {int(f)})
+        edges = np.searchsorted(fr, bounds, side="right")
+        sizes = np.diff(np.concatenate(([0], edges, [len(fr)])))
+        return bool((sizes >= min_side).all())
+
+    for r in ep.sort_values("d").itertuples():  # closest contacts claim their cut first
+        if piece_ok(r.a, r.frame) and piece_ok(r.b, r.frame):
             for t in (r.a, r.b):
                 cuts.setdefault(int(t), set()).add(int(r.frame))
     new_ids = p["tracklet"].to_numpy().copy()
@@ -1215,6 +1229,9 @@ def main():
                         help="Weight of the team-shape term on links across a contact cut (0-1)")
     parser.add_argument("--w-vel", type=float, default=0.0,
                         help="Cost per 3 m/s of velocity change across links with gaps < 1 s")
+    parser.add_argument("--kit-split-other", action="store_true",
+                        help="Also cut tracklets at a sustained flip to official/keeper kit "
+                             "(the tracker sliding from a player onto the referee)")
     parser.add_argument("--duel-sigma-m", type=float, default=1.0,
                         help="Issue #48: a tracklet that ends within --duel-m of an opponent links cheaply to a "
                              "successor that starts this close to that partner (sigma, metres). 0 = off")
@@ -1316,13 +1333,19 @@ def main():
         p["kit"], prob = relabel_teams(p, tl0)
         p["p_team_a"] = prob if prob is not None else np.nan
         p["tracklet"], end_reason = track(a.kit_penalty_2)
-        p, _, n_cuts = split_by_kit(p, int(p["tracklet"].max()) + 1)
+        p, _, n_cuts = split_by_kit(p, int(p["tracklet"].max()) + 1, other=False)
         tl = summarize(p, fps, L, W)
         tl["ended"] = tl["tracklet"].map(end_reason).fillna("kit_split")
         print(f"  team colour model relabelled detections: tracklets with >20% minority-team votes "
               f"{flicker0:.0%} -> {_flicker(tl):.0%}; {n_cuts} tracklet(s) cut at a team flip")
         p.to_parquet(cache_p, index=False)
         tl.to_parquet(cache_tl, index=False)
+    if a.kit_split_other:
+        ended = dict(zip(tl["tracklet"], tl["ended"]))
+        p, _, n_ko = split_by_kit(p, int(p["tracklet"].max()) + 1, other=True)
+        tl = summarize(p, fps, L, W)
+        tl["ended"] = tl["tracklet"].map(ended).fillna("kit_split")
+        print(f"  cut {n_ko} tracklet piece(s) at a flip to official/keeper kit")
     if a.handover_m > 0:
         ended = dict(zip(tl["tracklet"], tl["ended"]))
         p, _, n_ho, tails = split_at_handovers(p, tl, int(p["tracklet"].max()) + 1, fps, a.handover_m, a.dup_m)
