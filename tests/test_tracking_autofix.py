@@ -151,17 +151,31 @@ def test_a_box_in_two_missing_rectangles_is_left(tmp_path):
 
 
 def test_faint_boxes_are_not_searched(tmp_path):
-    """Only one player missing, but the box is a faint detection: leave it."""
+    """Only one player missing, but the box is fainter than even the last
+    player left may be (LAST_CONF[0]): leave it."""
     from app.tracking import MatchTracking
 
     build(tmp_path)
     p = tmp_path / ".tmp" / MID / "tracks.parquet"
     df = pd.read_parquet(p)
-    df.loc[df["track_id"] == 80, "conf"] = 0.2
+    df.loc[df["track_id"] == 80, "conf"] = 0.05
     df.to_parquet(p, index=False)
     mt = MatchTracking(tmp_path, MID)
     mt.autofix()
     assert (mt.df["track_id"] == 80).sum() == 260
+
+
+def test_faint_box_is_enough_for_the_last_player_left(tmp_path):
+    """A half-hidden player is a faint box (0.2). Box search ignores it, but
+    with only a4 missing it is the only box he could be: it is his."""
+    from app.tracking import MatchTracking
+
+    build(tmp_path)
+    _edit_tracks(tmp_path, lambda df: df.assign(conf=np.where(df["track_id"] == 80, 0.2, df["conf"])))
+    mt = MatchTracking(tmp_path, MID)
+    r = mt.autofix()
+    assert r["last_pieces"] >= 1
+    assert (mt.df["track_id"] == 80).sum() == 0
 
 
 def test_boxes_off_the_pitch_or_cut_off_are_not_searched(tmp_path):
@@ -242,6 +256,32 @@ def test_last_player_left_not_after_he_goes_off(tmp_path):
     mt = MatchTracking(tmp_path, MID)
     mt.autofix()
     assert (mt.df["track_id"] == 93).sum() == N - 501
+
+
+def test_label_hop_goes_back_to_the_missing_player(tmp_path):
+    """On frames 450-550 a2's label (id 1) jumps 34 m onto a4, who is missing,
+    and jumps back after; the real a2 is unlabelled (id 95) where he stood.
+    The stretch is a4's, and 95 is a2 again."""
+    from app.tracking import MatchTracking
+
+    def hop(df):
+        fr = df["frame"]
+        on_a4 = (df["track_id"] == 80) & fr.between(450, 550)
+        a2 = (df["track_id"] == 1) & fr.between(450, 550)
+        df = df[~a2].copy()
+        df.loc[on_a4, "track_id"] = 1          # a2's label sits on a4
+        return pd.concat([df, _box_rows(95, range(450, 551), (10, 10))], ignore_index=True)
+
+    build(tmp_path)
+    _edit_tracks(tmp_path, hop)
+    mt = MatchTracking(tmp_path, MID)
+    r = mt.autofix()
+    assert r["hop_pieces"] == 1
+    d, fr = mt.df, mt.df["frame"]
+    mid = fr.between(450, 550)
+    assert ((d["track_id"] == 1) & mid & (d["pitch_x"] == 10)).sum() == 101   # a2 back where he stood
+    assert ((d["track_id"] == 3) & mid).sum() == 101                          # a4 has the stretch
+    assert ((d["track_id"] == 1) & mid & (d["pitch_x"] > 20)).sum() == 0
 
 
 def test_autofix_api(root):
