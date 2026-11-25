@@ -272,6 +272,10 @@ Intermediates live in `.tmp/<match_id>/` (disposable); deliverables in
   - hard cuts / replays in edited footage break the flow chain — the tool
     warns about consecutive pair failures; trim to continuous footage or
     put a keyframe right after each cut;
+  - long broadcast / tactical-camera footage (a whole half, constant pan and
+    zoom): keyframe chaining drifts by tens of metres - use
+    [track_identities.md](track_identities.md) instead (`calibrate_auto.py`
+    re-anchors every frame to the painted lines; learned 2026-11-03);
   - pixel-space visualizations (`track_players.py --trajectories`) mix
     camera and player motion on moving footage — use the pitch-space
     figures from `compute_positions.py` instead.

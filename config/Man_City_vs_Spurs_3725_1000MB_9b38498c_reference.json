@@ -1,0 +1,82 @@
+{
+  "match": "Man City 2-3 Tottenham, Premier League 2021-22 GW26, Etihad Stadium, 19 Feb 2022 (HT 1-1)",
+  "sources": {
+    "opta_team_stats": "https://footballapi.pulselive.com/football/stats/match/66598 (Premier League / Opta feed, fetched 2026-11-03)",
+    "opta_events": "https://footballapi.pulselive.com/football/fixtures/66598/textstream/EN (commentary events with seconds since kick-off)",
+    "lineups": "https://footballapi.pulselive.com/football/fixtures/66598 (teamLists.formation, lines listed right-to-left from each team's own perspective)",
+    "cross_checks": [
+      "https://spursodyssey.com/2122/mc190222.html (lineups, subs: first sub Mahrez 68')",
+      "https://statmuse.com/fc/match/2-19-2022-mci-vs-tot-11889 (possession 71.5/28.5)",
+      "https://www.eurosport.com/football/premier-league/2021-2022/live-manchester-city-tottenham-hotspur_mtc1271419/live-stats.shtml (possession 72/28)",
+      "https://theanalyst.com/articles/how-antonio-conte-has-already-improved-tottenham (Spurs ~114 km/match under Conte)"
+    ]
+  },
+  "full_match_team_stats": {
+    "possession_pct": {"team_a": 71.2, "team_b": 28.8},
+    "total_passes": {"team_a": 755, "team_b": 308},
+    "accurate_passes": {"team_a": 688, "team_b": 242},
+    "touches": {"team_a": 936, "team_b": 483},
+    "shots": {"team_a": 21, "team_b": 6},
+    "final_third_entries": {"team_a": 105, "team_b": 23},
+    "total_final_third_passes": {"team_a": 375, "team_b": 40},
+    "touches_in_opp_box": {"team_a": 62, "team_b": 7},
+    "possession_lost": {"team_a": 133, "team_b": 104},
+    "note": "Full 90+ minutes. No first-half split is published in any source found; the first-half comparison uses the timestamped events below instead."
+  },
+  "first_half": {
+    "duration_s": 2824,
+    "goals": {"team_a": 1, "team_b": 1},
+    "substitutions": 0
+  },
+  "physical_reference": {
+    "team_b_km_per_match_conte_era": 114.2,
+    "typical_pl_team_km_per_match": [105, 115],
+    "note": "No match-specific distance data is published for this game. These are context ranges only: per half, a team typically covers ~52-58 km (outfield + GK)."
+  },
+  "lineups": {
+    "team_a": {
+      "formation": "4-3-3",
+      "lines": [
+        [{"name": "Ederson", "number": 31}],
+        [{"name": "Walker", "number": 2}, {"name": "Dias", "number": 3}, {"name": "Laporte", "number": 14}, {"name": "Cancelo", "number": 27}],
+        [{"name": "De Bruyne", "number": 17}, {"name": "Rodri", "number": 16}, {"name": "Gundogan", "number": 8}],
+        [{"name": "Sterling", "number": 7}, {"name": "Bernardo Silva", "number": 20}, {"name": "Foden", "number": 47}]
+      ]
+    },
+    "team_b": {
+      "formation": "3-4-2-1",
+      "lines": [
+        [{"name": "Lloris", "number": 1}],
+        [{"name": "Romero", "number": 4}, {"name": "Dier", "number": 15}, {"name": "Davies", "number": 33}],
+        [{"name": "Emerson Royal", "number": 12}, {"name": "Bentancur", "number": 30}, {"name": "Hojbjerg", "number": 5}, {"name": "Sessegnon", "number": 19}],
+        [{"name": "Kulusevski", "number": 21}, {"name": "Son", "number": 7}],
+        [{"name": "Kane", "number": 10}]
+      ]
+    }
+  },
+  "first_half_events": [
+    {"s": 79, "type": "offside", "team": "team_b", "player": "Son", "possession": "before", "text": "Son caught offside from Sessegnon's through ball"},
+    {"s": 236, "type": "goal", "team": "team_b", "player": "Kulusevski", "possession": "before", "text": "Kulusevski scores from the centre of the box, assisted by Son"},
+    {"s": 360, "type": "corner_won", "team": "team_a", "player": null, "possession": "after", "text": "City corner, conceded by Davies"},
+    {"s": 457, "type": "shot", "team": "team_a", "player": "Foden", "possession": "before", "text": "Foden header wide from De Bruyne's cross"},
+    {"s": 583, "type": "foul_won", "team": "team_a", "player": "Rodri", "possession": "after", "text": "Rodri fouled by Hojbjerg in the attacking half"},
+    {"s": 827, "type": "corner_won", "team": "team_a", "player": null, "possession": "after", "text": "City corner, conceded by Romero"},
+    {"s": 854, "type": "shot", "team": "team_a", "player": "Cancelo", "possession": "before", "text": "Cancelo shot from outside the box blocked"},
+    {"s": 859, "type": "shot", "team": "team_a", "player": "Bernardo Silva", "possession": "before", "text": "Bernardo Silva shoots wide after the corner"},
+    {"s": 973, "type": "shot", "team": "team_a", "player": "Cancelo", "possession": "before", "text": "Cancelo shoots narrowly wide, assisted by Laporte"},
+    {"s": 1112, "type": "offside", "team": "team_a", "player": "Cancelo", "possession": "before", "text": "Cancelo caught offside from Sterling's through ball"},
+    {"s": 1203, "type": "shot", "team": "team_a", "player": "Gundogan", "possession": "before", "text": "Gundogan hits the right post"},
+    {"s": 1253, "type": "corner_won", "team": "team_a", "player": null, "possession": "after", "text": "City corner, conceded by Sessegnon"},
+    {"s": 1277, "type": "shot", "team": "team_a", "player": "Cancelo", "possession": "before", "text": "Cancelo shoots wide from outside the box after the corner"},
+    {"s": 1365, "type": "foul_won", "team": "team_a", "player": "Rodri", "possession": "after", "text": "Rodri fouled by Kane in the defensive half"},
+    {"s": 1410, "type": "shot", "team": "team_a", "player": "Foden", "possession": "before", "text": "Foden shot from the centre of the box blocked, assisted by Sterling"},
+    {"s": 1460, "type": "shot", "team": "team_b", "player": "Emerson Royal", "possession": "before", "text": "Emerson Royal shoots too high, assisted by Son"},
+    {"s": 1799, "type": "shot", "team": "team_a", "player": "Gundogan", "possession": "before", "text": "Gundogan shoots wide from Rodri's cross"},
+    {"s": 1828, "type": "foul_won", "team": "team_b", "player": "Emerson Royal", "possession": "after", "text": "Emerson Royal fouled by Sterling in the defensive half"},
+    {"s": 1968, "type": "goal", "team": "team_a", "player": "Gundogan", "possession": "before", "text": "Gundogan equalises, left foot, bottom right corner"},
+    {"s": 2175, "type": "shot", "team": "team_a", "player": "Cancelo", "possession": "before", "text": "Cancelo shoots wide from outside the box"},
+    {"s": 2270, "type": "foul_won", "team": "team_b", "player": "Sessegnon", "possession": "after", "text": "Sessegnon fouled by Foden in the defensive half"},
+    {"s": 2475, "type": "shot", "team": "team_a", "player": "Sterling", "possession": "before", "text": "Sterling shot from the centre of the box blocked"},
+    {"s": 2778, "type": "offside", "team": "team_b", "player": "Kane", "possession": "before", "text": "Kane caught offside from Dier's through ball"}
+  ]
+}

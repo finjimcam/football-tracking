@@ -1,0 +1,15 @@
+# Secrets never go into an image
+.env
+credentials.json
+token.json
+
+# Large / disposable / local-only
+.git
+.tmp/
+runs/
+yolo_format/
+outputs/videos/
+*.mp4
+*.pt
+__pycache__/
+*.pyc

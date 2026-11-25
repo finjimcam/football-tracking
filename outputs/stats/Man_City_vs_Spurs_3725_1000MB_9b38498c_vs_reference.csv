@@ -1,0 +1,16 @@
+metric,ours,reference,reference_scope,note
+possession % Man City,60.7,71.2,"Opta, full match",ours: share of first-half time each team held the ball (8 s hold through dropouts)
+possession % Tottenham,39.3,28.8,"Opta, full match",
+ball-near-player % Man City,60.8,71.2,"Opta, full match","ours: frames where the ball is within 2.5 m of a player, by that player's team"
+field tilt % Man City vs final-third passes,84.1,90.4,"Opta final-third passes 375 v 40, full match",ours: share of located-ball time in A's attacking third vs B's
+field tilt % Man City vs final-third entries,84.1,82.0,"Opta final-third entries 105 v 23, full match",
+distance km Man City (observed),51.2,52-58,"typical PL team per half (context, not match data)",tracked time only; mean coverage 79%
+distance km Man City (scaled to full half),62.4,52-58,"typical PL team per half (context, not match data)","each player's tracked m/s x 2824 s; on-camera players skew towards the ball, so this leans high"
+distance km Tottenham (observed),54.0,52-58,"typical PL team per half (context, not match data)",tracked time only; mean coverage 81%
+distance km Tottenham (scaled to full half),64.2,52-58,"typical PL team per half (context, not match data)","each player's tracked m/s x 2824 s; on-camera players skew towards the ball, so this leans high"
+distance km Tottenham reference,,57.1,Spurs' Conte-era average per match / 2 (The Analyst),
+Opta events: possession agrees,18/23,all,23 timestamped 1st-half events,shots/goals/offsides -> attacking team on the ball just before; fouls won -> fouled team just after
+Opta events: named player nearest ball,1/11,all,events naming a player,checks identity persistence AND the role-inferred name mapping together
+Opta events: named player near ball at all,2/11,all,events naming a player,
+formation Man City,4-3-3,4-3-3,official lineup,"names are mapped onto these lines by average depth/width, so this row is an input, not a test - see the average-position figure for the real shape"
+formation Tottenham,3-4-2-1,3-4-2-1,official lineup,"names are mapped onto these lines by average depth/width, so this row is an input, not a test - see the average-position figure for the real shape"

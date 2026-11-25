@@ -1,0 +1,39 @@
+{
+  "team_a_name": "Man City",
+  "team_b_name": "Tottenham",
+  "teams": {
+    "team_a": {"name": "Man City", "short": "MCI", "kit": "sky-blue shirts, white shorts", "formation": "4-3-3"},
+    "team_b": {"name": "Tottenham", "short": "TOT", "kit": "white shirts, navy shorts", "formation": "3-4-2-1"}
+  },
+  "date": "2022-02-19",
+  "kickoff": "2022-02-19T17:30",
+  "competition": "Premier League 2021-22, Gameweek 26",
+  "venue": "Etihad Stadium",
+  "result": "Man City 2-3 Tottenham (HT 1-1)",
+  "pitch_length": 105.0,
+  "pitch_width": 68.0,
+  "camera": "Premier League tactical camera: one fixed position on the main stand that pans/tilts/zooms to follow play. No replays or close-ups in the first half.",
+  "clock_sync": {
+    "kickoff_frame": 834,
+    "fps": 25,
+    "formula": "video_frame = kickoff_frame + fps * opta_seconds",
+    "method": "Scoreboard seconds digit ticks on frames = 9 (mod 25) at f2709 (01:15), f30009 and f60009 -> no dropped frames; f71434 shows 47:04 = 2824 s, exactly Opta's end-of-first-half timestamp."
+  },
+  "periods": {
+    "first_half": {
+      "start_frame": 1151,
+      "end_frame": 71434,
+      "note": "Kickoff is frame 834, but frames 834-1150 (first 12.7 s) are on the wide stadium camera under intro graphics; analysis starts when the tactical camera is clean. No substitutions in the first half (first sub: Mahrez for Sterling, 68')."
+    }
+  },
+  "analysis_window": {"start_frame": 1151, "end_frame": 71434},
+  "colors": {"team_a": "#6CABDD", "team_b": "#132257"},
+  "kits": {
+    "sky": "team_a",
+    "white": "team_b",
+    "green": "gk_a",
+    "orange": "gk_b",
+    "dark": "official",
+    "note": "Kit colour classes used by tools/track_identities.py (rules in KIT_RULES there). Verified on crops: City sky-blue/white, Spurs white/navy, Ederson all-green (his torso reads as grass to the colour features), Lloris orange, officials black. Kulusevski's goal (03:56) is in the left goal, Gundogan's (32:48) in the right: City attack left-to-right in the first half."
+  }
+}
