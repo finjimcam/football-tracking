@@ -69,3 +69,17 @@ def test_video_writer_roundtrip(tmp_path):
     assert w.codec in ("h264", "mp4v")
     with av.open(str(path)) as c:
         assert sum(1 for _ in c.decode(video=0)) == 10
+
+
+def test_clock_label_restarts_at_a_later_period_kickoff():
+    from _common import clock_label
+
+    cfg = {"clock_sync": {"kickoff_frame": 20, "fps": 30.0},
+           "periods": {"first_half": {"start_frame": 20, "end_frame": 86746},
+                       "second_half": {"start_frame": 86760, "end_frame": 179867,
+                                       "kickoff_frame": 86760, "clock_start_s": 2700}}}
+    assert clock_label(10, cfg) is None
+    assert clock_label(20 + 30 * 61, cfg) == "01:01"
+    assert clock_label(86746, cfg) == "48:10"  # first-half stoppage time keeps counting
+    assert clock_label(86760, cfg) == "45:00"
+    assert clock_label(86760 + 30 * 1000, cfg) == "61:40"

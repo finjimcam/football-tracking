@@ -330,8 +330,14 @@ def clock_label(frame, cfg, fps=25.0):
     sync = cfg.get("clock_sync") if cfg else None
     if not sync:
         return None
-    s = (frame - sync["kickoff_frame"]) / sync.get("fps", fps)
-    if s < 0:
+    fps = sync.get("fps", fps)
+    k0, c0 = sync["kickoff_frame"], 0.0
+    # a later period's own kick-off (e.g. second half: kickoff_frame, clock_start_s 2700) restarts the clock
+    for per in (cfg.get("periods") or {}).values():
+        if per.get("kickoff_frame") is not None and k0 < per["kickoff_frame"] <= frame:
+            k0, c0 = per["kickoff_frame"], float(per.get("clock_start_s", 0.0))
+    s = c0 + (frame - k0) / fps
+    if frame < sync["kickoff_frame"]:
         return None
     return f"{int(s // 60):02d}:{int(s % 60):02d}"
 
