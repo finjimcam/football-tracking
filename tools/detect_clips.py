@@ -36,6 +36,10 @@ Passes into the final third: detect_events.detect() passes (same team, ball
 moved >= 4 m) that start more than --third-m from the goal the passer's team
 attacks and end within it.
 
+Passes into the final third, box entries and shots run on until the move is
+over: the other team has had the ball for a second, or play stops (at most
+25 s). Entries into the final third in one move are one clip.
+
 Published events: when config/<id>_reference.json has "match_events"
 (minute-stamped shots, goals, free kicks, corners... from ESPN / BBC / FotMob),
 each one is tied to a detected clip of that team inside its minute (+-30 s),
@@ -554,12 +558,50 @@ def clip_window(kind, frame, fps, lo, hi, first=None, lead_cap_s=8.0):
     return max(lo, start), min(hi, frame + int(post * fps))
 
 
-def build(items, fps, lo, hi, cfg, name_of):
+RUN_ON = ("pass", "box_entry", "shot")  # clips that run on until the move is over
+
+
+def possession_end(frame, team, tl, stop_starts, fps, lost_s=1.0, cap_s=25.0, after_s=1.0):
+    """Last frame of the move `team` is on the ball in at `frame`: the other team has had the
+    ball for lost_s (the clip shows the turnover, plus after_s), or play stops, whichever comes
+    first; at most cap_s after `frame`. tl = (frames, state) of the possession timeline."""
+    frames, state = tl
+    cap = frame + int(cap_s * fps)
+    end = cap
+    k = np.searchsorted(stop_starts, frame + 1)
+    if k < len(stop_starts) and stop_starts[k] <= cap:  # play stops (ball out, foul...)
+        end = int(stop_starts[k]) + int(after_s * fps)
+    other = "team_b" if team == "team_a" else "team_a"
+    i0, i1 = np.searchsorted(frames, frame), np.searchsorted(frames, end)
+    run = None
+    for i in range(i0, i1):
+        if state[i] == other:
+            run = frames[i] if run is None else run
+            if frames[i] - run >= lost_s * fps:
+                return min(end, int(run) + int(after_s * fps))
+        elif state[i] == team:
+            run = None
+    return end
+
+
+def build(items, fps, lo, hi, cfg, name_of, tl=None, stop_starts=()):
+    """Clips from the detected items. Passes into the final third, box entries and shots run on
+    until the move ends (possession_end); final-third passes in the same move are one clip."""
+    stop_starts = np.asarray(sorted(stop_starts), dtype=np.int64)
     clips = []
-    for it in items:
+    for it in sorted(items, key=lambda d: d["frame"]):
         s, e = clip_window(it["kind"], it["frame"], fps, lo, hi, it.get("first"))
-        if (it.get("published") or {}).get("type") == "goal":  # the build-up, the goal, the celebration
+        goal = (it.get("published") or {}).get("type") == "goal"
+        if goal:  # the build-up, the goal, the celebration
             s, e = max(lo, min(s, it["frame"] - int(10 * fps))), min(hi, it["frame"] + int(8 * fps))
+        elif tl is not None and it["kind"] in RUN_ON and it.get("team") in TEAMS:
+            e = min(hi, max(e, possession_end(it["frame"], it["team"], tl, stop_starts, fps)))
+        if it["kind"] == "pass":  # another entry in a move already clipped: extend that clip
+            prev = next((c for c in reversed(clips) if c["kind"] == "pass" and c["team"] == it.get("team")), None)
+            if prev and it["frame"] <= prev["end"]:
+                prev["end"] = min(max(prev["end"], e), prev["frame"] + int(35 * fps))
+                prev["entries"] = prev.get("entries", 1) + 1
+                continue
         c = {"id": f"{it['kind']}-{it['frame']}", "group": GROUP_OF[it["kind"]], "kind": it["kind"],
              "team": it.get("team"), "frame": it["frame"], "start": s, "end": e,
              "clock": clock_label(it["frame"], cfg, fps) or ""}
@@ -664,7 +706,8 @@ def main():
                                             kickoffs=kickoffs)
         print(f"  published events ({len(ref['match_events'])}): {pub_report['matched']} matched a detected clip, "
               f"{pub_report['added']} added at an estimated moment, {pub_report['skipped']} skipped", flush=True)
-    clips = build(items + ft, fps, lo, hi, cfg, name_of)
+    tl = (timeline["frame"].to_numpy(), timeline["state"].to_numpy())
+    clips = build(items + ft, fps, lo, hi, cfg, name_of, tl, [s for s, _ in stops])
     counts = {t: {k: sum(1 for c in clips if c["team"] == t and c["kind"] == k) for k in GROUP_OF} for t in TEAMS}
     counts["unknown_team"] = sum(1 for c in clips if c["team"] not in TEAMS)
     out = {"match_id": a.match_id, "fps": fps, "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),

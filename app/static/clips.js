@@ -113,7 +113,7 @@ export async function viewClips(view, matchId, match, team, params, ui) {
   // ---------- list ----------
   const fmtS = (f0, f1) => `${((f1 - f0 + 1) / FPS).toFixed(0)}s`;
   function clipLabel(c) {
-    if (c.kind === 'pass') return [c.player_name, c.to_player_name].filter(Boolean).join(' → ');
+    if (c.kind === 'pass') return [[c.player_name, c.to_player_name].filter(Boolean).join(' → '), c.entries > 1 ? `${c.entries} entries` : null].filter(Boolean).join(' · ');
     const p = c.published;
     if (p) return [p.type === 'goal' ? 'GOAL' : null, c.player_name, p.outcome && p.type !== 'goal' ? p.outcome : null, `${p.minute} published`]
       .filter(Boolean).join(' · ');

@@ -278,3 +278,30 @@ def test_export_writes_a_zip_with_folders_per_heading(root):
     assert names == ["Set pieces/Corners/01_corner_00m04s.mp4", "clips.csv"]
     csv = z.read("clips.csv").decode()
     assert "Corners,Man City,00:04" in csv
+
+
+def test_move_clips_run_on_until_possession_is_lost_or_play_stops():
+    fps = 25.0
+    frames = np.arange(0, 2000)
+    state = np.array(["team_a"] * 2000, dtype=object)
+    state[600:610] = "team_b"   # a 0.4 s touch by the other team: not lost
+    state[900:1100] = "team_b"  # lost at 900
+    tl = (frames, state)
+    assert D.possession_end(500, "team_a", tl, np.array([], np.int64), fps) == 900 + 25
+    # play stops (ball out) at 700, before the ball is lost
+    assert D.possession_end(500, "team_a", tl, np.array([700]), fps) == 725
+    # never lost, never stopped: capped at 25 s
+    assert D.possession_end(1200, "team_a", tl, np.array([], np.int64), fps) == 1200 + 625
+
+
+def test_final_third_entries_in_one_move_are_one_clip():
+    fps = 25.0
+    frames = np.arange(0, 3000)
+    state = np.array(["team_a"] * 3000, dtype=object)
+    state[1000:] = "team_b"
+    items = [{"frame": 200, "kind": "pass", "team": "team_a", "player": 7},
+             {"frame": 500, "kind": "pass", "team": "team_a", "player": 8},   # same move: merged
+             {"frame": 1500, "kind": "pass", "team": "team_b", "player": 3}]
+    clips = D.build(items, fps, 0, 2999, {}, {}, (frames, state), [])
+    assert [(c["frame"], c.get("entries", 1)) for c in clips] == [(200, 2), (1500, 1)]
+    assert clips[0]["end"] == 1000 + 25  # ran on until team_b won it
