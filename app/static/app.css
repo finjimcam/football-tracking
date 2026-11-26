@@ -199,6 +199,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .lines-row > input { width: 18px; height: 18px; margin: 10px 0 0 12px; flex: none; accent-color: var(--accent); cursor: pointer; }
 .lines-row > .job-row { border-bottom: 0; padding-left: 10px; }
 .lines-row.dropped > .job-row { opacity: 0.45; }
+/* clips panel (issue #58) */
+.clips-list { max-height: 70vh; }
+.clips-group { border-bottom: 1px solid var(--line); }
+.clips-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; font-weight: 600; font-size: 13px; list-style: none; }
+.clips-head::-webkit-details-marker { display: none; }
+.clips-head::before { content: '▸'; color: var(--muted); width: 10px; }
+.clips-group[open] > .clips-head::before { content: '▾'; }
+.clips-subhead { display: flex; align-items: center; gap: 8px; padding: 6px 12px 6px 30px; font-size: 11px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); background: var(--panel-2, rgba(255,255,255,0.03)); }
+.clips-none { padding: 6px 12px 8px 30px; font-size: 12px; }
+.clips-kind .lines-row > input { margin-left: 30px; }
+.btn.tiny { min-height: 24px; padding: 0 8px; font-size: 11px; }
 .lines-stage { position: relative; width: 100%; background: #0B0D10; border-radius: 6px; overflow: hidden; }
 .lines-img, .lines-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .lines-svg { cursor: crosshair; touch-action: manipulation; }

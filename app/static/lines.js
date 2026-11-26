@@ -53,6 +53,11 @@ export async function viewLines(view, parts, params, ui) {
     return;
   }
   setCrumb(match);
+  if (params.get('view') === 'clips') {  // set pieces, chances, final-third passes (issue #58)
+    const { viewClips } = await import('./clips.js');
+    await viewClips(view, matchId, match, team, params, ui);
+    return;
+  }
   view.replaceChildren(h('div', { class: 'placeholder' }, h('h1', {}, 'Loading tracking…'),
     h('p', {}, 'The first load reads the whole half\'s tracks (a few seconds).')));
   let sum;
@@ -301,7 +306,11 @@ export async function viewLines(view, parts, params, ui) {
   view.replaceChildren(h('div', { class: 'cols' },
     h('div', { class: 'col-side lines-side' },
       h('section', { class: 'panel', 'aria-labelledby': 'h-phases' },
-        h('div', { class: 'panel-head' }, h('h1', { id: 'h-phases' }, 'Phases'), progress, h('div', { class: 'spacer' }), teamSel),
+        h('div', { class: 'panel-head' }, h('h1', { id: 'h-phases' }, 'Phases'), progress, h('div', { class: 'spacer' }),
+          h('div', { class: 'seg', role: 'group', 'aria-label': 'Lines tab view' },
+            h('a', { class: 'btn small', href: `#/lines/${encodeURIComponent(matchId)}?team=${team}`, 'aria-pressed': 'true' }, 'Phases'),
+            h('a', { class: 'btn small', href: `#/lines/${encodeURIComponent(matchId)}?team=${team}&view=clips`, 'aria-pressed': 'false' }, 'Clips')),
+          teamSel),
         list),
       h('section', { class: 'panel' }, h('div', { class: 'panel-body', style: 'display:flex;flex-direction:column;gap:10px' },
         h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap' }, renderBtn,

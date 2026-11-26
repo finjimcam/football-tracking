@@ -17,6 +17,9 @@
     PUT  /api/matches/{match_id}/lines/export           keep/drop every phase
     POST /api/matches/{match_id}/lines/identify         anchor "this box is No. N" (issue #16)
     DELETE /api/matches/{match_id}/lines/identify/{id}  remove an anchor
+    GET  /api/matches/{match_id}/clips?team=             detected clips by heading (issue #58)
+    PUT  /api/matches/{match_id}/clips/{clip_id}/export  keep/drop + trim one clip
+    PUT  /api/matches/{match_id}/clips/export            keep/drop a team's clips (optionally one heading / type)
     GET  /api/matches/{match_id}/lines/others?frame=     other detected players at a frame (Identify mode)
     GET  /api/matches/{match_id}/players                every player's full-match stats (issue #16)
     GET  /api/matches/{match_id}/players/{pid}          one player's path, heatmap and stats (?start=&end= frames)
@@ -51,6 +54,7 @@ from pydantic import BaseModel, Field
 from app import catalog, matches
 from app.coding import CodeStore, CodingError
 from app.jobs import JobRunner
+from app.clips import Clips, ClipsError
 from app.lines import FrameSource, LinesCache, LinesError
 from app.players import PlayersCache, PlayersError
 from app import library as libapi
@@ -94,6 +98,13 @@ class Identify(BaseModel):
 class ExportAll(BaseModel):
     team: str = "team_a"
     keep: bool
+
+
+class ClipsExportMany(BaseModel):
+    team: str = "team_a"
+    keep: bool
+    group: str | None = None
+    kind: str | None = None
 
 
 class TrackEdit(BaseModel):
@@ -176,11 +187,13 @@ def create_app(root, runner=None, busy_check=None, warm=False):
         return m
 
     @app.get("/api/matches/{match_id}/files/{key}")
-    def match_file(match_id: str, key: str):
+    def match_file(match_id: str, key: str, team: str = "team_a"):
         _match_or_404(match_id)
         if key not in matches.DOWNLOADABLE:
             raise HTTPException(404, "Not a downloadable output")
-        path = matches.artifact_paths(root, match_id)[key]
+        if team not in ("team_a", "team_b"):
+            raise HTTPException(400, "team must be team_a or team_b")
+        path = matches.artifact_paths(root, match_id, team)[key]
         if not path.exists():
             raise HTTPException(404, "Not produced yet")
         return FileResponse(path, filename=path.name)
@@ -297,6 +310,25 @@ def create_app(root, runner=None, busy_check=None, warm=False):
     @app.put("/api/matches/{match_id}/lines/export")
     def lines_export_all(match_id: str, req: ExportAll):
         return _lines_call(_lines(match_id, req.team).set_export_all, req.keep)
+
+    def _clips_call(match_id, fn, *a):
+        _match_or_404(match_id)
+        try:
+            return fn(Clips(root, match_id), *a)
+        except ClipsError as e:
+            raise HTTPException(409, str(e)) from None
+
+    @app.get("/api/matches/{match_id}/clips")
+    def clips_summary(match_id: str, team: str = "team_a"):
+        return _clips_call(match_id, Clips.summary, team)
+
+    @app.put("/api/matches/{match_id}/clips/export")
+    def clips_export_many(match_id: str, req: ClipsExportMany):
+        return _clips_call(match_id, Clips.set_export_many, req.team, req.keep, req.group, req.kind)
+
+    @app.put("/api/matches/{match_id}/clips/{clip_id}/export")
+    def clips_export(match_id: str, clip_id: str, req: ExportEdit):
+        return _clips_call(match_id, Clips.set_export, clip_id, req.keep, req.trim_in, req.trim_out, req.reset_trim)
 
     @app.put("/api/matches/{match_id}/lines/{start}/export")
     def lines_export(match_id: str, start: int, req: ExportEdit):

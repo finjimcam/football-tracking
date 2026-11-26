@@ -91,6 +91,21 @@ Use `.venv/bin/python` on pphub. Needs `fastapi` and `uvicorn` (in requirements.
   (`app/lines.py` calls the same functions), so the page shows exactly what
   the render will draw. Keys: a/d ±0.5 s, A/D ±2 s, ,/. ±1 frame, Home phase start, k
   play, j auto-fix, n next auto-fix marker, Enter save + next, s skip, r auto guess, c clear, p previous.
+- **Lines → Clips** (issue #58): the *Clips* button at the top of the Lines tab
+  lists the clips `tools/detect_clips.py` found for the team picked. Under
+  **Set pieces** come goal kicks, throw-ins, corners and free kicks. Then
+  **Shots & key chances** and **Passes into the final third**. Click one to
+  play it.
+  - Untick the wrong ones. *Keep all* / *Drop all* work per heading or
+    subheading.
+  - Trim with `[` / `]`.
+  - *Export clips (zip)* queues `tools/export_clips.py`: one MP4 per kept clip,
+    in folders per heading. Download it from *Download last zip*.
+  - Choices save to `config/<id>_clips_export.json`.
+  - Clips tied to a published event (`match_events` in the reference: ESPN
+    shot map, commentary) show its minute, player and outcome.
+  - Run *Detect clips* on the match page first. See
+    [workflows/detect_clips.md](../workflows/detect_clips.md).
 - **Tracking** (broadcast matches, issue #42): follow every player's track
   and fix it by hand. The video has a box and a name on every identified
   player: solid when tracked, dashed amber when predicted across a gap of

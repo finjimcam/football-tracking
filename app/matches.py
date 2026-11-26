@@ -48,16 +48,20 @@ def artifact_paths(root, match_id, team="team_a"):
         "report": out / "reports" / f"{match_id}_report.pdf",
         "tracking_video": out / "videos" / f"{match_id}_tracking.mp4",
         "track_edits": cfg / f"{match_id}_track_edits.json",
+        "event_clips": tmp / "clips.json",
+        "event_clips_export": cfg / f"{match_id}_clips_export.json",
+        "event_clips_zip": out / "videos" / f"{match_id}_{team}_clips.zip",
     }
 
 
 # Outputs the browser may download, by artifact key (served read-only).
 DOWNLOADABLE = ("stats", "report", "tracking_video", "vs_reference", "phase_index",
-                "phase_video", "shape_video", "clips_zip")
+                "phase_video", "shape_video", "clips_zip", "event_clips_zip")
 
 # Artifacts that are inputs, never "produced" by a stage: committed configs
 # can be older than everything else without making stages stale.
-INPUTS = {"match_config", "reference", "calibration", "roster", "shape_selection", "clip_export", "track_edits"}
+INPUTS = {"match_config", "reference", "calibration", "roster", "shape_selection", "clip_export", "track_edits",
+          "event_clips_export"}
 # Stages that read tracks through the hand fixes (Tracking tab, #42): saving a
 # fix makes their outputs stale. (Ball tracking and verification check the
 # tracker itself, so they ignore the fixes.)
