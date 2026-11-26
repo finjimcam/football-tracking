@@ -11,6 +11,10 @@ position IN vs OUT of possession (avg_positions_<team>_by_phase.png) with
 shape metrics - back-line height, team length and width - in positions.json
 "by_phase". Team colours come from the match config "colors" if present.
 
+With a calibration and match periods, periods where the teams changed ends are
+turned through 180 degrees first (pitch_ends.py, issue #63), so each team
+attacks the same way all match.
+
 Usage:
     python tools/compute_positions.py --match-id <match_id>
 """
@@ -28,6 +32,7 @@ from _common import (PITCH_LENGTH, PITCH_WIDTH, apply_calibration, load_calibrat
                      load_meta, load_player_map, load_team_map, load_tracks, match_config, match_dir,
                      resolve_track_teams, write_json)
 from gap_status import add_weight_args, status_weights, weights_from_args
+from pitch_ends import flipped_ranges, orient
 
 TEAM_COLORS = {"team_a": "#d62728", "team_b": "#1f77b4"}
 
@@ -174,6 +179,12 @@ def main():
     n_ignored = sum(1 for v in track_teams.values() if v == "ignored")
     if n_ignored:
         print(f"Excluding {n_ignored} ignored track(s) from position maps")
+    flips = []
+    if calibrated and pm:  # #63: one attacking direction per team all match
+        flips = flipped_ranges(players, pm, match_config(args.match_id, args.tmp_dir, args.config_dir), length)
+        players = orient(players, flips, length, width)
+        for s, e in flips:
+            print(f"Frames {s}-{e}: teams changed ends, positions turned round")
 
     fig_dir = match_dir(args.match_id, args.tmp_dir) / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
@@ -229,6 +240,7 @@ def main():
 
     result = {"calibrated": calibrated, "unit": unit, "teams": teams, "figures": figures,
               "status_weights": weights_from_args(args),
+              "flipped_frames": [list(r) for r in flips],
               "by_phase": phase_shape}
     out = write_json(match_dir(args.match_id, args.tmp_dir) / "positions.json", result)
     for team, t in teams.items():

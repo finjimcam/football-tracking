@@ -7,6 +7,9 @@ artifacts only:
                     any Lines-tab identity anchors are already applied)
   player_map.json   track id -> player (number, name, how it was named)
 
+Periods where the teams changed ends are turned through 180 degrees first
+(pitch_ends.py, issue #63), so each team attacks the same way all match.
+
 Per player:
   - positions are smoothed with a ~0.5 s moving average inside each
     continuous run. A run breaks where tracking is lost for more than
@@ -30,6 +33,7 @@ import pandas as pd
 from _common import (load_calibration, load_meta, load_player_map, match_config, match_dir,
                      pitch_dims)
 from gap_status import read_detections
+from pitch_ends import flipped_ranges, orient
 
 TEAMS = ("team_a", "team_b")
 # m/s; the last band has no upper limit
@@ -200,9 +204,12 @@ def main():
     tracks = read_detections(match_dir(a.match_id, a.tmp_dir) / "tracks.parquet",  # #47 fill rows left out
                              ["frame", "track_id", "class", "pitch_x", "pitch_y"])
     tracks = tracks[tracks["class"] == "player"]
-    players = player_index(load_player_map(a.match_id, a.tmp_dir))
+    pm = load_player_map(a.match_id, a.tmp_dir)
+    players = player_index(pm)
     if not players:
         raise SystemExit("player_map.json has no players: run track_identities.py first")
+    L, W = pitch_dims(load_calibration(a.match_id, a.config_dir))
+    tracks = orient(tracks, flipped_ranges(tracks, pm, cfg, L), L, W)
     print(f"{'player':<24} {'dist m':>7} {'min':>5} {'cov':>5} {'top':>5} {'spr':>4}  bands walk/jog/run/high/sprint m")
     for p in players:
         r = runs(player_rows(tracks, p["track_ids"], start, end), fps, a.max_gap_s)
@@ -211,8 +218,7 @@ def main():
         label = f"{p['team'][-1].upper()} {p['number']} {p['name'] or ''}"
         print(f"{label:<24} {s['distance_m']:>7.0f} {s['tracked_min']:>5.1f} {s['coverage']:>5.0%} "
               f"{s['top_speed']:>5.1f} {s['sprints']:>4}  " + "/".join(f"{b[k]:.0f}" for k, *_ in BANDS))
-    calib = load_calibration(a.match_id, a.config_dir)
-    print("pitch", pitch_dims(calib))
+    print("pitch", (L, W))
 
 
 if __name__ == "__main__":

@@ -74,6 +74,7 @@ import pandas as pd
 from _common import (clock_label, load_calibration, load_meta, load_player_map, match_config, match_dir,
                      pitch_dims, reference_path, write_json)
 from detect_events import TEAMS, attacking_goal, control_spells, detect
+from pitch_ends import period_ranges
 
 GROUPS = {
     "set_pieces": ("goal_kick", "throw_in", "corner", "free_kick", "penalty"),
@@ -89,13 +90,6 @@ WINDOWS = {"goal_kick": (2, 8), "throw_in": (2, 6), "corner": (3, 10), "free_kic
 # --------------------------------------------------------------------------
 # periods / ends
 # --------------------------------------------------------------------------
-def period_ranges(cfg, lo, hi):
-    """[(start_frame, end_frame)] of the match's periods, in time order (else one range)."""
-    per = sorted((int(p["start_frame"]), int(p["end_frame"])) for p in (cfg.get("periods") or {}).values()
-                 if p.get("start_frame") is not None and p.get("end_frame") is not None)
-    return per or [(lo, hi)]
-
-
 def goals_by_period(tracks, pmap, L, periods):
     """[(start, end, {team: x of the goal it attacks})]: keepers' positions per period."""
     out = []

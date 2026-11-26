@@ -1,6 +1,8 @@
 """Players tab (issue #16): per-player full-match paths, heatmaps and stats.
 
-Wraps tools/player_paths.py. A match's tracks are loaded once and kept until
+Wraps tools/player_paths.py. Periods where the teams changed ends are turned
+through 180 degrees (tools/pitch_ends.py, issue #63), so a team attacks the
+same way all match and whole-match heatmaps don't smear across both ends. A match's tracks are loaded once and kept until
 tracks.parquet or player_map.json changes. That happens when "Apply to
 tracking" in the Lines tab re-runs track_identities.py with the identity
 anchors, so the Players tab always shows the corrected identities.
@@ -20,6 +22,7 @@ if str(TOOLS) not in sys.path:
 from _common import (clock_label, load_calibration, load_meta, load_player_map, match_config,  # noqa: E402
                      pitch_dims)
 from gap_status import read_detections  # noqa: E402
+from pitch_ends import flipped_ranges, orient  # noqa: E402
 from player_paths import attacking_x, heatmap, path, player_index, player_rows, runs, stats  # noqa: E402
 
 
@@ -46,7 +49,10 @@ class MatchPlayers:
         t = read_detections(tp, ["frame", "track_id", "class", "pitch_x", "pitch_y"])  # #47 fill rows left out
         t = t[t["class"] == "player"].drop(columns="class")
         ids = {tid for p in self.players for tid in p["track_ids"]}
-        self.tracks = t[t["track_id"].isin(ids)].reset_index(drop=True)
+        t = t[t["track_id"].isin(ids)].reset_index(drop=True)
+        # #63: periods where the teams changed ends are turned round, so each team attacks one way
+        self.flipped = flipped_ranges(t, pm, self.cfg, self.L)
+        self.tracks = orient(t, self.flipped, self.L, self.W)
         win = self.cfg.get("analysis_window") or {}
         self.start = int(win.get("start_frame", self.tracks["frame"].min()))
         self.end = int(win.get("end_frame", self.tracks["frame"].max()))
@@ -87,7 +93,7 @@ class MatchPlayers:
                 "start_clock": clock_label(self.start, self.cfg, self.fps),
                 "end_clock": clock_label(self.end, self.cfg, self.fps),
                 "teams": {t: self.team_names.get(t, t) for t in ("team_a", "team_b")},
-                "attacks_x": self.attacks, "players": rows,
+                "attacks_x": self.attacks, "flipped": [list(r) for r in self.flipped], "players": rows,
             }
         return self._summary
 
