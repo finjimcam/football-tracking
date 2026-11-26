@@ -10,7 +10,8 @@ config/<id>_clips_export.json (kept unless dropped), and writes
         clips.csv
 
 Each clip has a bar along the bottom: what it is, the team, the player (when
-known) and the match clock. Clips with no team (the detector couldn't tell)
+known) and the match clock. Lines and highlighted players drawn on a clip in
+the panel (config/<id>_clips_marks.json, clip_marks.py) are drawn in too. Clips with no team (the detector couldn't tell)
 go in with both teams. --group limits it to one heading.
 
     python tools/export_clips.py --match-id <id> --team team_b [--group set_pieces]
@@ -24,7 +25,9 @@ from pathlib import Path
 
 import cv2
 
-from _common import CONFIG_DIR, OUTPUTS_DIR, Progress, VideoWriter, clock_label, load_meta, match_config, match_dir
+import clip_marks as CM
+from _common import (CONFIG_DIR, OUTPUTS_DIR, Progress, VideoWriter, clock_label, load_calibration, load_meta,
+                     load_player_map, match_config, match_dir)
 
 GROUP_TITLES = {"set_pieces": "Set pieces", "chances": "Shots & key chances",
                 "final_third": "Passes into the final third"}
@@ -104,7 +107,37 @@ def bar_text(c, team_names, clock):
     if c["kind"] == "pass" and c.get("to_player_name"):
         who = f"{who or '?'} to {c['to_player_name']}"
     team = team_names.get(c.get("team"), "team unknown")
-    return "  |  ".join(x for x in (KIND_LABEL.get(c["kind"], c["kind"]), team, who, clock) if x)
+    what = KIND_LABEL.get(c["kind"], c["kind"])
+    if c.get("also"):
+        what += " (+ " + ", ".join(KIND_LABEL.get(k, k).lower() for k in c["also"]) + ")"
+    return "  |  ".join(x for x in (what, team, who, clock) if x)
+
+
+def marks_plan(match_id, clip, s, b, fps, tmp_dir, config_dir, cfg, marks, H_at, people):
+    """(per-frame marks, labels, colours) for one clip, or None when it has no marks."""
+    slots = marks.get(clip["id"])
+    if not slots:
+        return None
+    names, team_of = people
+    rows = CM.clip_rows(match_id, tmp_dir, config_dir, s, b, fps)
+    chain_list = CM.chains(rows, slots, s, b, fps, H_at)
+    return (CM.marks_by_frame(chain_list), CM.slot_labels(slots, names),
+            CM.slot_colors(slots, team_of, cfg.get("colors")))
+
+
+def people(match_id, tmp_dir):
+    """({track id: "7 Name"}, {track id: team})"""
+    pm = load_player_map(match_id, tmp_dir) or {"players": {}}
+    names, team_of = {}, {}
+    for p in pm.get("players", {}).values():
+        label = p.get("name") or (f"#{p['number']}" if p.get("number") is not None else None)
+        if p.get("name") and p.get("number") is not None:
+            label = f"{p['number']} {p['name']}"
+        for t in p.get("track_ids", []):
+            team_of[int(t)] = p.get("team")
+            if label:
+                names[int(t)] = label
+    return names, team_of
 
 
 def draw_bar(canvas, text, frac, color=(80, 200, 255)):
@@ -147,6 +180,16 @@ def main():
     work.mkdir(parents=True)
 
     names = d.get("teams", {})
+    marks = CM.load_marks(CM.marks_path(a.match_id, a.config_dir))
+    H_at, ppl = None, None
+    if any(marks.get(c["id"]) for c, *_ in items):
+        from cut_phase_clips import homography_lookup
+        try:
+            H_at = homography_lookup(load_calibration(a.match_id, a.config_dir))
+        except SystemExit:
+            H_at = None
+        ppl = people(a.match_id, a.tmp_dir)
+    scale = meta["width"] / 1920
     cap = cv2.VideoCapture(str(meta["video"]))
     prog = Progress(sum(b - s + 1 for _, s, b, _ in items), "exporting clips")
     done = 0
@@ -155,11 +198,14 @@ def main():
         dst = work / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         writer = VideoWriter(dst, fps, meta["width"], meta["height"], crf=a.crf)
+        mk = marks_plan(a.match_id, c, s, b, fps, a.tmp_dir, a.config_dir, cfg, marks, H_at, ppl) if ppl else None
         cap.set(cv2.CAP_PROP_POS_FRAMES, s)
         for f in range(s, b + 1):
             ok, frame = cap.read()
             if not ok:
                 break
+            if mk and mk[0].get(f):
+                CM.draw_marks(frame, mk[0][f], mk[1], mk[2], scale)
             draw_bar(frame, bar_text(c, names, clock_label(f, cfg, fps) or ""), (f - s) / max(b - s, 1))
             writer.write(frame)
             done += 1
@@ -168,6 +214,8 @@ def main():
         rows.append({"file": rel, "heading": GROUP_TITLES[c["group"]], "type": KIND_TITLES[c["kind"]],
                      "team": names.get(c.get("team"), ""), "clock": c.get("clock", ""), "frame": c["frame"],
                      "first_frame": s, "last_frame": b, "seconds": round((b - s + 1) / fps, 1),
+                     "also": "; ".join(KIND_LABEL.get(k, k) for k in c.get("also", [])),
+                     "marks": len(marks.get(c["id"], [])),
                      "player": c.get("player_name", ""), "to_player": c.get("to_player_name", ""),
                      "x": c.get("x", ""), "y": c.get("y", "")})
     cap.release()

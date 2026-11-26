@@ -20,6 +20,9 @@
     GET  /api/matches/{match_id}/clips?team=             detected clips by heading (issue #58)
     PUT  /api/matches/{match_id}/clips/{clip_id}/export  keep/drop + trim one clip
     PUT  /api/matches/{match_id}/clips/export            keep/drop a team's clips (optionally one heading / type)
+    GET  /api/matches/{match_id}/clips/{clip_id}         players per frame + the clip's lines / highlights
+    POST /api/matches/{match_id}/clips/{clip_id}/marks   tap a player: line / highlight / relink, or clear
+    GET  /api/matches/{match_id}/clips/{clip_id}/video.mp4   small preview video (made on first use)
     GET  /api/matches/{match_id}/lines/others?frame=     other detected players at a frame (Identify mode)
     GET  /api/matches/{match_id}/players                every player's full-match stats (issue #16)
     GET  /api/matches/{match_id}/players/{pid}          one player's path, heatmap and stats (?start=&end= frames)
@@ -98,6 +101,13 @@ class Identify(BaseModel):
 class ExportAll(BaseModel):
     team: str = "team_a"
     keep: bool
+
+
+class ClipMarks(BaseModel):
+    action: str
+    frame: int | None = None
+    tid: int | None = None
+    slots: list | None = None
 
 
 class ClipsExportMany(BaseModel):
@@ -325,6 +335,22 @@ def create_app(root, runner=None, busy_check=None, warm=False):
     @app.put("/api/matches/{match_id}/clips/export")
     def clips_export_many(match_id: str, req: ClipsExportMany):
         return _clips_call(match_id, Clips.set_export_many, req.team, req.keep, req.group, req.kind)
+
+    @app.get("/api/matches/{match_id}/clips/{clip_id}")
+    def clips_one(match_id: str, clip_id: str):
+        return _clips_call(match_id, Clips.clip, clip_id)
+
+    @app.post("/api/matches/{match_id}/clips/{clip_id}/marks")
+    def clips_marks(match_id: str, clip_id: str, req: ClipMarks):
+        return _clips_call(match_id, Clips.edit, clip_id, req.action, req.frame, req.tid, req.slots)
+
+    @app.get("/api/matches/{match_id}/clips/{clip_id}/video.mp4")
+    def clips_video(match_id: str, clip_id: str, prefetch: str = ""):
+        path = _clips_call(match_id, Clips.preview, clip_id)
+        nxt = [c for c in prefetch.split(",") if c][:2]
+        if nxt:
+            Clips(root, match_id).prefetch(nxt)
+        return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "private, max-age=3600"})
 
     @app.put("/api/matches/{match_id}/clips/{clip_id}/export")
     def clips_export(match_id: str, clip_id: str, req: ExportEdit):
