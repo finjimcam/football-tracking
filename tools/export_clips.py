@@ -1,7 +1,8 @@
 """Export one team's kept clips from the Lines tab's Clips panel as a zip of MP4s (issue #58).
 
 Reads .tmp/<id>/clips.json (detect_clips.py) and the keep / trim choices in
-config/<id>_clips_export.json (kept unless dropped), and writes
+config/<id>_clips_export.json (kept unless dropped; "add_f" frames added to the
+end with the panel's "+5 s"), and writes
 
     outputs/videos/<id>_<team>_clips.zip
         Set pieces/Corners/03_corner_23m41s.mp4
@@ -67,6 +68,20 @@ def save_export(path, entries):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"clips": dict(sorted(entries.items()))}, f, indent=1)
     tmp.replace(path)
+
+
+def extended(clips, exp, last_frame=None):
+    """The clips with their end moved on by the time added in the panel ("+5 s": the export
+    entry's "add_f" frames), at most to last_frame. An extended clip keeps its detected end in
+    "detected_end" and the frames added in "added_f"."""
+    out = []
+    for c in clips:
+        add = int((exp.get(c["id"]) or {}).get("add_f") or 0)
+        if add > 0:
+            e = c["end"] + add if last_frame is None else min(c["end"] + add, int(last_frame))
+            c = dict(c, end=e, detected_end=c["end"], added_f=e - c["end"])
+        out.append(c)
+    return out
 
 
 def export_range(clip, entry):
@@ -167,9 +182,11 @@ def main():
         raise SystemExit(f"{cp} not found: run detect_clips.py first")
     d = load_clips(cp)
     meta = load_meta(a.match_id, a.tmp_dir)
+    exp = load_export(export_path(a.match_id, a.config_dir))
+    d["clips"] = extended(d["clips"], exp, meta.get("frame_count", 0) - 1 if meta.get("frame_count") else None)
     cfg = match_config(a.match_id, a.tmp_dir, a.config_dir)
     fps = float(meta["fps"])
-    items = plan(d["clips"], load_export(export_path(a.match_id, a.config_dir)), a.team, a.group)
+    items = plan(d["clips"], exp, a.team, a.group)
     if not items:
         raise SystemExit("No kept clips for this team: tick some in the Clips panel")
     out = Path(a.output) if a.output else zip_path(a.match_id, a.team, a.group, a.outputs_dir)

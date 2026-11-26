@@ -361,3 +361,31 @@ def test_clip_marks_api_lines_highlights_and_preview(client, root):
     assert r.returncode == 0, r.stderr
     csv = zipfile.ZipFile(root / "outputs" / "videos" / f"{MID}_team_a_clips.zip").read("clips.csv").decode()
     assert csv.splitlines()[0].split(",")[9:11] == ["also", "marks"] and ",2," in csv.splitlines()[1]
+
+
+def test_plus_5_s_extends_the_clip_past_its_detected_end(client, root):
+    base = f"/api/matches/{MID}/clips/corner-100/export"
+    add = int(round(5 * FPS))
+    r = client.put(base, json={"add_s": 5}).json()
+    assert (r["out"], r["end"], r["added_f"]) == (160 + add, 160 + add, add)
+    r = client.put(base, json={"add_s": 5}).json()  # again: +10 s
+    assert r["end"] == 160 + 2 * add
+    s = client.get(f"/api/matches/{MID}/clips", params={"team": "team_a"}).json()
+    c = s["groups"][0]["kinds"][2]["clips"][0]
+    assert c["end"] == 160 + 2 * add and c["detected_end"] == 160 and c["export"]["out"] == 160 + 2 * add
+    # a trimmed end moves on 5 s, inside the clip: nothing more is added
+    client.put(base, json={"trim_out": 120})
+    r = client.put(base, json={"add_s": 5}).json()
+    assert (r["out"], r["added_f"]) == (120 + add, 2 * add)
+    # "Full clip" takes the added time off too
+    r = client.put(base, json={"reset_trim": True}).json()
+    assert (r["out"], r["end"], r["added_f"]) == (160, 160, 0)
+    assert client.put(base, json={"add_s": -5}).status_code == 409
+    # the export runs to the new end
+    client.put(base, json={"add_s": 5})
+    client.put(f"/api/matches/{MID}/clips/shot-300/export", json={"keep": False})
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "export_clips.py"), "--match-id", MID, "--team", "team_a"],
+                       cwd=root, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    row = zipfile.ZipFile(root / "outputs" / "videos" / f"{MID}_team_a_clips.zip").read("clips.csv").decode().splitlines()[1]
+    assert f",60,{160 + add}," in row
