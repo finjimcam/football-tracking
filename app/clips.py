@@ -21,8 +21,8 @@ import clip_marks as CM  # noqa: E402
 from _common import load_calibration, load_meta, match_config  # noqa: E402
 from cut_phase_clips import homography_lookup  # noqa: E402
 from select_shape_players import relink_target  # noqa: E402
-from export_clips import (GROUP_TITLES, KIND_TITLES, export_path, export_range, load_clips,  # noqa: E402
-                          load_export, people, save_export, zip_path)
+from export_clips import (GROUP_TITLES, KIND_TITLES, export_path, export_range, extended,  # noqa: E402
+                          load_clips, load_export, people, save_export, zip_path)
 
 TEAMS = ("team_a", "team_b")
 PREVIEW_CAP_MB = 400  # clip preview videos kept in .tmp/<id>/clip_previews (oldest go first)
@@ -65,14 +65,24 @@ class Clips:
         if not self.path.exists():
             raise ClipsError("No clips yet: run 'Detect clips' on the match page (it needs Compute possession first)")
         try:
-            return load_clips(self.path)
+            d = load_clips(self.path)
         except (OSError, ValueError) as e:
             raise ClipsError(f"Can't read {self.path.name}: {e}") from e
+        d["clips"] = extended(d["clips"], load_export(self.exp_path), self._last_frame())
+        return d
+
+    def _last_frame(self):
+        try:
+            n = load_meta(self.match_id, self.tmp_dir).get("frame_count")
+        except (OSError, ValueError, SystemExit):
+            return None
+        return int(n) - 1 if n else None
 
     @staticmethod
     def _export_json(clip, entry):
         keep, a, b = export_range(clip, entry)
-        return {"keep": keep, "in": a, "out": b, "trimmed": a != clip["start"] or b != clip["end"]}
+        return {"keep": keep, "in": a, "out": b, "trimmed": a != clip["start"] or b != clip["end"],
+                "end": clip["end"], "added_f": clip.get("added_f", 0)}
 
     def summary(self, team):
         if team not in TEAMS:
@@ -109,7 +119,10 @@ class Clips:
                 return c
         raise ClipsError(f"No clip {clip_id}")
 
-    def set_export(self, clip_id, keep=None, trim_in=None, trim_out=None, reset_trim=False):
+    def set_export(self, clip_id, keep=None, trim_in=None, trim_out=None, reset_trim=False, add_s=None):
+        """Keep / drop, trim, or add_s seconds on to the end of the exported clip (past the
+        detected end if need be: the clip itself is extended). reset_trim also takes the added
+        time off."""
         c = self._clip(clip_id)
         with self.lock:
             exp = load_export(self.exp_path)
@@ -118,6 +131,21 @@ class Clips:
                 e["keep"] = bool(keep)
             if reset_trim:
                 e["in"] = e["out"] = None
+                e.pop("add_f", None)
+                c = dict(c, end=c.get("detected_end", c["end"]), added_f=0)
+            if add_s:
+                if add_s < 0:
+                    raise ClipsError("Only time added to the end: use End here ] to cut it shorter")
+                detected = c.get("detected_end", c["end"])
+                last = self._last_frame()
+                target = export_range(c, e)[2] + int(round(float(add_s) * self._fps()))
+                if last is not None:
+                    target = min(target, last)
+                if target > c["end"]:
+                    e["add_f"] = target - detected
+                    c = dict(c, end=target, detected_end=detected, added_f=target - detected)
+                if e.get("out") is not None:
+                    e["out"] = target
             if trim_in is not None:
                 e["in"] = min(max(int(trim_in), c["start"]), c["end"])
             if trim_out is not None:

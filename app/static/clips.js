@@ -5,7 +5,7 @@
 
 const KEYS_HELP = [
   ['k', 'play / pause'], ['a / d', '−/+ 0.5 s'], ['A / D', '−/+ 2 s'], [', / .', '−/+ 1 frame'],
-  ['[ / ]', 'start / end the clip here'], ['e', 'keep / drop this clip'], ['m', 'drop this clip + next'], ['n / p', 'next / previous clip'],
+  ['[ / ]', 'start / end the clip here'], ['+', 'add 5 s to the end'], ['e', 'keep / drop this clip'], ['m', 'drop this clip + next'], ['n / p', 'next / previous clip'],
   ['w / l / h', 'watch / lines / highlight mode (tap players to draw)'],
 ];
 const HOW = {
@@ -85,7 +85,8 @@ export async function viewClips(view, matchId, match, team, params, ui) {
     h('label', { for: 'clip-keep', style: 'display:inline-flex;align-items:center;gap:6px;font-size:13px' }, keepBox, 'Keep this clip'),
     btn('Start here [', 'Start the exported clip at this frame ([)', () => setExport(st.clip.id, { trim_in: st.cur })),
     btn('End here ]', 'End the exported clip at this frame (])', () => setExport(st.clip.id, { trim_out: st.cur })),
-    btn('Full clip', 'Undo the trim', () => setExport(st.clip.id, { reset_trim: true })),
+    btn('+5 s', 'Add 5 seconds to the end of the clip (+)', () => setExport(st.clip.id, { add_s: 5 })),
+    btn('Full clip', 'Undo the trim and any added time', () => setExport(st.clip.id, { reset_trim: true })),
     h('div', { class: 'spacer' }), exportInfo);
   const msg = h('div', { class: 'note', role: 'status', 'aria-live': 'polite', style: 'min-height:18px' });
   const MODE_HELP = {
@@ -206,10 +207,12 @@ export async function viewClips(view, matchId, match, team, params, ui) {
     try {
       const r = await api(`/matches/${enc}/clips/${encodeURIComponent(id)}/export`, { method: 'PUT', body: { team, ...body } });
       const c = all().find((q) => q.id === id);
-      if (c) c.export = r;
+      const grew = c && r.end != null && r.end !== c.end;
+      if (c) { c.export = r; if (r.end != null) { c.end = r.end; c.added_f = r.added_f; } }
       if (st.clip && st.clip.id === id) st.clip.export = r;
       drawList();
       draw();
+      if (grew && st.clip && st.clip.id === id) reloadVideo();  // the clip's preview video is longer / shorter now
     } catch (e) { toast(e.message, true); }
   }
   const curEx = () => (st.clip ? st.clip.export : { in: 0, out: 0 });
@@ -243,10 +246,26 @@ export async function viewClips(view, matchId, match, team, params, ui) {
     const clips = all();
     const i = clips.findIndex((q) => q.id === id);
     const nxt = clips.slice(i + 1, i + 3).map((q) => encodeURIComponent(q.id)).join(',');
-    video.src = `/api/matches/${enc}/clips/${encodeURIComponent(id)}/video.mp4?prefetch=${nxt}`;
+    video.src = `/api/matches/${enc}/clips/${encodeURIComponent(id)}/video.mp4?end=${c.end}&prefetch=${nxt}`;  // end: a new URL once time is added
     sub.textContent = 'preparing video…';
     drawStrip();
     api(`/matches/${enc}/clips/${encodeURIComponent(id)}`).then((d) => {
+      if (seq !== loadSeq) return;
+      st.detail = d;
+      drawOverlay();
+    }).catch((e) => toast(e.message, true));
+  }
+  function reloadVideo() {
+    // after "+5 s": play on from 2 s before the old end, over the time just added
+    const c = st.clip, seq = ++loadSeq;
+    stopPlay();
+    st.cur = Math.max(c.export.in, c.export.out - Math.round(7 * FPS));
+    video.hidden = true;
+    img.hidden = false;
+    img.src = `/api/matches/${enc}/frame/${st.cur}.jpg?w=${IMG_W}`;
+    video.src = `/api/matches/${enc}/clips/${encodeURIComponent(c.id)}/video.mp4?end=${c.end}`;
+    sub.textContent = 'preparing video…';
+    api(`/matches/${enc}/clips/${encodeURIComponent(c.id)}`).then((d) => {
       if (seq !== loadSeq) return;
       st.detail = d;
       drawOverlay();
@@ -301,7 +320,7 @@ export async function viewClips(view, matchId, match, team, params, ui) {
     sub.textContent = `frame ${st.cur} · ${((st.cur - c.start) / FPS).toFixed(1)} s`;
     const ex = c.export;
     keepBox.checked = ex.keep;
-    exportInfo.textContent = ex.keep ? `${((ex.out - ex.in + 1) / FPS).toFixed(1)} s${ex.trimmed ? ' · trimmed' : ''}` : 'dropped';
+    exportInfo.textContent = ex.keep ? `${((ex.out - ex.in + 1) / FPS).toFixed(1)} s${ex.added_f ? ` · +${Math.round(ex.added_f / FPS)} s added` : ''}${ex.trimmed ? ' · trimmed' : ''}` : 'dropped';
     drawStrip();
     drawOverlay();
   }
@@ -447,7 +466,7 @@ export async function viewClips(view, matchId, match, team, params, ui) {
     const acts = {
       k: () => togglePlay(), a: () => step(-FPS / 2), d: () => step(FPS / 2), A: () => step(-2 * FPS), D: () => step(2 * FPS),
       ',': () => step(-1), '.': () => step(1), '[': () => setExport(st.clip.id, { trim_in: st.cur }),
-      ']': () => setExport(st.clip.id, { trim_out: st.cur }), e: () => setExport(st.clip.id, { keep: !st.clip.export.keep }),
+      ']': () => setExport(st.clip.id, { trim_out: st.cur }), '+': () => setExport(st.clip.id, { add_s: 5 }), '=': () => setExport(st.clip.id, { add_s: 5 }), e: () => setExport(st.clip.id, { keep: !st.clip.export.keep }),
       m: async () => { const i = idx(); await setExport(st.clip.id, { keep: false }); gotoIndex(i + 1); },
       n: () => gotoIndex(idx() + 1), p: () => gotoIndex(idx() - 1),
       w: () => setMode('watch'), l: () => setMode('line'), h: () => setMode('highlight'),

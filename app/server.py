@@ -18,7 +18,7 @@
     POST /api/matches/{match_id}/lines/identify         anchor "this box is No. N" (issue #16)
     DELETE /api/matches/{match_id}/lines/identify/{id}  remove an anchor
     GET  /api/matches/{match_id}/clips?team=             detected clips by heading (issue #58)
-    PUT  /api/matches/{match_id}/clips/{clip_id}/export  keep/drop + trim one clip
+    PUT  /api/matches/{match_id}/clips/{clip_id}/export  keep/drop, trim, add_s (+5 s) one clip
     PUT  /api/matches/{match_id}/clips/export            keep/drop a team's clips (optionally one heading / type)
     GET  /api/matches/{match_id}/clips/{clip_id}         players per frame + the clip's lines / highlights
     POST /api/matches/{match_id}/clips/{clip_id}/marks   tap a player: line / highlight / relink, or clear
@@ -89,6 +89,7 @@ class ExportEdit(BaseModel):
     trim_in: int | None = None
     trim_out: int | None = None
     reset_trim: bool = False
+    add_s: float | None = None
 
 
 class Identify(BaseModel):
@@ -354,7 +355,8 @@ def create_app(root, runner=None, busy_check=None, warm=False):
 
     @app.put("/api/matches/{match_id}/clips/{clip_id}/export")
     def clips_export(match_id: str, clip_id: str, req: ExportEdit):
-        return _clips_call(match_id, Clips.set_export, clip_id, req.keep, req.trim_in, req.trim_out, req.reset_trim)
+        return _clips_call(match_id, Clips.set_export, clip_id, req.keep, req.trim_in, req.trim_out, req.reset_trim,
+                           req.add_s)
 
     @app.put("/api/matches/{match_id}/lines/{start}/export")
     def lines_export(match_id: str, start: int, req: ExportEdit):
