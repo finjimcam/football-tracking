@@ -52,6 +52,7 @@ def test_npz_slice_and_merge_replace_frames():
 
     sl = P.npz_slice(Npz(base), 2, 3)
     assert sl["frames"].tolist() == [2, 3] and sl["K"].shape == (3, 3)
+    assert P.npz_slice(base, 2, 3)["frames"].tolist() == [2, 3]  # a plain dict, as stage_period passes
 
 
 def team(frames, spots, gk_x, gk_id=1):

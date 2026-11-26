@@ -150,7 +150,7 @@ def write_period_meta(match_id, tmp_dir, ws, start, end):
 def npz_slice(npz, start, end):
     f = npz["frames"]
     m = (f >= start) & (f <= end)
-    return {k: npz[k][m] if npz[k].shape[:1] == f.shape else npz[k] for k in npz.files}
+    return {k: npz[k][m] if npz[k].shape[:1] == f.shape else npz[k] for k in npz}
 
 
 def npz_merge(base, part):
