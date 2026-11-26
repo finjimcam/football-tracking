@@ -345,11 +345,13 @@ def main():
                         help="Views sampled across the window to pin down the camera position (0 = skip)")
     parser.add_argument("--check-frames", default="",
                         help="Comma-separated frames to save overlay JPEGs for (.tmp/<id>/calib_check/)")
-    parser.add_argument("--search-tilt", default="12,36",
+    parser.add_argument("--search-tilt", default=None,
                         help="MIN,MAX tilt in degrees for the global view search (narrow it around the seed "
-                             "keyframes when the search keeps locking onto steep zoomed-out false fits)")
-    parser.add_argument("--search-focal", default="800,3200",
-                        help="MIN,MAX focal length in px for the global view search")
+                             "keyframes when the search keeps locking onto steep zoomed-out false fits). "
+                             "Default: the calibration file's \"search\" (saved by the last run), else 12,36")
+    parser.add_argument("--search-focal", default=None,
+                        help="MIN,MAX focal length in px for the global view search. Default: the calibration "
+                             "file's \"search\", else 800,3200")
     parser.add_argument("--wait-min", type=float, default=30.0,
                         help="How long to wait for a detection chunk that detect_frames.py hasn't written yet")
     parser.add_argument("--config-dir", default="config")
@@ -365,14 +367,18 @@ def main():
     end = args.end_frame if args.end_frame is not None else int(window.get("end_frame", meta["frame_count"] - 1))
     if args.max_frames:
         end = min(end, start + args.max_frames - 1)
-    tilt_rng = tuple(float(v) for v in args.search_tilt.split(","))
-    f_rng = tuple(float(v) for v in args.search_focal.split(","))
-
     def search(dt, valid):
         return search_view(dt, valid, cam, model_coarse, model, tilt_deg=tilt_rng, f_px=f_rng)
 
     calib_file = Path(args.calibration) if args.calibration else calibration_path(args.match_id, args.config_dir)
     calib = read_json(calib_file)
+    saved = calib.get("search") or {}
+    tilt_rng = (tuple(float(v) for v in args.search_tilt.split(",")) if args.search_tilt
+                else tuple(saved.get("tilt_deg", (12.0, 36.0))))
+    f_rng = (tuple(float(v) for v in args.search_focal.split(",")) if args.search_focal
+             else tuple(saved.get("focal_px", (800.0, 3200.0))))
+    print(f"  view search: tilt {tilt_rng[0]:g}-{tilt_rng[1]:g} deg, focal {f_rng[0]:g}-{f_rng[1]:g} px"
+          + ("" if args.search_tilt or args.search_focal or not saved else " (from the calibration file)"))
     L, W = float(calib.get("pitch_length", 105.0)), float(calib.get("pitch_width", 68.0))
     model = sample_polylines(pitch_polylines(L, W), step=0.75)
     model_coarse = sample_polylines(pitch_polylines(L, W), step=1.5)
@@ -514,6 +520,7 @@ def main():
         "principal_point": list(pp),
     }
     calib["motion_summary"] = summary
+    calib["search"] = {"tilt_deg": list(tilt_rng), "focal_px": list(f_rng)}  # the next run (e.g. the other half) reuses them
     write_json(calib_file, calib)
     print(f"Wrote {npz_path} ({n} frames) and updated {calib_file} (mode: dynamic)")
     print(f"  snapped {counts[0]}, flow-only {counts[1]}, re-acquired {counts[2]}, LOST {counts[3]}; "

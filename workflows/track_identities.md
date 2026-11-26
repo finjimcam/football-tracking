@@ -106,6 +106,9 @@ python tools/cut_phase_clips.py --match-id <id> --team team_a --shape-selection 
   (Korea v Czechia, seed tilt 20.7 deg / f 2866 px: `14,28` and `1400,5000`
   took the hit rate from 1/16 to ~2/3; the misses are midfield views with
   only the halfway line and circle, which is harmless).
+  The ranges used are saved in the calibration file (`"search"`), and later
+  runs use them when the flags are left out. Without them, Korea v Czechia's
+  second half locked onto the advertising boards (6% of frames snapped).
 - **Identities** (`track_identities.py`): duplicate-box suppression ->
   pitch-space tracklets -> a self-trained team colour model (gradient-boosted
   on pure tracklets) relabels flickering kits -> re-track -> cut tracklets at
@@ -494,9 +497,13 @@ so don't start the window after it because the camera is zoomed out. On
 Korea v Czechia (frames 20-269, players ~30 px):
 - detect those frames at `--imgsz 1920` (1280 found ~14 of 25 people on the
   pitch, 1920 found ~21);
-- `calibrate_auto.py` locked onto the stands there; chaining frame-to-frame
-  image homographies (SIFT, players masked, RANSAC) back from the first
-  calibrated tactical frame worked (fixed camera: pan/tilt/zoom only);
+- `calibrate_auto.py` locked onto the stands there. Chain image homographies
+  back from the first calibrated tactical frame instead (fixed camera:
+  pan/tilt/zoom only) with `tools/chain_homographies.py --npz <npz>
+  --start-frame <kick-off> --anchor-frame <first snapped frame>`. It uses SIFT
+  with players and static overlays masked, RANSAC, and steps the reference
+  frame back only when the match weakens. On the first half it agreed with
+  the earlier hand-run chaining to a median of 0.64 m;
 - `track_identities.py` treats frames whose median box is < 0.65 x the
   match's as wide view and starts tracklets from conf 0.15 there (else 0.35).
 
@@ -613,3 +620,31 @@ Local only (`.gitignore`: footage and anything cut from it):
 - City out of possession: 55 phases, 17.8 min (20.0 min compilation).
 - Ball tracking: drops at goals (ball in the net / goal mouth not detected,
   a false ball elsewhere wins) - check goal moments in the tracking video.
+
+## Whole match: more than one period (substitutions)
+`track_identities.py` assumes the same 11 v 11 for its whole window and reads
+attacking directions from the keepers, so a match is tracked one period at a
+time and joined with `tools/track_periods.py` (issue #56).
+1. In `config/<id>_match.json` give each period `start_frame` / `end_frame`,
+   plus `kickoff_frame` and `clock_start_s` (2700 for the second half). Put
+   the substitutions in `config/<id>_reference.json`:
+   `{"team", "minute", "off": {"number", "name"}, "on": {"number", "name"}}`,
+   with an optional `"frame"` once checked on video (without one, the swap
+   is at the middle of the minute).
+2. Per new period, in its workspace `.tmp/<id>/periods/h<n>/`:
+   - `detect_frames.py --tmp-dir <ws> --start-frame/--end-frame`, then
+     rename `detections.parquet` to `det_<start>.parquet` (wide kick-off
+     frames at `--imgsz 1920`);
+   - `calibrate_auto.py --tmp-dir <ws> --calibration <ws>/config/<id>_calibration.json`
+     (the search ranges come from the calibration file);
+   - `chain_homographies.py` for the wide kick-off frames.
+3. `track_periods.py --match-id <id>` runs four stages:
+   - **merge** folds the period files into the match's detections and npz;
+   - **identities** and **ball** run per period;
+   - **combine** joins the halves: second-half players take the first-half
+     identity whose place in the team shape is closest (Hungarian matching,
+     before that team's first substitution; names from that half's
+     calibration clips win), and substitutes get new ids from 12 / 112;
+     the Tracking tab's fixes are rebased.
+4. Then run possession, physical and positions as usual.
+
