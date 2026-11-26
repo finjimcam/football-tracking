@@ -40,6 +40,13 @@ Passes into the final third, box entries and shots run on until the move is
 over: the other team has had the ball for a second, or play stops (at most
 25 s). Entries into the final third in one move are one clip.
 
+No moment is shown twice. Where clips of the same team overlap, one is kept,
+in this order: goals, set pieces, shots, box entries, passes into the final
+third. A corner that leads to a shot stays a corner (and runs on to show the
+shot); a box entry whose move ends in a shot is only a shot. The kept clip
+lists what it also shows ("also": ["shot"]) and keeps the dropped moments,
+published player and outcome included ("merged").
+
 Published events: when config/<id>_reference.json has "match_events"
 (minute-stamped shots, goals, free kicks, corners... from ESPN / BBC / FotMob),
 each one is tied to a detected clip of that team inside its minute (+-30 s),
@@ -619,6 +626,50 @@ def build(items, fps, lo, hi, cfg, name_of, tl=None, stop_starts=()):
     return clips
 
 
+def _priority(c):
+    if (c.get("published") or {}).get("type") == "goal":
+        return 0
+    return {"set_pieces": 1, "chances": 2 if c["kind"] == "shot" else 3, "final_third": 4}[c["group"]]
+
+
+def _repeats(b, k, overlap_frac):
+    if not (k["team"] == b["team"] or k["team"] is None or b["team"] is None):
+        return False
+    if k["start"] <= b["frame"] <= k["end"] or b["start"] <= k["frame"] <= b["end"]:
+        return True
+    shared = min(b["end"], k["end"]) - max(b["start"], k["start"]) + 1
+    return shared >= overlap_frac * (b["end"] - b["start"] + 1)
+
+
+def dedupe(clips, fps, extend_cap_s=30.0, lead_cap_s=15.0, overlap_frac=0.5):
+    """Drop clips that repeat a moment a better clip already shows (_priority order: goals, set
+    pieces, shots, box entries, final-third passes). Clip b repeats kept clip k when they are the
+    same team's (or either team is unknown) and b's key frame is inside k, k's key frame is inside
+    b, or at least overlap_frac of b is in k. k is stretched to cover b (at most extend_cap_s after
+    / lead_cap_s before its own key frame); k["also"] names b's kind and k["merged"] keeps b's
+    moment (id, frame, clock, player, published event)."""
+    kept = []
+    for b in sorted(clips, key=lambda c: (_priority(c), c["frame"])):
+        k = next((k for k in kept if _repeats(b, k, overlap_frac)), None)
+        if k is None:
+            kept.append(b)
+            continue
+        if b["frame"] > k["frame"]:
+            k["end"] = max(k["end"], min(b["end"], k["frame"] + int(extend_cap_s * fps)))
+        else:
+            k["start"] = min(k["start"], max(b["start"], k["frame"] - int(lead_cap_s * fps)))
+        also = k.setdefault("also", [])
+        for kind in [b["kind"]] + b.get("also", []):
+            if kind not in also and (kind != k["kind"] or kind == "shot"):  # a rebound is a 2nd shot
+                also.append(kind)
+        merged = k.setdefault("merged", [])
+        for m in [b] + b.get("merged", []):
+            merged.append({x: m[x] for x in ("id", "kind", "frame", "clock", "player_name", "published") if m.get(x)})
+        merged.sort(key=lambda m: m["frame"])
+    kept.sort(key=lambda c: c["frame"])
+    return kept
+
+
 def wide_view_lookup(tracks, frac=0.65):
     """frame -> True in zoomed-out wide views (median player box under frac x the match's)."""
     h = (tracks["y2"] - tracks["y1"]).groupby(tracks["frame"]).median()
@@ -708,6 +759,9 @@ def main():
               f"{pub_report['added']} added at an estimated moment, {pub_report['skipped']} skipped", flush=True)
     tl = (timeline["frame"].to_numpy(), timeline["state"].to_numpy())
     clips = build(items + ft, fps, lo, hi, cfg, name_of, tl, [s for s, _ in stops])
+    n_built = len(clips)
+    clips = dedupe(clips, fps)
+    print(f"  {n_built - len(clips)} clip(s) dropped as repeats of a set piece / shot / box entry", flush=True)
     counts = {t: {k: sum(1 for c in clips if c["team"] == t and c["kind"] == k) for k in GROUP_OF} for t in TEAMS}
     counts["unknown_team"] = sum(1 for c in clips if c["team"] not in TEAMS)
     out = {"match_id": a.match_id, "fps": fps, "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),

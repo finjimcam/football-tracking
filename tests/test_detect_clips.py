@@ -305,3 +305,59 @@ def test_final_third_entries_in_one_move_are_one_clip():
     clips = D.build(items, fps, 0, 2999, {}, {}, (frames, state), [])
     assert [(c["frame"], c.get("entries", 1)) for c in clips] == [(200, 2), (1500, 1)]
     assert clips[0]["end"] == 1000 + 25  # ran on until team_b won it
+
+
+def _c(kind, frame, start, end, team="team_a", **kw):
+    return dict({"id": f"{kind}-{frame}", "group": D.GROUP_OF[kind], "kind": kind, "team": team,
+                 "frame": frame, "start": start, "end": end}, **kw)
+
+
+def test_no_moment_is_shown_twice():
+    fps = 25.0
+    clips = [_c("corner", 1000, 925, 1250),
+             _c("shot", 1100, 900, 1300),           # from the corner: the corner keeps it, runs on to 1300
+             _c("box_entry", 3000, 2850, 3600),
+             _c("shot", 3400, 3200, 3500),          # the box entry's move ends in this shot: only the shot
+             _c("pass", 2900, 2800, 3300),          # the pass into the final third that started it
+             _c("box_entry", 3100, 3000, 3300, team="team_b"),  # other team: kept
+             _c("throw_in", 5000, 4950, 5150),
+             _c("shot", 5100, 4900, 5200, published={"type": "goal"})]  # a goal beats the set piece
+    kept = D.dedupe(clips, fps)
+    by_id = {c["id"]: c for c in kept}
+    assert sorted(by_id) == ["box_entry-3100", "corner-1000", "shot-3400", "shot-5100"]
+    assert by_id["corner-1000"]["also"] == ["shot"] and by_id["corner-1000"]["end"] == 1300
+    assert by_id["shot-3400"]["also"] == ["box_entry", "pass"]
+    assert by_id["shot-3400"]["start"] == 3400 - 15 * 25  # lead capped at 15 s
+    assert by_id["shot-5100"]["also"] == ["throw_in"]
+    assert [m["id"] for m in by_id["shot-3400"]["merged"]] == ["pass-2900", "box_entry-3000"]
+    # a rebound in the same move: one clip, both published shots kept
+    kept = D.dedupe([_c("shot", 100, 0, 300, published={"player": "A"}),
+                     _c("shot", 150, 50, 350, published={"player": "B"})], fps)
+    assert len(kept) == 1 and kept[0]["also"] == ["shot"] and kept[0]["merged"][0]["published"] == {"player": "B"}
+
+
+def test_clip_marks_api_lines_highlights_and_preview(client, root):
+    import export_clips as X2  # noqa: F401 - imported by the app
+    base = f"/api/matches/{MID}/clips/corner-100"
+    d = client.get(base).json()
+    assert d["clip"]["id"] == "corner-100" and d["chains"] == []
+    f = next(int(k) for k, v in sorted(d["rows"].items(), key=lambda kv: int(kv[0])) if len(v) >= 2)
+    t1, t2 = d["rows"][str(f)][0][0], d["rows"][str(f)][1][0]
+    r = client.post(f"{base}/marks", json={"action": "line", "frame": f, "tid": t1}).json()
+    r = client.post(f"{base}/marks", json={"action": "line", "frame": f, "tid": t2}).json()
+    assert [s["line"] for s in r["slots"]] == ["back", "back"] and len(r["chains"]) == 2
+    r = client.post(f"{base}/marks", json={"action": "line", "frame": f, "tid": t2}).json()
+    assert [s["line"] for s in r["slots"]] == ["back", "mid"]  # second tap: midfield line
+    r = client.post(f"{base}/marks", json={"action": "highlight", "frame": f, "tid": t2}).json()
+    assert [s["line"] for s in r["slots"]] == ["back", "hl"]
+    assert client.post(f"{base}/marks", json={"action": "line", "frame": 5000, "tid": t1}).status_code == 409
+    s = client.get(f"/api/matches/{MID}/clips", params={"team": "team_a"}).json()
+    assert s["groups"][0]["kinds"][2]["clips"][0]["n_marks"] == 2
+    v = client.get(f"{base}/video.mp4")
+    assert v.status_code == 200 and v.headers["content-type"] == "video/mp4" and v.content[4:8] == b"ftyp"
+    # the export draws them in
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "export_clips.py"), "--match-id", MID, "--team", "team_a"],
+                       cwd=root, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    csv = zipfile.ZipFile(root / "outputs" / "videos" / f"{MID}_team_a_clips.zip").read("clips.csv").decode()
+    assert csv.splitlines()[0].split(",")[9:11] == ["also", "marks"] and ",2," in csv.splitlines()[1]
