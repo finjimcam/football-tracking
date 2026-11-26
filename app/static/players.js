@@ -208,7 +208,7 @@ export async function viewPlayers(view, parts, params, ui) {
     const ax = L / 2 + (right ? 8 : -8);
     pitch.append(svg('path', { d: `M ${L / 2 - (right ? 8 : -8)} ${W + 2} L ${ax} ${W + 2} M ${ax} ${W + 2} l ${right ? -1.5 : 1.5} -1 M ${ax} ${W + 2} l ${right ? -1.5 : 1.5} 1`, class: 'pl-arrow' }));
     const t = svg('text', { x: L / 2, y: W + 3.6, class: 'pl-arrow-label' });
-    t.textContent = 'attacking';
+    t.textContent = sum.flipped && sum.flipped.length ? 'attacking (all match: ends after half time turned round)' : 'attacking';
     pitch.append(t);
     pitch.setAttribute('aria-label', `${d.player.name || d.player.id}: ${st.show === 'path' ? 'path' : st.show === 'heatmap' ? 'heatmap' : 'heatmap and path'} on the pitch`);
   }
