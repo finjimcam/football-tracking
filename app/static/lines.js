@@ -12,7 +12,7 @@ const KEYS_HELP = [
   ['a / d', '−/+ 0.5 s'], ['A / D', '−/+ 2 s'], [', / .', '−/+ 1 frame'], ['k', 'play / pause'],
   ['Enter', 'save + next phase'], ['s', 'skip phase (no lines)'], ['r', 'reset to auto guess here'],
   ['c', 'clear picks'], ['p', 'previous phase'],
-  ['[ / ]', 'clip export: start / end the clip here'], ['e / m', 'clip export: keep / drop this phase'],
+  ['[ / ]', 'clip export: start / end the clip here'], ['e', 'clip export: keep / drop this phase'], ['m', 'clip export: drop this phase + next'],
   ['i / Identify mode', 'click a player, or drag a box round an unidentified one, then pick who it is'],
   ['Shift-click / long-press', 'change who a player is without leaving line picking'],
 ];
@@ -787,7 +787,8 @@ export async function viewLines(view, parts, params, ui) {
     }
     else if (k === '[') setExport(st.phase.start, { trim_in: st.cur });
     else if (k === ']') setExport(st.phase.start, { trim_out: st.cur });
-    else if (k === 'e' || k === 'm') { const ex = curExport(); if (ex) setExport(st.phase.start, { keep: !ex.keep }); }
+    else if (k === 'e') { const ex = curExport(); if (ex) setExport(st.phase.start, { keep: !ex.keep }); }
+    else if (k === 'm') { const i = idx(); if (curExport()) setExport(st.phase.start, { keep: false }).then(() => gotoIndex(i + 1)); }
     else if (k === 'Escape') { if (st.idBox && st.mode !== 'identify') { st.idBox = null; drawIdPanel(); draw(); } else setMode('pick'); }
     else return;
     ev.preventDefault();

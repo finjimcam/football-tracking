@@ -5,7 +5,7 @@
 
 const KEYS_HELP = [
   ['k', 'play / pause'], ['a / d', '−/+ 0.5 s'], ['A / D', '−/+ 2 s'], [', / .', '−/+ 1 frame'],
-  ['[ / ]', 'start / end the clip here'], ['e / m', 'keep / drop this clip'], ['n / p', 'next / previous clip'],
+  ['[ / ]', 'start / end the clip here'], ['e', 'keep / drop this clip'], ['m', 'drop this clip + next'], ['n / p', 'next / previous clip'],
 ];
 const HOW = {
   'stoppage, dead ball': 'play stopped, then the ball was kicked from still',
@@ -295,7 +295,7 @@ export async function viewClips(view, matchId, match, team, params, ui) {
       k: () => togglePlay(), a: () => step(-FPS / 2), d: () => step(FPS / 2), A: () => step(-2 * FPS), D: () => step(2 * FPS),
       ',': () => step(-1), '.': () => step(1), '[': () => setExport(st.clip.id, { trim_in: st.cur }),
       ']': () => setExport(st.clip.id, { trim_out: st.cur }), e: () => setExport(st.clip.id, { keep: !st.clip.export.keep }),
-      m: () => setExport(st.clip.id, { keep: !st.clip.export.keep }),
+      m: async () => { const i = idx(); await setExport(st.clip.id, { keep: false }); gotoIndex(i + 1); },
       n: () => gotoIndex(idx() + 1), p: () => gotoIndex(idx() - 1),
     };
     if (acts[k]) { ev.preventDefault(); acts[k](); }
